@@ -384,6 +384,27 @@ def set_root(model: ProjectModel, name: str) -> ProjectModel:
     return replace(model, root=name)
 
 
+def add_or_replace_tool(spec: AgentSpec, tool: ToolSpec) -> AgentSpec:
+    """Attache ``tool`` à ``spec`` selon « **append unique, replace by name** ».
+
+    Si un outil de même :meth:`ToolSpec.ref_key` existe déjà, il est **remplacé en place**
+    (position préservée) ; sinon ``tool`` est **ajouté** en fin de liste. **Renvoie un nouvel
+    ``AgentSpec``** (immuable). Les entrées héritées (chaîne) sont normalisées en ``ToolSpec``.
+    """
+    key = tool.ref_key()
+    found = False
+    new_tools: list[ToolSpec] = []
+    for existing in spec.tool_specs():
+        if existing.ref_key() == key:
+            new_tools.append(tool)
+            found = True
+        else:
+            new_tools.append(existing)
+    if not found:
+        new_tools.append(tool)
+    return replace(spec, tools=tuple(new_tools))
+
+
 # --------------------------------------------------------------------------- #
 # Sidecar I/O
 # --------------------------------------------------------------------------- #

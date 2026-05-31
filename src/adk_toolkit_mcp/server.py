@@ -4,6 +4,7 @@ from fastmcp import FastMCP
 
 from .domains.agents import agents_server
 from .domains.project import project_server
+from .domains.tools import tools_server
 from .prompts import register_prompts
 from .resources import register_resources
 
@@ -20,6 +21,8 @@ def build_server() -> FastMCP:
     mcp.mount(project_server, namespace="project")
     # P1 domaine 2/4 : agents. Outils exposés comme `agents_<nom>`.
     mcp.mount(agents_server, namespace="agents")
+    # P3 domaine 3/4 : tools. Outils exposés comme `tools_<nom>`.
+    mcp.mount(tools_server, namespace="tools")
     return mcp
 
 
