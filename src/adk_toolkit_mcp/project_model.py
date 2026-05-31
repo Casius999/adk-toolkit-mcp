@@ -281,8 +281,11 @@ def topological_order(model: ProjectModel) -> list[AgentSpec]:
 # Rendu de source — helpers
 # --------------------------------------------------------------------------- #
 def _py_str(value: str) -> str:
-    """Littéral chaîne Python sûr (gère quotes/échappements via repr)."""
-    return repr(value)
+    """Littéral chaîne Python sûr, guillemets doubles (stable pour ``ruff format``)."""
+    # repr() uses single quotes; we normalise to double quotes so the generated
+    # agent.py is already in the form ruff format would write it.
+    escaped = value.replace("\\", "\\\\").replace('"', '\\"')
+    return f'"{escaped}"'
 
 
 def render_tool_ref(tool: str) -> str:
@@ -347,15 +350,18 @@ def _custom_class_name(name: str) -> str:
     return f"{pascal}Agent"
 
 
-def _render_custom(spec: AgentSpec) -> str:
+def _render_custom(spec: AgentSpec) -> tuple[str, str]:
     """Rend une sous-classe ``BaseAgent`` (stub) + une instance module-level.
+
+    Retourne un tuple ``(class_block, instance_block)`` pour permettre au renderer
+    de module d'insérer exactement 2 lignes vides entre les deux (PEP 8 E305).
 
     Le ``_run_async_impl`` est un **async generator** no-op (``return`` puis ``yield``
     inatteignable) — c'est la forme valide attendue par ADK (cf. agents.md).
     """
     class_name = _custom_class_name(spec.name)
     desc = _py_str(spec.description) if spec.description else _py_str("")
-    return (
+    class_block = (
         f"class {class_name}(BaseAgent):\n"
         f'    """Agent custom généré (stub). Complétez `_run_async_impl`."""\n'
         "\n"
@@ -363,22 +369,42 @@ def _render_custom(spec: AgentSpec) -> str:
         "        # TODO: implémenter la logique de l'agent.\n"
         "        return\n"
         "        yield  # rend cette méthode un async generator (inatteignable)\n"
-        "\n"
-        f"{spec.name} = {class_name}(name={_py_str(spec.name)}, description={desc})\n"
     )
+    instance_block = f"{spec.name} = {class_name}(name={_py_str(spec.name)}, description={desc})\n"
+    return class_block, instance_block
+
+
+def _render_agent_blocks(spec: AgentSpec) -> list[str]:
+    """Retourne la liste de blocs de code (1 ou 2) pour un agent donné.
+
+    Un agent ``custom`` émet deux blocs distincts (classe + instance) afin que le
+    renderer de module puisse insérer le bon nombre de lignes vides entre eux.
+    Tous les autres types émettent un seul bloc d'assignation.
+    """
+    if spec.type == "llm":
+        return [_render_llm(spec)]
+    if spec.type in ("sequential", "parallel"):
+        return [_render_workflow(spec, _CLASS_FOR_TYPE[spec.type])]
+    if spec.type == "loop":
+        return [_render_loop(spec)]
+    if spec.type == "custom":
+        class_block, instance_block = _render_custom(spec)
+        return [class_block, instance_block]
+    raise ValueError(f"Type d'agent non rendu : {spec.type!r}")  # pragma: no cover
 
 
 def _render_agent(spec: AgentSpec) -> str:
-    """Aiguille vers le renderer du bon type."""
-    if spec.type == "llm":
-        return _render_llm(spec)
-    if spec.type in ("sequential", "parallel"):
-        return _render_workflow(spec, _CLASS_FOR_TYPE[spec.type])
-    if spec.type == "loop":
-        return _render_loop(spec)
+    """Aiguille vers le renderer du bon type — retourne un seul bloc de texte.
+
+    Note: pour un agent ``custom``, le bloc unique inclut la classe *et* l'instance
+    séparées par une ligne vide interne. Utiliser ``_render_agent_blocks`` (liste) quand
+    on a besoin du contrôle fin des espacements inter-blocs dans le module complet.
+    """
     if spec.type == "custom":
-        return _render_custom(spec)
-    raise ValueError(f"Type d'agent non rendu : {spec.type!r}")  # pragma: no cover
+        class_block, instance_block = _render_custom(spec)
+        return class_block + "\n" + instance_block
+    blocks = _render_agent_blocks(spec)
+    return blocks[0]
 
 
 def _needed_imports(model: ProjectModel) -> list[str]:
@@ -420,7 +446,39 @@ def render_agent_module(model: ProjectModel) -> str:
     import_line = f"from google.adk.agents import {', '.join(imports)}\n\n"
 
     ordered = topological_order(model)  # peut lever ValueError (cycle)
-    blocks = "\n".join(_render_agent(spec) for spec in ordered)
+
+    # Flatten: each agent may emit 1 block (llm/workflow/loop) or 2 (custom: class + instance).
+    all_blocks: list[str] = []
+    for spec in ordered:
+        all_blocks.extend(_render_agent_blocks(spec))
+
+    # PEP 8 / ruff-format spacing rules (E302, E303, E305):
+    #   - Exactly 2 blank lines before a top-level class/def block.
+    #   - Exactly 2 blank lines after a top-level class/def block.
+    #   - 1 blank line between plain assignment blocks.
+    #
+    # Each block already ends with exactly one '\n'.
+    # Separator '\n'  between two blocks → 1 blank line total (last \n + sep \n).
+    # Separator '\n\n' between two blocks → 2 blank lines total.
+    def _starts_class_or_def(block: str) -> bool:
+        return block.startswith("class ") or block.startswith("def ")
+
+    parts: list[str] = []
+    for i, block in enumerate(all_blocks):
+        parts.append(block)
+        if i < len(all_blocks) - 1:
+            next_block = all_blocks[i + 1]
+            # 2 blank lines when leaving or entering a class/def block.
+            if _starts_class_or_def(block) or _starts_class_or_def(next_block):
+                parts.append("\n\n")
+            else:
+                parts.append("\n")
+    blocks = "".join(parts)
+
+    # The import line ends with '\n\n' (1 blank line).  If the first rendered block is a
+    # class/def we need one more blank line to satisfy E302 (2 blank lines before class).
+    if all_blocks and _starts_class_or_def(all_blocks[0]):
+        import_line = import_line + "\n"
 
     if model.root is not None and model.get(model.root) is not None:
         root_line = f"\nroot_agent = {model.root}\n"

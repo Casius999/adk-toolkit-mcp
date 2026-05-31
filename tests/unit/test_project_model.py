@@ -7,6 +7,8 @@ puisqu'on ne construit aucun agent workflow déprécié ici). La preuve fonction
 
 from __future__ import annotations
 
+import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -164,9 +166,9 @@ def test_render_llm_minimal_omits_empty_kwargs() -> None:
     src = render_agent_module(model)
     assert "from google.adk.agents import LlmAgent" in src
     assert "solo = LlmAgent(" in src
-    assert "name='solo'" in src
-    assert "model='gemini-2.5-flash'" in src
-    assert "instruction='Hi'" in src
+    assert 'name="solo"' in src
+    assert 'model="gemini-2.5-flash"' in src
+    assert 'instruction="Hi"' in src
     # description vide / output_key None / tools vide / sub_agents vide -> omis.
     assert "description=" not in src
     assert "output_key=" not in src
@@ -189,9 +191,9 @@ def test_render_llm_includes_output_key_and_tools() -> None:
         ),
     )
     src = render_agent_module(model)
-    assert "output_key='results'" in src
+    assert 'output_key="results"' in src
     assert "tools=[google_search, my_tool]" in src
-    assert "description='Searches.'" in src
+    assert 'description="Searches."' in src
 
 
 def test_render_sequential_and_parallel() -> None:
@@ -236,7 +238,7 @@ def test_render_custom_emits_baseagent_subclass_and_instance() -> None:
     assert "async def _run_async_impl(self, ctx):" in src
     # async generator no-op : return suivi d'un yield inatteignable.
     assert "yield" in src
-    assert "my_custom = MyCustomAgent(name='my_custom', description='D')" in src
+    assert 'my_custom = MyCustomAgent(name="my_custom", description="D")' in src
 
 
 def test_render_empty_model_has_no_root() -> None:
@@ -339,3 +341,74 @@ def test_regenerate_cycle_raises(tmp_path: Path) -> None:
     )
     with pytest.raises(ValueError, match="[Cc]ycle"):
         regenerate(ws, model)
+
+
+# --------------------------------------------------------------------------- #
+# Stabilité de format ruff — le fichier généré doit être déjà formaté
+# --------------------------------------------------------------------------- #
+def _ruff_exe() -> str | None:
+    """Localise l'exécutable ruff dans l'environnement courant (venv ou PATH)."""
+    # Prefer the ruff that lives next to the current Python interpreter (venv).
+    import sys
+
+    venv_bin = Path(sys.executable).parent
+    for candidate in (venv_bin / "ruff", venv_bin / "ruff.exe"):
+        if candidate.exists():
+            return str(candidate)
+    return shutil.which("ruff")
+
+
+def _assert_ruff_format_stable(src: str, tmp_path: Path, label: str) -> None:
+    """Écrit *src* dans un fichier temporaire et vérifie que ``ruff format --check`` passe."""
+    gen_file = tmp_path / f"{label}.py"
+    gen_file.write_text(src, encoding="utf-8")
+
+    ruff = _ruff_exe()
+    if ruff is None:
+        pytest.skip("ruff introuvable dans l'environnement — test de format ignoré")
+
+    result = subprocess.run(
+        [ruff, "format", "--check", str(gen_file)],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, (
+        f"ruff format --check a échoué pour le cas '{label}'.\n"
+        f"Stdout: {result.stdout}\nStderr: {result.stderr}\n"
+        f"Source générée :\n{src}"
+    )
+
+
+def test_render_format_stable_custom_llm_workflow(tmp_path: Path) -> None:
+    """Le module généré avec un custom + llm + workflow est stable pour ruff format."""
+    model = ProjectModel(
+        app_name="demo",
+        root="pipe",
+        agents=(
+            AgentSpec(name="my_custom", type="custom", description="Custom agent"),
+            AgentSpec(name="llm_one", type="llm", instruction="Think"),
+            AgentSpec(name="pipe", type="sequential", sub_agents=("my_custom", "llm_one")),
+        ),
+    )
+    src = render_agent_module(model)
+    _assert_ruff_format_stable(src, tmp_path, "custom_llm_workflow")
+
+
+def test_render_format_stable_llm_only(tmp_path: Path) -> None:
+    """Le module généré avec des agents llm uniquement est stable pour ruff format."""
+    model = ProjectModel(
+        app_name="demo",
+        root="solo",
+        agents=(
+            AgentSpec(
+                name="solo",
+                type="llm",
+                instruction="Hi",
+                description="A solo agent",
+                output_key="result",
+                tools=("google_search",),
+            ),
+        ),
+    )
+    src = render_agent_module(model)
+    _assert_ruff_format_stable(src, tmp_path, "llm_only")

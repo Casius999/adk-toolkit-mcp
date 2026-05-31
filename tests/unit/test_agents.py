@@ -69,7 +69,7 @@ def test_create_llm_writes_sidecar_and_agent_py(tmp_path: Path) -> None:
     assert (app / SIDECAR_PATH).exists()
     agent_txt = (app / "agent.py").read_text(encoding="utf-8")
     assert "greeter = LlmAgent(" in agent_txt
-    assert "instruction='Say hi'" in agent_txt
+    assert 'instruction="Say hi"' in agent_txt
     # Pas encore de racine -> commentaire, pas d'assignation.
     assert "root_agent = greeter" not in agent_txt
 
