@@ -48,6 +48,61 @@ _AGENT_TYPES: frozenset[str] = frozenset({"llm", "sequential", "parallel", "loop
 #: Un nom d'agent doit être un identifiant Python (sert de nom de variable de module).
 _IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
+#: Longueur de ligne cible (doit refléter ``[tool.ruff] line-length`` du pyproject) afin que
+#: le code généré soit déjà dans la forme produite par ``ruff format`` (idempotence).
+LINE_LENGTH = 100
+
+# --------------------------------------------------------------------------- #
+# Outils (domaine `tools`, passe 3a — outils sans dépendance)
+# --------------------------------------------------------------------------- #
+#: Genres d'outils supportés en 3a.
+ToolKind = Literal["function", "long_running", "builtin", "agent_tool", "openapi"]
+
+_TOOL_KINDS: frozenset[str] = frozenset(
+    {"function", "long_running", "builtin", "agent_tool", "openapi"}
+)
+
+#: Builtins ADK "core" : instances d'outils déjà exportées (aucun argument requis).
+#: Confirmés par introspection en google-adk 2.1.0 (cf. ``docs/adk-api-notes/tools.md``).
+#: Ce sont des **instances** (ex. ``google_search`` = ``GoogleSearchTool()``) ou des
+#: fonctions (``exit_loop``, ``transfer_to_agent``) — elles entrent telles quelles dans
+#: ``tools=[...]`` et s'importent depuis ``google.adk.tools``.
+CORE_BUILTINS: frozenset[str] = frozenset(
+    {
+        "google_search",
+        "url_context",
+        "load_memory",
+        "preload_memory",
+        "load_artifacts",
+        "get_user_choice",
+        "exit_loop",
+        "transfer_to_agent",
+        "enterprise_web_search",
+        "google_maps_grounding",
+    }
+)
+
+#: Builtins nécessitant un argument (rendus comme un appel de constructeur).
+#: ``vertex_ai_search`` -> ``VertexAiSearchTool(data_store_id=... | search_engine_id=...)``.
+ARG_BUILTINS: frozenset[str] = frozenset({"vertex_ai_search"})
+
+#: Ensemble complet des ``kind`` builtin reconnus.
+BUILTIN_TOOLS: frozenset[str] = CORE_BUILTINS | ARG_BUILTINS
+
+#: Mapping builtin nécessitant un arg -> nom de classe ADK importée.
+_BUILTIN_CLASS: dict[str, str] = {"vertex_ai_search": "VertexAiSearchTool"}
+
+#: Types Python autorisés pour les paramètres d'une function-tool (validation légère).
+_ALLOWED_PARAM_TYPES: frozenset[str] = frozenset(
+    {"str", "int", "float", "bool", "list", "dict", "tuple", "set", "bytes", "Any", "None"}
+)
+
+#: Import depuis lequel les classes/builtins d'outils sont tirés (package root).
+_TOOLS_IMPORT_MODULE = "google.adk.tools"
+
+#: Import (chemin réel confirmé) pour ``OpenAPIToolset``.
+_OPENAPI_IMPORT = "from google.adk.tools.openapi_tool import OpenAPIToolset"
+
 #: Mapping type d'agent -> nom de classe ADK à importer.
 _CLASS_FOR_TYPE: dict[str, str] = {
     "llm": "LlmAgent",
@@ -71,6 +126,108 @@ _IMPORT_ORDER: tuple[str, ...] = (
 # Dataclasses du modèle (immuables)
 # --------------------------------------------------------------------------- #
 @dataclass(frozen=True)
+class ToolSpec:
+    """Spécification immuable d'un outil attaché à un agent (domaine `tools`, 3a).
+
+    Le champ ``kind`` discrimine ; seuls les champs pertinents sont renseignés/sérialisés :
+
+    - ``function`` / ``long_running`` : ``name`` (identifiant), ``params`` (tuple de
+      ``(name, type, default|None)``), ``docstring``, ``returns``, ``body``.
+    - ``builtin`` : ``builtin_kind`` (membre de :data:`BUILTIN_TOOLS`), ``args`` (pour
+      ``vertex_ai_search`` : ``{"data_store_id": ...}`` ou ``{"search_engine_id": ...}``).
+    - ``agent_tool`` : ``target_agent`` (nom d'un agent **existant** du modèle).
+    - ``openapi`` : ``name`` (identifiant de la variable toolset), ``spec`` (chaîne OpenAPI).
+
+    ``ref_key`` renvoie une clé d'identité stable utilisée pour le "remplacement par nom"
+    (append unique / replace) côté domaine.
+    """
+
+    kind: ToolKind
+    name: str = ""
+    params: tuple[tuple[str, str, str | None], ...] = ()
+    docstring: str = ""
+    returns: str = "dict"
+    body: str = "return {}"
+    builtin_kind: str = ""
+    args: tuple[tuple[str, str], ...] = ()
+    target_agent: str = ""
+    spec: str = ""
+
+    def ref_key(self) -> str:
+        """Clé d'unicité : ``function``/``long_running``/``openapi`` -> nom ; ``builtin`` ->
+        ``builtin:<kind>`` ; ``agent_tool`` -> ``agent_tool:<target>``."""
+        if self.kind in ("function", "long_running", "openapi"):
+            return f"{self.kind}:{self.name}"
+        if self.kind == "builtin":
+            return f"builtin:{self.builtin_kind}"
+        if self.kind == "agent_tool":
+            return f"agent_tool:{self.target_agent}"
+        return self.kind  # pragma: no cover (kind validé en amont)
+
+    def to_dict(self) -> dict[str, Any]:
+        """Sérialise vers la forme JSON du sidecar (champs pertinents selon ``kind``)."""
+        base: dict[str, Any] = {"kind": self.kind}
+        if self.kind in ("function", "long_running"):
+            base.update(
+                {
+                    "name": self.name,
+                    "params": [list(p) for p in self.params],
+                    "docstring": self.docstring,
+                    "returns": self.returns,
+                    "body": self.body,
+                }
+            )
+        elif self.kind == "builtin":
+            base["builtin_kind"] = self.builtin_kind
+            if self.args:
+                base["args"] = {k: v for k, v in self.args}
+        elif self.kind == "agent_tool":
+            base["target_agent"] = self.target_agent
+        elif self.kind == "openapi":
+            base.update({"name": self.name, "spec": self.spec})
+        return base
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any] | str) -> ToolSpec:
+        """Désérialise une entrée ``tools`` du sidecar.
+
+        Tolérant à la **forme héritée** (P1) où une entrée d'outil était une simple chaîne
+        (nom déjà importé dans le module) : on la mappe vers un ``builtin`` (rendu bare).
+        """
+        if isinstance(data, str):
+            return cls(kind="builtin", builtin_kind=data)
+        kind: ToolKind = data.get("kind", "builtin")
+        params = tuple(
+            (str(p[0]), str(p[1]), (None if len(p) < 3 or p[2] is None else str(p[2])))
+            for p in (data.get("params") or [])
+        )
+        args_raw = data.get("args") or {}
+        args = tuple((str(k), str(v)) for k, v in args_raw.items())
+        return cls(
+            kind=kind,
+            name=str(data.get("name", "")),
+            params=params,
+            docstring=str(data.get("docstring", "")),
+            returns=str(data.get("returns", "dict")),
+            body=str(data.get("body", "return {}")),
+            builtin_kind=str(data.get("builtin_kind", "")),
+            args=args,
+            target_agent=str(data.get("target_agent", "")),
+            spec=str(data.get("spec", "")),
+        )
+
+
+@dataclass(frozen=True)
+class ToolRender:
+    """Résultat du rendu d'un outil : imports requis, blocs helper top-level, et la
+    référence à placer dans ``tools=[...]`` de l'agent propriétaire."""
+
+    imports: tuple[str, ...]
+    helpers: tuple[str, ...]
+    ref: str
+
+
+@dataclass(frozen=True)
 class AgentSpec:
     """Spécification immuable d'un agent dans le modèle de projet.
 
@@ -84,9 +241,15 @@ class AgentSpec:
     instruction: str = ""
     description: str = ""
     output_key: str | None = None
-    tools: tuple[str, ...] = ()
+    #: Outils attachés. ``ToolSpec`` (codegen riche) ; la forme ``str`` héritée (P1) reste
+    #: tolérée et rendue comme une référence bare (nom déjà importé). Voir ``render_tool_ref``.
+    tools: tuple[ToolSpec | str, ...] = ()
     sub_agents: tuple[str, ...] = ()
     max_iterations: int = 3
+
+    def tool_specs(self) -> tuple[ToolSpec, ...]:
+        """Normalise ``tools`` en ``ToolSpec`` (les chaînes héritées -> ``builtin``)."""
+        return tuple(t if isinstance(t, ToolSpec) else ToolSpec.from_dict(t) for t in self.tools)
 
     def to_dict(self) -> dict[str, Any]:
         """Sérialise vers la forme JSON du sidecar (champs pertinents selon le type)."""
@@ -101,7 +264,7 @@ class AgentSpec:
                     "model": self.model,
                     "instruction": self.instruction,
                     "output_key": self.output_key,
-                    "tools": list(self.tools),
+                    "tools": [t.to_dict() if isinstance(t, ToolSpec) else t for t in self.tools],
                     "sub_agents": list(self.sub_agents),
                 }
             )
@@ -117,6 +280,12 @@ class AgentSpec:
     def from_dict(cls, data: dict[str, Any]) -> AgentSpec:
         """Désérialise une entrée du sidecar (tolérant aux champs absents)."""
         atype = data.get("type", "llm")
+        raw_tools = data.get("tools", []) or []
+        # Forme héritée (P1) : une entrée chaîne reste une chaîne (passthrough, rendue bare).
+        # Forme riche (3a) : un dict est désérialisé en ``ToolSpec``.
+        tools: tuple[ToolSpec | str, ...] = tuple(
+            t if isinstance(t, str) else ToolSpec.from_dict(t) for t in raw_tools
+        )
         return cls(
             name=str(data["name"]),
             type=atype,
@@ -124,7 +293,7 @@ class AgentSpec:
             instruction=str(data.get("instruction", "")),
             description=str(data.get("description", "")),
             output_key=data.get("output_key"),
-            tools=tuple(data.get("tools", []) or []),
+            tools=tools,
             sub_agents=tuple(data.get("sub_agents", []) or []),
             max_iterations=int(data.get("max_iterations", 3)),
         )
@@ -244,12 +413,28 @@ def save_model(ws: Workspace, model: ProjectModel) -> bool:
 # --------------------------------------------------------------------------- #
 # Tri topologique + détection de cycle
 # --------------------------------------------------------------------------- #
-def topological_order(model: ProjectModel) -> list[AgentSpec]:
-    """Trie les agents pour qu'un enfant soit défini avant son parent.
+def _agent_dependencies(spec: AgentSpec) -> tuple[str, ...]:
+    """Noms d'agents dont ``spec`` dépend pour être défini après eux dans ``agent.py``.
 
-    Lève ``ValueError`` si un cycle est détecté (les outils convertissent en ``err``).
-    Les ``sub_agents`` référençant un nom absent sont ignorés pour l'ordonnancement
-    (la validation d'existence est faite en amont par les outils du domaine).
+    Deux sources de dépendance vers un autre agent :
+    - ``sub_agents`` (composition : l'enfant doit précéder le parent) ;
+    - un outil ``agent_tool`` ciblant un agent (la cible doit précéder l'agent enveloppant,
+      sinon ``AgentTool(agent=<cible>)`` référencerait une variable non définie).
+    """
+    deps: list[str] = list(spec.sub_agents)
+    for tool in spec.tool_specs():
+        if tool.kind == "agent_tool" and tool.target_agent:
+            deps.append(tool.target_agent)
+    return tuple(deps)
+
+
+def topological_order(model: ProjectModel) -> list[AgentSpec]:
+    """Trie les agents pour qu'une dépendance soit définie avant son dépendant.
+
+    Une dépendance = un ``sub_agent`` **ou** la cible d'un outil ``agent_tool`` (cf.
+    :func:`_agent_dependencies`). Lève ``ValueError`` si un cycle est détecté (les outils
+    convertissent en ``err``). Les références à un nom absent sont ignorées pour
+    l'ordonnancement (la validation d'existence est faite en amont par les outils du domaine).
     """
     by_name: dict[str, AgentSpec] = {a.name: a for a in model.agents}
     order: list[AgentSpec] = []
@@ -262,12 +447,12 @@ def topological_order(model: ProjectModel) -> list[AgentSpec]:
             return
         if st == 1:
             cycle = " -> ".join((*path, name))
-            raise ValueError(f"Cycle détecté dans sub_agents : {cycle}")
+            raise ValueError(f"Cycle détecté dans les dépendances d'agents : {cycle}")
         state[name] = 1
         spec = by_name[name]
-        for sub in spec.sub_agents:
-            if sub in by_name:  # n'ordonne que les références internes connues
-                visit(sub, (*path, name))
+        for dep in _agent_dependencies(spec):
+            if dep in by_name:  # n'ordonne que les références internes connues
+                visit(dep, (*path, name))
         state[name] = 2
         order.append(spec)
 
@@ -281,27 +466,228 @@ def topological_order(model: ProjectModel) -> list[AgentSpec]:
 # Rendu de source — helpers
 # --------------------------------------------------------------------------- #
 def _py_str(value: str) -> str:
-    """Littéral chaîne Python sûr, guillemets doubles (stable pour ``ruff format``)."""
-    # repr() uses single quotes; we normalise to double quotes so the generated
-    # agent.py is already in the form ruff format would write it.
+    """Littéral chaîne Python **stable pour ``ruff format``**.
+
+    ``ruff format`` (comme Black) préfère les guillemets doubles, **sauf** si la valeur
+    contient un ``"`` mais pas de ``'`` — auquel cas il bascule sur les guillemets simples
+    pour éviter d'échapper. On reproduit exactement ce choix pour que la sortie générée soit
+    déjà dans la forme que ruff écrirait (idempotence de ``format --check``).
+    """
+    has_double = '"' in value
+    has_single = "'" in value
+    if has_double and not has_single:
+        # Guillemets simples : seul le backslash doit être échappé.
+        escaped = value.replace("\\", "\\\\")
+        return f"'{escaped}'"
+    # Guillemets doubles par défaut : échapper backslash puis guillemet double.
     escaped = value.replace("\\", "\\\\").replace('"', '\\"')
     return f'"{escaped}"'
 
 
-def render_tool_ref(tool: str) -> str:
-    """Rendu d'une entrée ``tools`` (POINT D'EXTENSION pour le domaine `tools` en P3).
+def _render_param(name: str, ptype: str, default: str | None) -> str:
+    """Rend un paramètre de signature : ``name: type`` ou ``name: type = default``.
 
-    En P1, on rend la référence **telle quelle** : un nom de variable d'outil ou un
-    builtin déjà importé dans le module (ex. ``google_search``). Le domaine `tools`
-    étendra ce helper (codegen de function-tools, imports, etc.). On ne fabrique
-    volontairement aucun code de function-tool ici.
+    ``default`` est un **littéral source déjà rendu** (ex. ``"x"``, ``0``, ``None``).
+    Quand ``default`` est ``None`` (au sens Python), le paramètre n'a pas de défaut.
     """
-    return tool
+    base = f"{name}: {ptype}"
+    return base if default is None else f"{base} = {default}"
+
+
+def _render_function_def(spec: ToolSpec) -> str:
+    """Rend un bloc ``def`` top-level : signature typée, docstring 1-ligne, puis le corps.
+
+    Le corps et la docstring sont indentés de 4 espaces ; le bloc se termine par un seul
+    ``\\n`` (le renderer de module gère l'espacement inter-blocs façon ruff).
+    """
+    params = ", ".join(_render_param(n, t, d) for (n, t, d) in spec.params)
+    doc = (spec.docstring or spec.name).replace("\\", "\\\\").replace('"', '\\"')
+    # docstring sur une ligne, échappée (guillemets triples).
+    doc_line = f'    """{doc}"""\n'
+    body_lines = spec.body.splitlines() or ["return {}"]
+    body = "".join(f"    {line}\n" for line in body_lines)
+    return f"def {spec.name}({params}) -> {spec.returns}:\n{doc_line}{body}"
+
+
+def _render_builtin_ref(spec: ToolSpec) -> ToolRender:
+    """Rend la référence d'un builtin (core -> nom bare ; ``vertex_ai_search`` -> appel)."""
+    if spec.builtin_kind in CORE_BUILTINS:
+        imp = f"from {_TOOLS_IMPORT_MODULE} import {spec.builtin_kind}"
+        return ToolRender(imports=(imp,), helpers=(), ref=spec.builtin_kind)
+    if spec.builtin_kind in ARG_BUILTINS:
+        class_name = _BUILTIN_CLASS[spec.builtin_kind]
+        imp = f"from {_TOOLS_IMPORT_MODULE} import {class_name}"
+        kwargs = ", ".join(f"{k}={_py_str(v)}" for k, v in spec.args)
+        return ToolRender(imports=(imp,), helpers=(), ref=f"{class_name}({kwargs})")
+    # builtin_kind inconnu : on rend tel quel (la validation amont l'aura rejeté).
+    return ToolRender(imports=(), helpers=(), ref=spec.builtin_kind)  # pragma: no cover
+
+
+def render_tool_ref(tool: ToolSpec | str) -> ToolRender:
+    """Rendu d'une entrée ``tools`` -> :class:`ToolRender` (imports, helpers, ref).
+
+    POINT D'EXTENSION implémenté en passe 3a (outils sans dépendance). Genres gérés :
+
+    - ``function`` : helper = un ``def`` rendu ; ``ref`` = ``<name>`` (ADK auto-wrappe la
+      fonction en ``FunctionTool`` via ``canonical_tools`` — cf. ``docs/adk-api-notes/tools.md``).
+    - ``long_running`` : même helper ; import ``LongRunningFunctionTool`` ;
+      ``ref`` = ``LongRunningFunctionTool(func=<name>)``.
+    - ``builtin`` : ``ref`` = nom du builtin (ex. ``google_search``) importé ;
+      ``vertex_ai_search`` -> ``VertexAiSearchTool(data_store_id="...")``.
+    - ``agent_tool`` : import ``AgentTool`` ; ``ref`` = ``AgentTool(agent=<target>)``.
+    - ``openapi`` : import ``OpenAPIToolset`` ; helper = ``<id> = OpenAPIToolset(spec_str=..., \
+      spec_str_type="json")`` ; ``ref`` = ``<id>`` (le toolset entre **directement** dans
+      ``tools=[...]`` — confirmé par introspection, pas de ``.get_tools()``).
+
+    Forme héritée (``str``) : rendue **telle quelle** (référence bare déjà importée), sans
+    import ni helper, pour compat ascendante avec le modèle P1.
+    """
+    if isinstance(tool, str):
+        return ToolRender(imports=(), helpers=(), ref=tool)
+
+    if tool.kind == "function":
+        return ToolRender(imports=(), helpers=(_render_function_def(tool),), ref=tool.name)
+
+    if tool.kind == "long_running":
+        imp = f"from {_TOOLS_IMPORT_MODULE} import LongRunningFunctionTool"
+        return ToolRender(
+            imports=(imp,),
+            helpers=(_render_function_def(tool),),
+            ref=f"LongRunningFunctionTool(func={tool.name})",
+        )
+
+    if tool.kind == "builtin":
+        return _render_builtin_ref(tool)
+
+    if tool.kind == "agent_tool":
+        imp = f"from {_TOOLS_IMPORT_MODULE} import AgentTool"
+        return ToolRender(imports=(imp,), helpers=(), ref=f"AgentTool(agent={tool.target_agent})")
+
+    if tool.kind == "openapi":
+        helper = _render_openapi_helper(tool)
+        return ToolRender(imports=(_OPENAPI_IMPORT,), helpers=(helper,), ref=tool.name)
+
+    raise ValueError(f"Genre d'outil non rendu : {tool.kind!r}")  # pragma: no cover
+
+
+def _render_openapi_helper(tool: ToolSpec) -> str:
+    """Rend ``<id> = OpenAPIToolset(spec_str=..., spec_str_type="json")`` (stable ruff).
+
+    Inline si la ligne tient dans :data:`LINE_LENGTH` ; sinon, ruff replie l'appel avec les
+    deux arguments sur **une** ligne indentée (4 espaces) tant qu'ils y tiennent — on reproduit
+    exactement cette forme (l'éclatement un-arg-par-ligne n'est pas nécessaire ici).
+    """
+    spec_lit = _py_str(tool.spec)
+    args = f'spec_str={spec_lit}, spec_str_type="json"'
+    inline = f"{tool.name} = OpenAPIToolset({args})"
+    if len(inline) <= LINE_LENGTH:
+        return inline + "\n"
+    # Repli niveau 1 : les deux args sur une ligne indentée (4 espaces), si elle tient.
+    if 4 + len(args) <= LINE_LENGTH:
+        return f"{tool.name} = OpenAPIToolset(\n    {args}\n)\n"
+    # Repli niveau 2 : un argument par ligne (indent 4, virgule finale) — forme ruff au-delà.
+    return (
+        f'{tool.name} = OpenAPIToolset(\n    spec_str={spec_lit},\n    spec_str_type="json",\n)\n'
+    )
+
+
+# --------------------------------------------------------------------------- #
+# Validation d'outils
+# --------------------------------------------------------------------------- #
+def validate_tool_spec(tool: ToolSpec, model: ProjectModel, owner: str) -> str | None:
+    """Renvoie un message d'erreur si ``tool`` est invalide, sinon None.
+
+    ``model``/``owner`` servent à valider ``agent_tool`` (cible existante et != propriétaire).
+    """
+    if tool.kind not in _TOOL_KINDS:
+        return f"Genre d'outil inconnu : {tool.kind!r}. Connus : {', '.join(sorted(_TOOL_KINDS))}."
+
+    if tool.kind in ("function", "long_running"):
+        if not is_identifier(tool.name):
+            return f"Nom de fonction invalide : {tool.name!r}. Attendu un identifiant Python."
+        for pname, ptype, _default in tool.params:
+            if not is_identifier(pname):
+                return f"Nom de paramètre invalide : {pname!r}. Attendu un identifiant Python."
+            if not _is_allowed_type(ptype):
+                return (
+                    f"Type de paramètre non supporté : {ptype!r} (param {pname!r}). "
+                    f"Types autorisés : {', '.join(sorted(_ALLOWED_PARAM_TYPES))} "
+                    "(ou ``X | None`` / ``list[X]`` de ceux-ci)."
+                )
+        if not _is_allowed_type(tool.returns):
+            return f"Type de retour non supporté : {tool.returns!r}."
+        return None
+
+    if tool.kind == "builtin":
+        if tool.builtin_kind not in BUILTIN_TOOLS:
+            return (
+                f"Builtin inconnu : {tool.builtin_kind!r}. "
+                f"Connus : {', '.join(sorted(BUILTIN_TOOLS))}."
+            )
+        if tool.builtin_kind in ARG_BUILTINS:
+            keys = {k for k, _ in tool.args}
+            if not ({"data_store_id", "search_engine_id"} & keys):
+                return (
+                    f"{tool.builtin_kind!r} requiert un argument 'data_store_id' "
+                    "(ou 'search_engine_id')."
+                )
+        return None
+
+    if tool.kind == "agent_tool":
+        if not is_identifier(tool.target_agent):
+            return f"target_agent invalide : {tool.target_agent!r}. Attendu un identifiant Python."
+        if tool.target_agent == owner:
+            return f"Un agent ne peut pas s'envelopper lui-même comme AgentTool : {owner!r}."
+        if model.get(tool.target_agent) is None:
+            return f"Agent cible introuvable : {tool.target_agent!r}. Créez-le d'abord."
+        return None
+
+    if tool.kind == "openapi":
+        if not is_identifier(tool.name):
+            return f"Nom de toolset OpenAPI invalide : {tool.name!r} (identifiant Python attendu)."
+        if not tool.spec.strip():
+            return "La spec OpenAPI est vide."
+        return None
+
+    return None  # pragma: no cover
+
+
+def _is_allowed_type(t: str) -> bool:
+    """Type de param/retour autorisé : un type de base, ou une composition simple
+    (``X | None``, ``list[X]``, ``dict[X, Y]``, ``Optional[X]``) de types de base."""
+    t = t.strip()
+    if t in _ALLOWED_PARAM_TYPES:
+        return True
+    # Union avec None : ``X | None`` ou ``None | X``.
+    if "|" in t:
+        return all(_is_allowed_type(part) for part in t.split("|"))
+    # Génériques simples : list[...], dict[...], tuple[...], set[...], Optional[...].
+    m = re.fullmatch(r"(list|dict|tuple|set|Optional)\[(.+)\]", t)
+    if m is not None:
+        inner = m.group(2)
+        return all(_is_allowed_type(part) for part in inner.split(","))
+    return False
 
 
 def _render_kwargs(pairs: list[tuple[str, str]]) -> str:
     """Assemble des ``k=v`` déjà rendus en une liste d'arguments multi-lignes."""
     return "".join(f"    {key}={value},\n" for key, value in pairs)
+
+
+def _render_list_kwarg(key: str, refs: list[str]) -> str:
+    """Rend la **valeur** d'un kwarg liste (``tools``/``sub_agents``) façon ``ruff format``.
+
+    Inline ``[a, b]`` si la ligne ``    {key}={value},`` tient dans :data:`LINE_LENGTH` ;
+    sinon, liste multi-lignes (un élément par ligne, indent 8, virgule finale) — exactement
+    ce que produirait ``ruff format`` au-delà de la limite. Ainsi le ``agent.py`` généré est
+    déjà stable (``format --check`` ne reformatte rien).
+    """
+    inline = f"[{', '.join(refs)}]"
+    # 4 (indent kwarg) + len("key=") + len(inline) + 1 (virgule finale).
+    if 4 + len(key) + 1 + len(inline) + 1 <= LINE_LENGTH:
+        return inline
+    items = "".join(f"        {ref},\n" for ref in refs)
+    return f"[\n{items}    ]"
 
 
 def _render_llm(spec: AgentSpec) -> str:
@@ -316,10 +702,10 @@ def _render_llm(spec: AgentSpec) -> str:
     if spec.output_key is not None:
         pairs.append(("output_key", _py_str(spec.output_key)))
     if spec.tools:
-        rendered = ", ".join(render_tool_ref(t) for t in spec.tools)
-        pairs.append(("tools", f"[{rendered}]"))
+        refs = [render_tool_ref(t).ref for t in spec.tools]
+        pairs.append(("tools", _render_list_kwarg("tools", refs)))
     if spec.sub_agents:
-        pairs.append(("sub_agents", "[" + ", ".join(spec.sub_agents) + "]"))
+        pairs.append(("sub_agents", _render_list_kwarg("sub_agents", list(spec.sub_agents))))
     return f"{spec.name} = LlmAgent(\n{_render_kwargs(pairs)})\n"
 
 
@@ -328,7 +714,7 @@ def _render_workflow(spec: AgentSpec, class_name: str) -> str:
     pairs: list[tuple[str, str]] = [("name", _py_str(spec.name))]
     if spec.description:
         pairs.append(("description", _py_str(spec.description)))
-    pairs.append(("sub_agents", "[" + ", ".join(spec.sub_agents) + "]"))
+    pairs.append(("sub_agents", _render_list_kwarg("sub_agents", list(spec.sub_agents))))
     return f"{spec.name} = {class_name}(\n{_render_kwargs(pairs)})\n"
 
 
@@ -337,7 +723,7 @@ def _render_loop(spec: AgentSpec) -> str:
     pairs: list[tuple[str, str]] = [("name", _py_str(spec.name))]
     if spec.description:
         pairs.append(("description", _py_str(spec.description)))
-    pairs.append(("sub_agents", "[" + ", ".join(spec.sub_agents) + "]"))
+    pairs.append(("sub_agents", _render_list_kwarg("sub_agents", list(spec.sub_agents))))
     pairs.append(("max_iterations", str(spec.max_iterations)))
     return f"{spec.name} = LoopAgent(\n{_render_kwargs(pairs)})\n"
 
@@ -407,8 +793,8 @@ def _render_agent(spec: AgentSpec) -> str:
     return blocks[0]
 
 
-def _needed_imports(model: ProjectModel) -> list[str]:
-    """Classes ADK réellement utilisées, dans l'ordre canonique."""
+def _needed_agent_imports(model: ProjectModel) -> list[str]:
+    """Classes d'agents ADK réellement utilisées, dans l'ordre canonique."""
     used: set[str] = set()
     for a in model.agents:
         if a.type == "custom":
@@ -416,6 +802,64 @@ def _needed_imports(model: ProjectModel) -> list[str]:
         else:
             used.add(_CLASS_FOR_TYPE[a.type])
     return [name for name in _IMPORT_ORDER if name in used]
+
+
+def _collect_tool_renders(ordered: list[AgentSpec]) -> list[ToolRender]:
+    """Rend tous les outils des agents (dans l'ordre topo fourni) en une liste de ``ToolRender``.
+
+    L'ordre topologique garantit qu'un ``agent_tool`` ciblant un agent voit cet agent défini
+    avant l'agent enveloppant (les helpers d'outils sont émis avant *tous* les agents, mais la
+    cible étant elle-même un agent, son instance précède l'enveloppant dans la section agents).
+    """
+    renders: list[ToolRender] = []
+    for spec in ordered:
+        for tool in spec.tools:
+            renders.append(render_tool_ref(tool))
+    return renders
+
+
+def _dedup_preserve(items: list[str]) -> list[str]:
+    """Déduplique en préservant l'ordre de première apparition."""
+    seen: set[str] = set()
+    out: list[str] = []
+    for it in items:
+        if it not in seen:
+            seen.add(it)
+            out.append(it)
+    return out
+
+
+def _agent_import_line(model: ProjectModel) -> str:
+    """Ligne d'import des classes d'agents (vide si aucune classe agent utilisée)."""
+    imports = _needed_agent_imports(model)
+    if not imports:
+        return ""
+    return f"from google.adk.agents import {', '.join(imports)}\n"
+
+
+def _merge_tool_imports(import_stmts: list[str]) -> list[str]:
+    """Fusionne/trie des ``from <module> import <name>`` façon isort (stable pour ruff ``I``).
+
+    - Regroupe par module ; fusionne les noms (dédupliqués, triés) sur une seule ligne.
+    - Trie les modules par ordre alphabétique.
+    Toute ligne non reconnue (improbable ici) est conservée telle quelle, en tête.
+    """
+    by_module: dict[str, set[str]] = {}
+    passthrough: list[str] = []
+    for stmt in import_stmts:
+        m = re.fullmatch(r"from (\S+) import (.+)", stmt.strip())
+        if m is None:
+            passthrough.append(stmt)
+            continue
+        module, names = m.group(1), m.group(2)
+        bucket = by_module.setdefault(module, set())
+        for name in names.split(","):
+            bucket.add(name.strip())
+    merged = [
+        f"from {module} import {', '.join(sorted(by_module[module]))}"
+        for module in sorted(by_module)
+    ]
+    return _dedup_preserve(passthrough) + merged
 
 
 # --------------------------------------------------------------------------- #
@@ -442,15 +886,31 @@ def render_agent_module(model: ProjectModel) -> str:
         root_line = "# root_agent non défini : ajoutez un agent puis appelez set_root.\n"
         return header + body + "\n" + root_line
 
-    imports = _needed_imports(model)
-    import_line = f"from google.adk.agents import {', '.join(imports)}\n\n"
-
     ordered = topological_order(model)  # peut lever ValueError (cycle)
 
-    # Flatten: each agent may emit 1 block (llm/workflow/loop) or 2 (custom: class + instance).
-    all_blocks: list[str] = []
+    # Rendu des outils (imports + helpers + refs) dans l'ordre topo des agents propriétaires.
+    tool_renders = _collect_tool_renders(ordered)
+    tool_helpers = [helper for tr in tool_renders for helper in tr.helpers]
+
+    # Section d'imports. La ligne des classes d'agents garde l'**ordre canonique** ADK
+    # (LlmAgent, Sequential, Parallel, Loop, BaseAgent) — pas un tri alphabétique. Les imports
+    # d'outils sont fusionnés par module (noms dédupliqués + triés, un module par ligne) et
+    # placés après. ``ruff format`` ne réordonne pas les imports : la stabilité de format est
+    # préservée (le tri isort n'est pas requis pour le fichier généré, jamais linté en repo).
+    import_stmts: list[str] = []
+    agent_imports = _agent_import_line(model)
+    if agent_imports:
+        import_stmts.append(agent_imports.rstrip("\n"))
+    import_stmts.extend(_merge_tool_imports([imp for tr in tool_renders for imp in tr.imports]))
+    # Bloc d'imports terminé par une ligne vide (séparation avec le corps).
+    import_block = ("\n".join(import_stmts) + "\n\n") if import_stmts else ""
+
+    # Blocs top-level : d'abord les helpers d'outils (defs/toolsets), puis les agents.
+    # Chaque agent émet 1 bloc (llm/workflow/loop) ou 2 (custom : classe + instance).
+    agent_blocks: list[str] = []
     for spec in ordered:
-        all_blocks.extend(_render_agent_blocks(spec))
+        agent_blocks.extend(_render_agent_blocks(spec))
+    all_blocks: list[str] = tool_helpers + agent_blocks
 
     # PEP 8 / ruff-format spacing rules (E302, E303, E305):
     #   - Exactly 2 blank lines before a top-level class/def block.
@@ -475,10 +935,10 @@ def render_agent_module(model: ProjectModel) -> str:
                 parts.append("\n")
     blocks = "".join(parts)
 
-    # The import line ends with '\n\n' (1 blank line).  If the first rendered block is a
-    # class/def we need one more blank line to satisfy E302 (2 blank lines before class).
-    if all_blocks and _starts_class_or_def(all_blocks[0]):
-        import_line = import_line + "\n"
+    # The import block ends with '\n' (1 blank line).  If the first rendered block is a
+    # class/def we need one more blank line to satisfy E302 (2 blank lines before class/def).
+    if import_block and all_blocks and _starts_class_or_def(all_blocks[0]):
+        import_block = import_block + "\n"
 
     if model.root is not None and model.get(model.root) is not None:
         root_line = f"\nroot_agent = {model.root}\n"
@@ -489,7 +949,7 @@ def render_agent_module(model: ProjectModel) -> str:
     else:
         root_line = "\n# root_agent non défini : appelez set_root pour désigner la racine.\n"
 
-    return header + import_line + blocks + root_line
+    return header + import_block + blocks + root_line
 
 
 # --------------------------------------------------------------------------- #

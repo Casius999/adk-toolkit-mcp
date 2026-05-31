@@ -17,14 +17,18 @@ from adk_toolkit_mcp.project_model import (
     SIDECAR_PATH,
     AgentSpec,
     ProjectModel,
+    ToolRender,
+    ToolSpec,
     add_or_update_agent,
     load_model,
     regenerate,
     render_agent_module,
+    render_tool_ref,
     save_model,
     set_root,
     topological_order,
     validate_spec,
+    validate_tool_spec,
 )
 from adk_toolkit_mcp.workspace import Workspace
 
@@ -269,6 +273,257 @@ def test_render_imports_only_used_classes() -> None:
 
 
 # --------------------------------------------------------------------------- #
+# Rendu des outils — render_tool_ref (passe 3a)
+# --------------------------------------------------------------------------- #
+def test_render_tool_ref_function_emits_def_and_bare_ref() -> None:
+    tool = ToolSpec(
+        kind="function",
+        name="add",
+        params=(("a", "int", None), ("b", "int", "0")),
+        docstring="Add two ints.",
+        returns="dict",
+        body="return {'sum': a + b}",
+    )
+    tr = render_tool_ref(tool)
+    assert isinstance(tr, ToolRender)
+    assert tr.ref == "add"  # ADK auto-wrappe la fonction en FunctionTool.
+    assert tr.imports == ()  # un plain function n'importe rien.
+    assert len(tr.helpers) == 1
+    helper = tr.helpers[0]
+    assert helper.startswith("def add(a: int, b: int = 0) -> dict:")
+    assert '"""Add two ints."""' in helper
+    assert "return {'sum': a + b}" in helper
+
+
+def test_render_tool_ref_long_running_wraps_func() -> None:
+    tool = ToolSpec(kind="long_running", name="slow", docstring="Slow op.")
+    tr = render_tool_ref(tool)
+    assert tr.ref == "LongRunningFunctionTool(func=slow)"
+    assert "from google.adk.tools import LongRunningFunctionTool" in tr.imports
+    assert tr.helpers[0].startswith("def slow() -> dict:")
+
+
+def test_render_tool_ref_builtin_core_is_bare_name() -> None:
+    tr = render_tool_ref(ToolSpec(kind="builtin", builtin_kind="google_search"))
+    assert tr.ref == "google_search"
+    assert tr.imports == ("from google.adk.tools import google_search",)
+    assert tr.helpers == ()
+
+
+def test_render_tool_ref_builtin_vertex_ai_search_needs_arg() -> None:
+    tr = render_tool_ref(
+        ToolSpec(
+            kind="builtin",
+            builtin_kind="vertex_ai_search",
+            args=(("data_store_id", "projects/p/dataStores/d"),),
+        )
+    )
+    assert tr.ref == 'VertexAiSearchTool(data_store_id="projects/p/dataStores/d")'
+    assert tr.imports == ("from google.adk.tools import VertexAiSearchTool",)
+
+
+def test_render_tool_ref_agent_tool_wraps_target() -> None:
+    tr = render_tool_ref(ToolSpec(kind="agent_tool", target_agent="helper"))
+    assert tr.ref == "AgentTool(agent=helper)"
+    assert tr.imports == ("from google.adk.tools import AgentTool",)
+    assert tr.helpers == ()
+
+
+def test_render_tool_ref_openapi_builds_toolset_and_refs_it() -> None:
+    tr = render_tool_ref(ToolSpec(kind="openapi", name="petstore", spec='{"openapi": "3.0.0"}'))
+    assert tr.ref == "petstore"
+    assert tr.imports == ("from google.adk.tools.openapi_tool import OpenAPIToolset",)
+    assert len(tr.helpers) == 1
+    assert tr.helpers[0].startswith("petstore = OpenAPIToolset(spec_str=")
+    assert 'spec_str_type="json"' in tr.helpers[0]
+
+
+def test_render_tool_ref_legacy_string_is_bare_passthrough() -> None:
+    # Forme héritée P1 : une chaîne reste une référence bare, sans import ni helper.
+    tr = render_tool_ref("already_imported_tool")
+    assert tr.ref == "already_imported_tool"
+    assert tr.imports == ()
+    assert tr.helpers == ()
+
+
+# --------------------------------------------------------------------------- #
+# (Dé)sérialisation des ToolSpec
+# --------------------------------------------------------------------------- #
+def test_toolspec_roundtrip_function() -> None:
+    tool = ToolSpec(
+        kind="function",
+        name="f",
+        params=(("x", "str", None), ("n", "int", "1")),
+        docstring="Doc.",
+        returns="dict",
+        body="return {}",
+    )
+    assert ToolSpec.from_dict(tool.to_dict()) == tool
+
+
+def test_toolspec_roundtrip_builtin_with_args() -> None:
+    tool = ToolSpec(
+        kind="builtin",
+        builtin_kind="vertex_ai_search",
+        args=(("data_store_id", "ds"),),
+    )
+    assert ToolSpec.from_dict(tool.to_dict()) == tool
+
+
+def test_toolspec_roundtrip_agent_tool_and_openapi() -> None:
+    at = ToolSpec(kind="agent_tool", target_agent="t")
+    assert ToolSpec.from_dict(at.to_dict()) == at
+    oa = ToolSpec(kind="openapi", name="ts", spec="{}")
+    assert ToolSpec.from_dict(oa.to_dict()) == oa
+
+
+def test_toolspec_from_legacy_string_maps_to_builtin() -> None:
+    spec = ToolSpec.from_dict("google_search")
+    assert spec.kind == "builtin"
+    assert spec.builtin_kind == "google_search"
+
+
+def test_agentspec_with_toolspecs_roundtrips_via_sidecar(tmp_path: Path) -> None:
+    ws = Workspace(tmp_path / "app")
+    model = ProjectModel(
+        app_name="app",
+        root="r",
+        agents=(
+            AgentSpec(name="child", type="llm"),
+            AgentSpec(
+                name="r",
+                type="llm",
+                tools=(
+                    ToolSpec(kind="function", name="f", docstring="d"),
+                    ToolSpec(kind="builtin", builtin_kind="google_search"),
+                    ToolSpec(kind="agent_tool", target_agent="child"),
+                ),
+            ),
+        ),
+    )
+    assert save_model(ws, model)
+    reloaded = load_model(ws, "app")
+    assert reloaded == model
+
+
+# --------------------------------------------------------------------------- #
+# Validation des outils
+# --------------------------------------------------------------------------- #
+def _model_with(*names: str) -> ProjectModel:
+    return ProjectModel(app_name="m", agents=tuple(AgentSpec(name=n, type="llm") for n in names))
+
+
+def test_validate_tool_rejects_bad_function_name() -> None:
+    err = validate_tool_spec(ToolSpec(kind="function", name="1bad"), _model_with("owner"), "owner")
+    assert err is not None
+
+
+def test_validate_tool_rejects_bad_param_type() -> None:
+    tool = ToolSpec(kind="function", name="f", params=(("x", "Banana", None),))
+    assert validate_tool_spec(tool, _model_with("owner"), "owner") is not None
+
+
+def test_validate_tool_accepts_union_and_generic_types() -> None:
+    tool = ToolSpec(
+        kind="function",
+        name="f",
+        params=(("x", "str | None", None), ("y", "list[int]", None)),
+        returns="dict",
+    )
+    assert validate_tool_spec(tool, _model_with("owner"), "owner") is None
+
+
+def test_validate_tool_rejects_unknown_builtin() -> None:
+    assert (
+        validate_tool_spec(ToolSpec(kind="builtin", builtin_kind="nope"), _model_with("o"), "o")
+        is not None
+    )
+
+
+def test_validate_tool_vertex_requires_arg() -> None:
+    assert (
+        validate_tool_spec(
+            ToolSpec(kind="builtin", builtin_kind="vertex_ai_search"), _model_with("o"), "o"
+        )
+        is not None
+    )
+
+
+def test_validate_tool_agent_tool_target_must_exist() -> None:
+    model = _model_with("owner")  # pas de 'ghost'
+    err = validate_tool_spec(ToolSpec(kind="agent_tool", target_agent="ghost"), model, "owner")
+    assert err is not None
+
+
+def test_validate_tool_agent_tool_no_self_wrap() -> None:
+    model = _model_with("owner")
+    err = validate_tool_spec(ToolSpec(kind="agent_tool", target_agent="owner"), model, "owner")
+    assert err is not None
+
+
+def test_validate_tool_openapi_rejects_empty_spec() -> None:
+    err = validate_tool_spec(ToolSpec(kind="openapi", name="ts", spec="  "), _model_with("o"), "o")
+    assert err is not None
+
+
+# --------------------------------------------------------------------------- #
+# Rendu de module avec outils — helpers AVANT les agents, imports dédupés
+# --------------------------------------------------------------------------- #
+def test_render_module_emits_helpers_before_agents_and_dedups_imports() -> None:
+    model = ProjectModel(
+        app_name="demo",
+        root="root",
+        agents=(
+            AgentSpec(name="child", type="llm", instruction="c"),
+            AgentSpec(
+                name="root",
+                type="llm",
+                instruction="use",
+                tools=(
+                    ToolSpec(kind="function", name="add", docstring="Add."),
+                    ToolSpec(kind="builtin", builtin_kind="google_search"),
+                    # Deux google_search -> import dédupé.
+                    ToolSpec(kind="builtin", builtin_kind="google_search"),
+                    ToolSpec(kind="agent_tool", target_agent="child"),
+                ),
+            ),
+        ),
+    )
+    src = render_agent_module(model)
+    # Le def de l'outil apparaît avant la définition de l'agent root.
+    assert src.index("def add(") < src.index("root = LlmAgent(")
+    # google_search n'apparaît qu'une seule fois dans la section d'imports (dédupé/fusionné).
+    import_section = src.split("def add(")[0]
+    assert import_section.count("google_search") == 1
+    # Importé depuis le package root des outils.
+    assert "from google.adk.tools import" in src
+    assert "google_search" in src
+    # AgentTool référence l'agent enfant existant.
+    assert "AgentTool(agent=child)" in src
+    # La fonction est référencée bare (ADK l'auto-wrappe en FunctionTool).
+    assert "tools=[" in src and "add" in src
+
+
+def test_render_module_topo_orders_agent_tool_target_first() -> None:
+    # L'agent enveloppé par AgentTool doit être défini avant l'agent qui l'enveloppe.
+    model = ProjectModel(
+        app_name="demo",
+        root="boss",
+        agents=(
+            AgentSpec(
+                name="boss",
+                type="llm",
+                instruction="delegate",
+                tools=(ToolSpec(kind="agent_tool", target_agent="worker"),),
+            ),
+            AgentSpec(name="worker", type="llm", instruction="work"),
+        ),
+    )
+    src = render_agent_module(model)
+    assert src.index("worker = LlmAgent(") < src.index("boss = LlmAgent(")
+
+
+# --------------------------------------------------------------------------- #
 # Sidecar I/O + regenerate (sur disque)
 # --------------------------------------------------------------------------- #
 def test_load_model_absent_returns_empty(tmp_path: Path) -> None:
@@ -412,3 +667,80 @@ def test_render_format_stable_llm_only(tmp_path: Path) -> None:
     )
     src = render_agent_module(model)
     _assert_ruff_format_stable(src, tmp_path, "llm_only")
+
+
+def test_render_format_stable_function_tools_and_custom(tmp_path: Path) -> None:
+    """Function tools (defs top-level) + agent custom + agent_tool : stable pour ruff format."""
+    model = ProjectModel(
+        app_name="demo",
+        root="root",
+        agents=(
+            AgentSpec(name="aux", type="custom", description="Aux agent"),
+            AgentSpec(name="child", type="llm", instruction="child"),
+            AgentSpec(
+                name="root",
+                type="llm",
+                instruction="Coordinate.",
+                description="Root coordinator",
+                output_key="out",
+                tools=(
+                    ToolSpec(
+                        kind="function",
+                        name="add",
+                        params=(("a", "int", None), ("b", "int", "0")),
+                        docstring="Add two integers.",
+                        returns="dict",
+                        # Le corps est rendu verbatim : il doit déjà être ruff-clean (le toolkit
+                        # ne reformate pas le code utilisateur). Guillemets doubles -> stable.
+                        body='return {"sum": a + b}',
+                    ),
+                    ToolSpec(kind="long_running", name="poll", docstring="Poll a job."),
+                    ToolSpec(kind="builtin", builtin_kind="google_search"),
+                    ToolSpec(kind="agent_tool", target_agent="child"),
+                ),
+            ),
+        ),
+    )
+    src = render_agent_module(model)
+    _assert_ruff_format_stable(src, tmp_path, "function_tools_and_custom")
+
+
+def test_render_format_stable_all_tool_kinds(tmp_path: Path) -> None:
+    """Les six genres d'outils (3a) ensemble : sortie déjà formatée pour ruff."""
+    model = ProjectModel(
+        app_name="demo",
+        root="root",
+        agents=(
+            AgentSpec(name="child", type="llm", instruction="child"),
+            AgentSpec(
+                name="root",
+                type="llm",
+                instruction="Use every tool kind.",
+                tools=(
+                    ToolSpec(
+                        kind="function",
+                        name="compute",
+                        params=(("value", "str", None),),
+                        docstring="Compute.",
+                        returns="dict",
+                        body="return {}",
+                    ),
+                    ToolSpec(kind="long_running", name="watch", docstring="Watch."),
+                    ToolSpec(kind="builtin", builtin_kind="google_search"),
+                    ToolSpec(
+                        kind="builtin",
+                        builtin_kind="vertex_ai_search",
+                        args=(("data_store_id", "projects/p/locations/l/dataStores/d"),),
+                    ),
+                    ToolSpec(kind="agent_tool", target_agent="child"),
+                    ToolSpec(
+                        kind="openapi",
+                        name="petstore",
+                        spec='{"openapi": "3.0.0", "info": {"title": "t", "version": "1"}}',
+                    ),
+                ),
+            ),
+        ),
+    )
+    src = render_agent_module(model)
+    _assert_ruff_format_stable(src, tmp_path, "all_tool_kinds")
