@@ -3,9 +3,14 @@
 Sous-serveur FastMCP monté par le serveur racine sous le namespace ``project``
 (les outils sont alors exposés comme ``project_<nom>`` côté client).
 
+Convention de nommage : les fonctions sont nommées avec des noms BARE (``create``,
+``inspect``, ``set_env``, …). Le mount avec ``namespace="project"`` produit les noms
+exposés ``project_create``, ``project_inspect``, ``project_set_env``, etc.
+(un seul préfixe). Voir ``docs/adk-api-notes/conventions.md``.
+
 Chaque outil renvoie l'enveloppe uniforme ``{ok, data, error}`` et écrit de vrais
 fichiers via :class:`~adk_toolkit_mcp.workspace.Workspace`. Le layout produit par
-``project_create`` reflète la sortie réelle de ``adk create`` (voir
+``create`` reflète la sortie réelle de ``adk create`` (voir
 ``docs/adk-api-notes/project.md``).
 """
 
@@ -139,7 +144,7 @@ def _validate_app_name(app_name: str) -> str | None:
 # Outils MCP
 # --------------------------------------------------------------------------- #
 @project_server.tool
-def project_create(
+def create(
     path: str,
     app_name: str,
     model: str = "gemini-2.5-flash",
@@ -177,7 +182,7 @@ def project_create(
 
 
 @project_server.tool
-def project_inspect(path: str) -> dict[str, Any]:
+def inspect(path: str) -> dict[str, Any]:
     """Inspecte une app ADK : présence de ``root_agent``, fichiers ``*.py``, clés `.env`.
 
     Les valeurs `.env` ne sont jamais renvoyées (seulement les noms de clés).
@@ -206,7 +211,7 @@ def project_inspect(path: str) -> dict[str, Any]:
 
 
 @project_server.tool
-def project_set_env(path: str, values: dict[str, str]) -> dict[str, Any]:
+def set_env(path: str, values: dict[str, str]) -> dict[str, Any]:
     """Fusionne ``values`` dans le `.env` du projet (idempotent, sans écraser le reste).
 
     Crée le `.env` s'il n'existe pas. Renvoie les clés résultantes (valeurs redacted).
@@ -231,7 +236,7 @@ def project_set_env(path: str, values: dict[str, str]) -> dict[str, Any]:
 
 
 @project_server.tool
-def project_add_extra(path: str, extra: str) -> dict[str, Any]:
+def add_extra(path: str, extra: str) -> dict[str, Any]:
     """Ajoute un extra ``google-adk`` aux dépendances du projet.
 
     Modifie ``pyproject.toml`` s'il existe, sinon écrit une ligne dans
@@ -264,7 +269,7 @@ def project_add_extra(path: str, extra: str) -> dict[str, Any]:
 
 
 @project_server.tool
-def project_agent_config(path: str, yaml_content: str | None = None) -> dict[str, Any]:
+def agent_config(path: str, yaml_content: str | None = None) -> dict[str, Any]:
     """Voie Agent Config (no-code) d'ADK.
 
     Si ``yaml_content`` est fourni, écrit ``<path>/root_agent.yaml`` (idempotent).

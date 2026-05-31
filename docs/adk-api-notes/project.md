@@ -115,3 +115,13 @@ Client.call_tool(name, arguments=None, *, ...) -> CallToolResult | ToolTask
   `{"ok": ..., "data": ..., "error": ...}`.
 - `result.structured_content` -> same dict; `result.content` -> raw content blocks.
 - Read-through assertion used in tests: `result.data["ok"] is True`.
+
+## Tool naming convention (refactored 2026-06-01)
+
+Tool functions in `domains/project.py` are named with **bare names** (no domain prefix):
+`create`, `inspect`, `set_env`, `add_extra`, `agent_config`.
+
+Mounted with `namespace="project"`, FastMCP exposes them as:
+`project_create`, `project_inspect`, `project_set_env`, `project_add_extra`, `project_agent_config`.
+
+This is the project-wide convention — see `docs/adk-api-notes/conventions.md`.
