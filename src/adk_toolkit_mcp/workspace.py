@@ -31,6 +31,13 @@ class Workspace:
         return self.path(relative).exists()
 
     def has_root_agent(self, relative: str = "agent.py") -> bool:
+        """Détecte l'assignation `root_agent = ...` générée par le toolkit (garde d'idempotence).
+
+        HEURISTIQUE ancrée en début de ligne (regex `^\\s*root_agent\\s*=`), PAS un parseur
+        Python. Elle peut donner un faux positif sur une assignation commentée
+        (`# root_agent = ...`) et un faux négatif sur des formes annotées ou dynamiques
+        (`root_agent: Agent = ...`, `setattr(mod, "root_agent", ...)`).
+        """
         if not self.exists(relative):
             return False
         return bool(_ROOT_AGENT_RE.search(self.read(relative)))
