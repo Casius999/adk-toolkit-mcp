@@ -16,6 +16,7 @@ import pytest
 from adk_toolkit_mcp.project_model import (
     SIDECAR_PATH,
     AgentSpec,
+    AuthSpec,
     ProjectModel,
     ToolRender,
     ToolSpec,
@@ -347,6 +348,228 @@ def test_render_tool_ref_legacy_string_is_bare_passthrough() -> None:
 
 
 # --------------------------------------------------------------------------- #
+# Rendu des outils — render_tool_ref (passe 3b : toolsets à dépendance optionnelle)
+# --------------------------------------------------------------------------- #
+def test_render_tool_ref_bigquery_builds_toolset() -> None:
+    tr = render_tool_ref(ToolSpec(kind="bigquery", name="bq"))
+    assert tr.ref == "bq"
+    assert tr.imports == ("from google.adk.tools.bigquery import BigQueryToolset",)
+    assert tr.helpers[0].startswith("bq = BigQueryToolset(")
+
+
+def test_render_tool_ref_bigquery_with_args() -> None:
+    tr = render_tool_ref(
+        ToolSpec(kind="bigquery", name="bq", args=(("bigquery_tool_config", "my_cfg"),))
+    )
+    # Les args sont des EXPRESSIONS source (pas des chaînes littérales) -> rendues telles quelles.
+    assert "bigquery_tool_config=my_cfg" in tr.helpers[0]
+
+
+def test_render_tool_ref_spanner_builds_toolset() -> None:
+    tr = render_tool_ref(ToolSpec(kind="spanner", name="sp"))
+    assert tr.ref == "sp"
+    assert tr.imports == ("from google.adk.tools.spanner import SpannerToolset",)
+    assert tr.helpers[0].startswith("sp = SpannerToolset(")
+
+
+def test_render_tool_ref_mcp_stdio_single_arg_no_trailing_comma() -> None:
+    # Le toolset stdio imbrique 3 appels : même minimal il dépasse 100 cols et se replie.
+    # Règle ruff : un call à argument UNIQUE qui se replie n'ajoute PAS de virgule finale.
+    tr = render_tool_ref(ToolSpec(kind="mcp_toolset", name="fs", transport="stdio", command="srv"))
+    assert tr.ref == "fs"
+    imps = "\n".join(tr.imports)
+    assert "from google.adk.tools.mcp_tool import" in imps
+    assert "McpToolset" in imps and "StdioConnectionParams" in imps
+    assert "from mcp import StdioServerParameters" in imps
+    helper = tr.helpers[0]
+    # Forme exacte ``ruff format`` : argument unique éclaté, sans virgule finale.
+    assert helper == (
+        "fs = McpToolset(\n"
+        "    connection_params=StdioConnectionParams(\n"
+        '        server_params=StdioServerParameters(command="srv", args=[])\n'
+        "    )\n"
+        ")\n"
+    )
+
+
+def test_render_tool_ref_mcp_stdio_long_folds_ruff_stable() -> None:
+    # Cas long : le renderer replie (récursivement) ; on vérifie les fragments clés + l'ordre.
+    tr = render_tool_ref(
+        ToolSpec(
+            kind="mcp_toolset",
+            name="fs",
+            transport="stdio",
+            command="npx",
+            mcp_args=("-y", "@modelcontextprotocol/server-filesystem", "/tmp"),
+            tool_filter=("read_file", "list_directory"),
+        )
+    )
+    helper = tr.helpers[0]
+    assert helper.startswith("fs = McpToolset(\n")
+    assert "connection_params=StdioConnectionParams(" in helper
+    assert "server_params=StdioServerParameters(" in helper
+    assert 'command="npx"' in helper
+    assert 'args=["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]' in helper
+    assert 'tool_filter=["read_file", "list_directory"]' in helper
+    # Aucune ligne ne dépasse la limite ruff.
+    assert all(len(line) <= 100 for line in helper.splitlines())
+
+
+def test_render_tool_ref_mcp_sse() -> None:
+    tr = render_tool_ref(
+        ToolSpec(
+            kind="mcp_toolset",
+            name="remote",
+            transport="sse",
+            url="https://example.com/sse",
+            headers=(("Authorization", "Bearer x"),),
+        )
+    )
+    imps = "\n".join(tr.imports)
+    assert "SseConnectionParams" in imps
+    assert "StdioServerParameters" not in imps  # pas de stdio import pour sse
+    helper = tr.helpers[0]
+    assert "SseConnectionParams(" in helper
+    assert 'url="https://example.com/sse"' in helper
+    assert 'headers={"Authorization": "Bearer x"}' in helper
+
+
+def test_render_tool_ref_mcp_http() -> None:
+    tr = render_tool_ref(
+        ToolSpec(kind="mcp_toolset", name="h", transport="http", url="https://api.example.com/mcp")
+    )
+    imps = "\n".join(tr.imports)
+    assert "StreamableHTTPConnectionParams" in imps
+    helper = tr.helpers[0]
+    assert 'StreamableHTTPConnectionParams(url="https://api.example.com/mcp")' in helper
+
+
+def test_render_tool_ref_apihub_builds_toolset() -> None:
+    tr = render_tool_ref(
+        ToolSpec(
+            kind="apihub",
+            name="hub",
+            apihub_resource_name="projects/p/locations/l/apis/a",
+        )
+    )
+    assert tr.ref == "hub"
+    assert tr.imports == ("from google.adk.tools.apihub_tool import APIHubToolset",)
+    helper = tr.helpers[0]
+    assert helper.startswith("hub = APIHubToolset(")
+    assert 'apihub_resource_name="projects/p/locations/l/apis/a"' in helper
+
+
+def test_render_tool_ref_langchain_wraps_expr_and_renders_import_line() -> None:
+    tr = render_tool_ref(
+        ToolSpec(
+            kind="langchain",
+            import_line="from langchain_community.tools import WikipediaQueryRun",
+            tool_expr="WikipediaQueryRun(api_wrapper=wrapper)",
+        )
+    )
+    assert tr.ref == "LangchainTool(tool=WikipediaQueryRun(api_wrapper=wrapper))"
+    imps = "\n".join(tr.imports)
+    assert "from google.adk.tools.langchain_tool import LangchainTool" in imps
+    assert "from langchain_community.tools import WikipediaQueryRun" in imps
+    assert tr.helpers == ()
+
+
+def test_render_tool_ref_crewai_wraps_expr_with_name_and_description() -> None:
+    tr = render_tool_ref(
+        ToolSpec(
+            kind="crewai",
+            import_line="from crewai_tools import SerperDevTool",
+            tool_expr="SerperDevTool()",
+            name="serper",
+            description="Web search via Serper.",
+        )
+    )
+    assert tr.ref == (
+        'CrewaiTool(tool=SerperDevTool(), name="serper", description="Web search via Serper.")'
+    )
+    imps = "\n".join(tr.imports)
+    assert "from google.adk.tools.crewai_tool import CrewaiTool" in imps
+    assert "from crewai_tools import SerperDevTool" in imps
+
+
+# --------------------------------------------------------------------------- #
+# Rendu de l'auth (set_auth) — auth_credential= sur les toolsets compatibles
+# --------------------------------------------------------------------------- #
+def test_render_tool_ref_openapi_with_apikey_auth() -> None:
+    tr = render_tool_ref(
+        ToolSpec(
+            kind="openapi",
+            name="api",
+            spec='{"openapi": "3.0.0"}',
+            auth=AuthSpec(scheme="apikey", credential=(("api_key", "secret123"),)),
+        )
+    )
+    helper = tr.helpers[0]
+    assert "auth_credential=AuthCredential(" in helper
+    assert "auth_type=AuthCredentialTypes.API_KEY" in helper
+    assert 'api_key="secret123"' in helper
+    imps = "\n".join(tr.imports)
+    assert "from google.adk.auth import AuthCredential, AuthCredentialTypes" in imps
+
+
+def test_render_tool_ref_apihub_with_bearer_auth() -> None:
+    tr = render_tool_ref(
+        ToolSpec(
+            kind="apihub",
+            name="hub",
+            apihub_resource_name="projects/p/apis/a",
+            auth=AuthSpec(scheme="bearer", credential=(("token", "tok"),)),
+        )
+    )
+    helper = tr.helpers[0]
+    assert "auth_credential=AuthCredential(" in helper
+    assert "auth_type=AuthCredentialTypes.HTTP" in helper
+    assert 'http=HttpAuth(scheme="bearer", credentials=HttpCredentials(token="tok"))' in helper
+    imps = "\n".join(tr.imports)
+    assert "from google.adk.auth import AuthCredential, AuthCredentialTypes" in imps
+    assert "from google.adk.auth.auth_credential import HttpAuth, HttpCredentials" in imps
+
+
+def test_render_tool_ref_mcp_with_oauth2_auth() -> None:
+    tr = render_tool_ref(
+        ToolSpec(
+            kind="mcp_toolset",
+            name="m",
+            transport="http",
+            url="https://x/mcp",
+            auth=AuthSpec(
+                scheme="oauth2",
+                credential=(("client_id", "cid"), ("client_secret", "csec")),
+            ),
+        )
+    )
+    helper = tr.helpers[0]
+    assert "auth_credential=AuthCredential(" in helper
+    assert "auth_type=AuthCredentialTypes.OAUTH2" in helper
+    assert 'oauth2=OAuth2Auth(client_id="cid", client_secret="csec")' in helper
+    imps = "\n".join(tr.imports)
+    assert "from google.adk.auth.auth_credential import OAuth2Auth" in imps
+
+
+def test_render_tool_ref_service_account_auth() -> None:
+    tr = render_tool_ref(
+        ToolSpec(
+            kind="apihub",
+            name="hub",
+            apihub_resource_name="projects/p/apis/a",
+            auth=AuthSpec(
+                scheme="service_account", credential=(("use_default_credential", "true"),)
+            ),
+        )
+    )
+    helper = tr.helpers[0]
+    assert "auth_type=AuthCredentialTypes.SERVICE_ACCOUNT" in helper
+    assert "service_account=ServiceAccount(use_default_credential=True)" in helper
+    imps = "\n".join(tr.imports)
+    assert "from google.adk.auth.auth_credential import ServiceAccount" in imps
+
+
+# --------------------------------------------------------------------------- #
 # (Dé)sérialisation des ToolSpec
 # --------------------------------------------------------------------------- #
 def test_toolspec_roundtrip_function() -> None:
@@ -381,6 +604,57 @@ def test_toolspec_from_legacy_string_maps_to_builtin() -> None:
     spec = ToolSpec.from_dict("google_search")
     assert spec.kind == "builtin"
     assert spec.builtin_kind == "google_search"
+
+
+def test_toolspec_roundtrip_bigquery_and_spanner() -> None:
+    bq = ToolSpec(kind="bigquery", name="bq", args=(("bigquery_tool_config", "cfg"),))
+    assert ToolSpec.from_dict(bq.to_dict()) == bq
+    sp = ToolSpec(kind="spanner", name="sp")
+    assert ToolSpec.from_dict(sp.to_dict()) == sp
+
+
+def test_toolspec_roundtrip_mcp_toolset() -> None:
+    mcp = ToolSpec(
+        kind="mcp_toolset",
+        name="fs",
+        transport="stdio",
+        command="npx",
+        mcp_args=("-y", "server"),
+        tool_filter=("read",),
+    )
+    assert ToolSpec.from_dict(mcp.to_dict()) == mcp
+    sse = ToolSpec(
+        kind="mcp_toolset",
+        name="r",
+        transport="sse",
+        url="https://x/sse",
+        headers=(("A", "B"),),
+    )
+    assert ToolSpec.from_dict(sse.to_dict()) == sse
+
+
+def test_toolspec_roundtrip_apihub_langchain_crewai() -> None:
+    hub = ToolSpec(kind="apihub", name="h", apihub_resource_name="projects/p/apis/a")
+    assert ToolSpec.from_dict(hub.to_dict()) == hub
+    lc = ToolSpec(kind="langchain", import_line="from x import Y", tool_expr="Y()")
+    assert ToolSpec.from_dict(lc.to_dict()) == lc
+    cw = ToolSpec(
+        kind="crewai", import_line="from x import Z", tool_expr="Z()", name="z", description="d"
+    )
+    assert ToolSpec.from_dict(cw.to_dict()) == cw
+
+
+def test_toolspec_roundtrip_with_auth() -> None:
+    tool = ToolSpec(
+        kind="apihub",
+        name="h",
+        apihub_resource_name="projects/p/apis/a",
+        auth=AuthSpec(scheme="apikey", credential=(("api_key", "k"),)),
+    )
+    restored = ToolSpec.from_dict(tool.to_dict())
+    assert restored == tool
+    assert restored.auth is not None
+    assert restored.auth.scheme == "apikey"
 
 
 def test_agentspec_with_toolspecs_roundtrips_via_sidecar(tmp_path: Path) -> None:
@@ -464,6 +738,105 @@ def test_validate_tool_agent_tool_no_self_wrap() -> None:
 def test_validate_tool_openapi_rejects_empty_spec() -> None:
     err = validate_tool_spec(ToolSpec(kind="openapi", name="ts", spec="  "), _model_with("o"), "o")
     assert err is not None
+
+
+# --- 3b : validation des nouveaux genres ----------------------------------- #
+def test_validate_tool_bigquery_requires_valid_name() -> None:
+    assert validate_tool_spec(ToolSpec(kind="bigquery", name="1bad"), _model_with("o"), "o")
+    assert validate_tool_spec(ToolSpec(kind="bigquery", name="bq"), _model_with("o"), "o") is None
+
+
+def test_validate_tool_spanner_requires_valid_name() -> None:
+    assert validate_tool_spec(ToolSpec(kind="spanner", name="bad name"), _model_with("o"), "o")
+    assert validate_tool_spec(ToolSpec(kind="spanner", name="sp"), _model_with("o"), "o") is None
+
+
+def test_validate_tool_mcp_transport_must_be_known() -> None:
+    bad = ToolSpec(kind="mcp_toolset", name="m", transport="carrier_pigeon", url="x")
+    assert validate_tool_spec(bad, _model_with("o"), "o") is not None
+
+
+def test_validate_tool_mcp_stdio_requires_command() -> None:
+    no_cmd = ToolSpec(kind="mcp_toolset", name="m", transport="stdio")
+    assert validate_tool_spec(no_cmd, _model_with("o"), "o") is not None
+    ok_cmd = ToolSpec(kind="mcp_toolset", name="m", transport="stdio", command="npx")
+    assert validate_tool_spec(ok_cmd, _model_with("o"), "o") is None
+
+
+def test_validate_tool_mcp_sse_http_require_url() -> None:
+    no_url = ToolSpec(kind="mcp_toolset", name="m", transport="sse")
+    assert validate_tool_spec(no_url, _model_with("o"), "o") is not None
+    ok_url = ToolSpec(kind="mcp_toolset", name="m", transport="http", url="https://x/mcp")
+    assert validate_tool_spec(ok_url, _model_with("o"), "o") is None
+
+
+def test_validate_tool_apihub_requires_resource_name() -> None:
+    no_res = ToolSpec(kind="apihub", name="h", apihub_resource_name="")
+    assert validate_tool_spec(no_res, _model_with("o"), "o") is not None
+    ok_res = ToolSpec(kind="apihub", name="h", apihub_resource_name="projects/p/apis/a")
+    assert validate_tool_spec(ok_res, _model_with("o"), "o") is None
+
+
+def test_validate_tool_langchain_requires_import_and_expr() -> None:
+    assert validate_tool_spec(
+        ToolSpec(kind="langchain", import_line="", tool_expr="X()"), _model_with("o"), "o"
+    )
+    assert validate_tool_spec(
+        ToolSpec(kind="langchain", import_line="from x import X", tool_expr=""),
+        _model_with("o"),
+        "o",
+    )
+    good = ToolSpec(kind="langchain", import_line="from x import X", tool_expr="X()")
+    assert validate_tool_spec(good, _model_with("o"), "o") is None
+
+
+def test_validate_tool_crewai_requires_name() -> None:
+    no_name = ToolSpec(kind="crewai", import_line="from x import X", tool_expr="X()", name="")
+    assert validate_tool_spec(no_name, _model_with("o"), "o") is not None
+    good = ToolSpec(
+        kind="crewai", import_line="from x import X", tool_expr="X()", name="x", description="d"
+    )
+    assert validate_tool_spec(good, _model_with("o"), "o") is None
+
+
+def test_validate_tool_auth_rejected_on_bigquery_spanner() -> None:
+    # bigquery/spanner n'acceptent pas auth_scheme/auth_credential (ils ont credentials_config).
+    auth = AuthSpec(scheme="apikey", credential=(("api_key", "k"),))
+    assert validate_tool_spec(
+        ToolSpec(kind="bigquery", name="bq", auth=auth), _model_with("o"), "o"
+    )
+    assert validate_tool_spec(ToolSpec(kind="spanner", name="sp", auth=auth), _model_with("o"), "o")
+
+
+def test_validate_tool_auth_scheme_must_be_known() -> None:
+    bad = ToolSpec(
+        kind="apihub",
+        name="h",
+        apihub_resource_name="projects/p/apis/a",
+        auth=AuthSpec(scheme="telepathy", credential=(("k", "v"),)),
+    )
+    assert validate_tool_spec(bad, _model_with("o"), "o") is not None
+
+
+def test_validate_tool_auth_apikey_requires_api_key_field() -> None:
+    bad = ToolSpec(
+        kind="apihub",
+        name="h",
+        apihub_resource_name="projects/p/apis/a",
+        auth=AuthSpec(scheme="apikey", credential=(("wrong", "v"),)),
+    )
+    assert validate_tool_spec(bad, _model_with("o"), "o") is not None
+
+
+def test_validate_tool_auth_bearer_requires_token_field() -> None:
+    bad = ToolSpec(
+        kind="mcp_toolset",
+        name="m",
+        transport="http",
+        url="https://x/mcp",
+        auth=AuthSpec(scheme="bearer", credential=(("nope", "v"),)),
+    )
+    assert validate_tool_spec(bad, _model_with("o"), "o") is not None
 
 
 # --------------------------------------------------------------------------- #
@@ -744,3 +1117,93 @@ def test_render_format_stable_all_tool_kinds(tmp_path: Path) -> None:
     )
     src = render_agent_module(model)
     _assert_ruff_format_stable(src, tmp_path, "all_tool_kinds")
+
+
+def _all_3b_model() -> ProjectModel:
+    """Modèle exerçant tous les genres 3b + l'auth, partagé par ast.parse et ruff format."""
+    return ProjectModel(
+        app_name="demo",
+        root="root",
+        agents=(
+            AgentSpec(
+                name="root",
+                type="llm",
+                instruction="Use 3b toolsets.",
+                tools=(
+                    ToolSpec(kind="bigquery", name="bq"),
+                    ToolSpec(kind="spanner", name="sp"),
+                    ToolSpec(
+                        kind="mcp_toolset",
+                        name="fs",
+                        transport="stdio",
+                        command="npx",
+                        mcp_args=("-y", "@modelcontextprotocol/server-filesystem", "/data"),
+                        tool_filter=("read_file", "list_directory"),
+                    ),
+                    ToolSpec(
+                        kind="mcp_toolset",
+                        name="remote",
+                        transport="http",
+                        url="https://api.example.com/mcp",
+                        headers=(("Authorization", "Bearer tok"),),
+                    ),
+                    ToolSpec(
+                        kind="apihub",
+                        name="hub",
+                        apihub_resource_name="projects/p/locations/l/apis/a",
+                        auth=AuthSpec(scheme="apikey", credential=(("api_key", "secret"),)),
+                    ),
+                    ToolSpec(
+                        kind="openapi",
+                        name="petstore",
+                        spec='{"openapi": "3.0.0", "info": {"title": "t", "version": "1"}}',
+                        auth=AuthSpec(scheme="bearer", credential=(("token", "tok"),)),
+                    ),
+                    ToolSpec(
+                        kind="langchain",
+                        import_line="from langchain_community.tools import WikipediaQueryRun",
+                        tool_expr="WikipediaQueryRun(api_wrapper=wiki_wrapper)",
+                    ),
+                    ToolSpec(
+                        kind="crewai",
+                        import_line="from crewai_tools import SerperDevTool",
+                        tool_expr="SerperDevTool()",
+                        name="serper",
+                        description="Web search.",
+                    ),
+                ),
+            ),
+        ),
+    )
+
+
+def test_render_3b_module_is_valid_python_ast() -> None:
+    """Le module généré avec tous les genres 3b + auth est du Python valide (ast.parse).
+
+    On NE l'importe PAS (les extras ne sont pas installés en CI) ; on vérifie juste qu'il
+    s'analyse syntaxiquement et que les imports/refs attendus sont présents.
+    """
+    import ast
+
+    src = render_agent_module(_all_3b_model())
+    ast.parse(src)  # lève SyntaxError si le rendu est cassé
+    # Imports clés présents.
+    assert "from google.adk.tools.bigquery import BigQueryToolset" in src
+    assert "from google.adk.tools.spanner import SpannerToolset" in src
+    assert "from google.adk.tools.mcp_tool import" in src
+    assert "from mcp import StdioServerParameters" in src
+    assert "from google.adk.tools.apihub_tool import APIHubToolset" in src
+    assert "from google.adk.tools.langchain_tool import LangchainTool" in src
+    assert "from google.adk.tools.crewai_tool import CrewaiTool" in src
+    assert "from google.adk.auth import AuthCredential, AuthCredentialTypes" in src
+    # Les helpers de toolset sont définis avant l'agent root.
+    assert src.index("bq = BigQueryToolset(") < src.index("root = LlmAgent(")
+    # Les user import_lines apparaissent (verbatim).
+    assert "from langchain_community.tools import WikipediaQueryRun" in src
+    assert "from crewai_tools import SerperDevTool" in src
+
+
+def test_render_format_stable_all_3b_kinds(tmp_path: Path) -> None:
+    """Tous les genres 3b + auth ensemble : sortie déjà formatée pour ruff."""
+    src = render_agent_module(_all_3b_model())
+    _assert_ruff_format_stable(src, tmp_path, "all_3b_kinds")

@@ -53,14 +53,69 @@ _IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 LINE_LENGTH = 100
 
 # --------------------------------------------------------------------------- #
-# Outils (domaine `tools`, passe 3a — outils sans dépendance)
+# Outils (domaine `tools`, passes 3a + 3b)
 # --------------------------------------------------------------------------- #
-#: Genres d'outils supportés en 3a.
-ToolKind = Literal["function", "long_running", "builtin", "agent_tool", "openapi"]
+#: Genres d'outils supportés. 3a (sans dépendance) : ``function``, ``long_running``,
+#: ``builtin``, ``agent_tool``, ``openapi``. 3b (dépendance optionnelle / extras
+#: ``google-adk[...]``, codegen-only) : ``bigquery``, ``spanner``, ``mcp_toolset``,
+#: ``apihub``, ``langchain``, ``crewai``.
+ToolKind = Literal[
+    "function",
+    "long_running",
+    "builtin",
+    "agent_tool",
+    "openapi",
+    "bigquery",
+    "spanner",
+    "mcp_toolset",
+    "apihub",
+    "langchain",
+    "crewai",
+]
 
 _TOOL_KINDS: frozenset[str] = frozenset(
-    {"function", "long_running", "builtin", "agent_tool", "openapi"}
+    {
+        "function",
+        "long_running",
+        "builtin",
+        "agent_tool",
+        "openapi",
+        "bigquery",
+        "spanner",
+        "mcp_toolset",
+        "apihub",
+        "langchain",
+        "crewai",
+    }
 )
+
+#: Genres « toolset » dont la ``ref`` est une variable module-level (``<id>`` dans ``tools=[...]``)
+#: construite par un bloc helper. Le ``name`` du :class:`ToolSpec` sert d'identifiant de variable.
+_TOOLSET_VAR_KINDS: frozenset[str] = frozenset(
+    {"openapi", "bigquery", "spanner", "mcp_toolset", "apihub"}
+)
+
+#: Genres « toolset » qui acceptent nativement ``auth_scheme=`` / ``auth_credential=`` (confirmé
+#: par introspection : ``OpenAPIToolset``, ``McpToolset``, ``APIHubToolset``). ``BigQueryToolset`` /
+#: ``SpannerToolset`` n'en ont pas (ils prennent un ``credentials_config``) -> auth rejeté.
+_AUTH_CAPABLE_KINDS: frozenset[str] = frozenset({"openapi", "apihub", "mcp_toolset"})
+
+#: Transports MCP supportés -> classe de connection-params ADK (confirmée par introspection).
+_MCP_TRANSPORTS: dict[str, str] = {
+    "stdio": "StdioConnectionParams",
+    "sse": "SseConnectionParams",
+    "http": "StreamableHTTPConnectionParams",
+}
+
+#: Schémas d'auth supportés par :func:`set_auth` -> membre de ``AuthCredentialTypes`` (confirmé).
+_AUTH_SCHEMES: frozenset[str] = frozenset({"apikey", "oauth2", "service_account", "bearer"})
+
+_AUTH_TYPE_FOR_SCHEME: dict[str, str] = {
+    "apikey": "API_KEY",
+    "bearer": "HTTP",
+    "oauth2": "OAUTH2",
+    "service_account": "SERVICE_ACCOUNT",
+}
 
 #: Builtins ADK "core" : instances d'outils déjà exportées (aucun argument requis).
 #: Confirmés par introspection en google-adk 2.1.0 (cf. ``docs/adk-api-notes/tools.md``).
@@ -103,6 +158,24 @@ _TOOLS_IMPORT_MODULE = "google.adk.tools"
 #: Import (chemin réel confirmé) pour ``OpenAPIToolset``.
 _OPENAPI_IMPORT = "from google.adk.tools.openapi_tool import OpenAPIToolset"
 
+#: Imports (chemins réels confirmés par introspection en 2.1.0) des toolsets 3b.
+_BIGQUERY_IMPORT = "from google.adk.tools.bigquery import BigQueryToolset"
+_SPANNER_IMPORT = "from google.adk.tools.spanner import SpannerToolset"
+_APIHUB_IMPORT = "from google.adk.tools.apihub_tool import APIHubToolset"
+#: Note (cf. docs/adk-api-notes/tools.md) : ces deux chemins re-exportent depuis
+#: ``google.adk.integrations.*`` et émettent une ``DeprecationWarning`` au runtime utilisateur ;
+#: on conserve le chemin demandé par la tâche (toujours fonctionnel, codegen-only).
+_LANGCHAIN_IMPORT = "from google.adk.tools.langchain_tool import LangchainTool"
+_CREWAI_IMPORT = "from google.adk.tools.crewai_tool import CrewaiTool"
+
+#: Module des classes d'auth (re-export confirmé).
+_AUTH_IMPORT_MODULE = "google.adk.auth"
+#: Module des sous-objets d'auth (HttpAuth/OAuth2Auth/ServiceAccount/HttpCredentials).
+_AUTH_CRED_IMPORT_MODULE = "google.adk.auth.auth_credential"
+#: Imports MCP (toolset + StdioServerParameters depuis le paquet ``mcp``).
+_MCP_TOOLSET_IMPORT_MODULE = "google.adk.tools.mcp_tool"
+_MCP_STDIO_PARAMS_IMPORT = "from mcp import StdioServerParameters"
+
 #: Mapping type d'agent -> nom de classe ADK à importer.
 _CLASS_FOR_TYPE: dict[str, str] = {
     "llm": "LlmAgent",
@@ -126,8 +199,33 @@ _IMPORT_ORDER: tuple[str, ...] = (
 # Dataclasses du modèle (immuables)
 # --------------------------------------------------------------------------- #
 @dataclass(frozen=True)
+class AuthSpec:
+    """Sous-spécification d'auth attachée à un toolset (3b).
+
+    ``scheme`` ∈ :data:`_AUTH_SCHEMES` (``apikey``/``oauth2``/``service_account``/``bearer``).
+    ``credential`` est une liste de paires ``(clé, valeur-littérale)`` (gelée en tuple pour
+    rester hashable/immutable) rendue dans un ``AuthCredential(...)`` selon le schéma — voir
+    :func:`_render_auth_credential` et ``docs/adk-api-notes/tools.md``.
+    """
+
+    scheme: str
+    credential: tuple[tuple[str, str], ...] = ()
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"scheme": self.scheme, "credential": {k: v for k, v in self.credential}}
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> AuthSpec:
+        cred_raw = data.get("credential") or {}
+        return cls(
+            scheme=str(data.get("scheme", "")),
+            credential=tuple((str(k), str(v)) for k, v in cred_raw.items()),
+        )
+
+
+@dataclass(frozen=True)
 class ToolSpec:
-    """Spécification immuable d'un outil attaché à un agent (domaine `tools`, 3a).
+    """Spécification immuable d'un outil attaché à un agent (domaine `tools`, 3a + 3b).
 
     Le champ ``kind`` discrimine ; seuls les champs pertinents sont renseignés/sérialisés :
 
@@ -137,6 +235,15 @@ class ToolSpec:
       ``vertex_ai_search`` : ``{"data_store_id": ...}`` ou ``{"search_engine_id": ...}``).
     - ``agent_tool`` : ``target_agent`` (nom d'un agent **existant** du modèle).
     - ``openapi`` : ``name`` (identifiant de la variable toolset), ``spec`` (chaîne OpenAPI).
+    - ``bigquery`` / ``spanner`` : ``name`` (var toolset), ``args`` (kwargs *expressions* source,
+      ex. ``{"bigquery_tool_config": "my_cfg"}``).
+    - ``mcp_toolset`` : ``name`` (var), ``transport`` ∈ {stdio,sse,http}, ``command``+``mcp_args``
+      (stdio) ou ``url``+``headers`` (sse/http), ``tool_filter``.
+    - ``apihub`` : ``name`` (var), ``apihub_resource_name``.
+    - ``langchain`` / ``crewai`` : ``import_line`` (rendu verbatim), ``tool_expr`` (expression de
+      construction), + ``name``/``description`` (crewai : ``name`` requis).
+    - ``auth`` (optionnel, openapi/apihub/mcp_toolset) : :class:`AuthSpec` rendu en
+      ``auth_credential=``.
 
     ``ref_key`` renvoie une clé d'identité stable utilisée pour le "remplacement par nom"
     (append unique / replace) côté domaine.
@@ -152,16 +259,36 @@ class ToolSpec:
     args: tuple[tuple[str, str], ...] = ()
     target_agent: str = ""
     spec: str = ""
+    # --- 3b : champs des toolsets à dépendance optionnelle ---
+    transport: str = ""
+    command: str = ""
+    mcp_args: tuple[str, ...] = ()
+    url: str = ""
+    headers: tuple[tuple[str, str], ...] = ()
+    tool_filter: tuple[str, ...] = ()
+    apihub_resource_name: str = ""
+    import_line: str = ""
+    tool_expr: str = ""
+    description: str = ""
+    auth: AuthSpec | None = None
 
     def ref_key(self) -> str:
-        """Clé d'unicité : ``function``/``long_running``/``openapi`` -> nom ; ``builtin`` ->
-        ``builtin:<kind>`` ; ``agent_tool`` -> ``agent_tool:<target>``."""
-        if self.kind in ("function", "long_running", "openapi"):
+        """Clé d'unicité (utilisée pour append-unique / replace-by-name côté domaine).
+
+        - genres « variable de toolset » (``openapi``/``bigquery``/``spanner``/``mcp_toolset``/
+          ``apihub``) + ``function``/``long_running`` -> ``<kind>:<name>`` ;
+        - ``builtin`` -> ``builtin:<builtin_kind>`` ; ``agent_tool`` -> ``agent_tool:<target>`` ;
+        - ``langchain``/``crewai`` -> ``<kind>:<tool_expr>`` (l'expression identifie l'outil ;
+          ``crewai`` peut aussi renommer via ``name`` mais l'expression reste l'identité).
+        """
+        if self.kind in ("function", "long_running") or self.kind in _TOOLSET_VAR_KINDS:
             return f"{self.kind}:{self.name}"
         if self.kind == "builtin":
             return f"builtin:{self.builtin_kind}"
         if self.kind == "agent_tool":
             return f"agent_tool:{self.target_agent}"
+        if self.kind in ("langchain", "crewai"):
+            return f"{self.kind}:{self.tool_expr}"
         return self.kind  # pragma: no cover (kind validé en amont)
 
     def to_dict(self) -> dict[str, Any]:
@@ -185,6 +312,32 @@ class ToolSpec:
             base["target_agent"] = self.target_agent
         elif self.kind == "openapi":
             base.update({"name": self.name, "spec": self.spec})
+        elif self.kind in ("bigquery", "spanner"):
+            base["name"] = self.name
+            if self.args:
+                base["args"] = {k: v for k, v in self.args}
+        elif self.kind == "mcp_toolset":
+            base.update({"name": self.name, "transport": self.transport})
+            if self.command:
+                base["command"] = self.command
+            if self.mcp_args:
+                base["mcp_args"] = list(self.mcp_args)
+            if self.url:
+                base["url"] = self.url
+            if self.headers:
+                base["headers"] = {k: v for k, v in self.headers}
+            if self.tool_filter:
+                base["tool_filter"] = list(self.tool_filter)
+        elif self.kind == "apihub":
+            base.update({"name": self.name, "apihub_resource_name": self.apihub_resource_name})
+        elif self.kind in ("langchain", "crewai"):
+            base.update({"import_line": self.import_line, "tool_expr": self.tool_expr})
+            if self.name:
+                base["name"] = self.name
+            if self.description:
+                base["description"] = self.description
+        if self.auth is not None:
+            base["auth"] = self.auth.to_dict()
         return base
 
     @classmethod
@@ -203,6 +356,10 @@ class ToolSpec:
         )
         args_raw = data.get("args") or {}
         args = tuple((str(k), str(v)) for k, v in args_raw.items())
+        headers_raw = data.get("headers") or {}
+        headers = tuple((str(k), str(v)) for k, v in headers_raw.items())
+        auth_raw = data.get("auth")
+        auth = AuthSpec.from_dict(auth_raw) if isinstance(auth_raw, dict) else None
         return cls(
             kind=kind,
             name=str(data.get("name", "")),
@@ -214,6 +371,17 @@ class ToolSpec:
             args=args,
             target_agent=str(data.get("target_agent", "")),
             spec=str(data.get("spec", "")),
+            transport=str(data.get("transport", "")),
+            command=str(data.get("command", "")),
+            mcp_args=tuple(str(a) for a in (data.get("mcp_args") or [])),
+            url=str(data.get("url", "")),
+            headers=headers,
+            tool_filter=tuple(str(t) for t in (data.get("tool_filter") or [])),
+            apihub_resource_name=str(data.get("apihub_resource_name", "")),
+            import_line=str(data.get("import_line", "")),
+            tool_expr=str(data.get("tool_expr", "")),
+            description=str(data.get("description", "")),
+            auth=auth,
         )
 
 
@@ -547,7 +715,9 @@ def _render_builtin_ref(spec: ToolSpec) -> ToolRender:
 def render_tool_ref(tool: ToolSpec | str) -> ToolRender:
     """Rendu d'une entrée ``tools`` -> :class:`ToolRender` (imports, helpers, ref).
 
-    POINT D'EXTENSION implémenté en passe 3a (outils sans dépendance). Genres gérés :
+    POINT D'EXTENSION implémenté en passes 3a + 3b. Genres gérés :
+
+    Passe 3a (sans dépendance) :
 
     - ``function`` : helper = un ``def`` rendu ; ``ref`` = ``<name>`` (ADK auto-wrappe la
       fonction en ``FunctionTool`` via ``canonical_tools`` — cf. ``docs/adk-api-notes/tools.md``).
@@ -559,6 +729,23 @@ def render_tool_ref(tool: ToolSpec | str) -> ToolRender:
     - ``openapi`` : import ``OpenAPIToolset`` ; helper = ``<id> = OpenAPIToolset(spec_str=..., \
       spec_str_type="json")`` ; ``ref`` = ``<id>`` (le toolset entre **directement** dans
       ``tools=[...]`` — confirmé par introspection, pas de ``.get_tools()``).
+
+    Passe 3b (dépendance optionnelle ; **codegen-only** — le toolkit n'importe jamais ces extras) :
+
+    - ``bigquery`` / ``spanner`` : import du toolset ; helper ``<id> = BigQueryToolset(<args>)`` /
+      ``SpannerToolset(<args>)`` ; ``ref`` = ``<id>``.
+    - ``mcp_toolset`` : import ``McpToolset`` + classe de connection-params du transport
+      (+ ``StdioServerParameters`` pour stdio) ; helper
+      ``<id> = McpToolset(connection_params=..., tool_filter=[...])`` ; ``ref`` = ``<id>``.
+    - ``apihub`` : import ``APIHubToolset`` ; helper
+      ``<id> = APIHubToolset(apihub_resource_name="...")`` ; ``ref`` = ``<id>``.
+    - ``langchain`` : import ``LangchainTool`` + la ligne d'import utilisateur (verbatim) ;
+      ``ref`` = ``LangchainTool(tool=<tool_expr>)`` (pas de helper).
+    - ``crewai`` : import ``CrewaiTool`` + ligne d'import utilisateur ;
+      ``ref`` = ``CrewaiTool(tool=<tool_expr>, name=..., description=...)``.
+
+    Auth (openapi/apihub/mcp_toolset) : si ``tool.auth`` est défini, ``auth_credential=\
+    AuthCredential(...)`` est ajouté aux kwargs du helper + imports ``google.adk.auth``.
 
     Forme héritée (``str``) : rendue **telle quelle** (référence bare déjà importée), sans
     import ni helper, pour compat ascendante avec le modèle P1.
@@ -585,31 +772,249 @@ def render_tool_ref(tool: ToolSpec | str) -> ToolRender:
         return ToolRender(imports=(imp,), helpers=(), ref=f"AgentTool(agent={tool.target_agent})")
 
     if tool.kind == "openapi":
-        helper = _render_openapi_helper(tool)
-        return ToolRender(imports=(_OPENAPI_IMPORT,), helpers=(helper,), ref=tool.name)
+        return _render_openapi(tool)
+
+    if tool.kind == "bigquery":
+        return _render_gcp_toolset(tool, "BigQueryToolset", _BIGQUERY_IMPORT)
+
+    if tool.kind == "spanner":
+        return _render_gcp_toolset(tool, "SpannerToolset", _SPANNER_IMPORT)
+
+    if tool.kind == "mcp_toolset":
+        return _render_mcp_toolset(tool)
+
+    if tool.kind == "apihub":
+        return _render_apihub(tool)
+
+    if tool.kind == "langchain":
+        imports = (_LANGCHAIN_IMPORT, tool.import_line)
+        return ToolRender(imports=imports, helpers=(), ref=f"LangchainTool(tool={tool.tool_expr})")
+
+    if tool.kind == "crewai":
+        imports = (_CREWAI_IMPORT, tool.import_line)
+        ref = (
+            f"CrewaiTool(tool={tool.tool_expr}, name={_py_str(tool.name)}, "
+            f"description={_py_str(tool.description)})"
+        )
+        return ToolRender(imports=imports, helpers=(), ref=ref)
 
     raise ValueError(f"Genre d'outil non rendu : {tool.kind!r}")  # pragma: no cover
 
 
-def _render_openapi_helper(tool: ToolSpec) -> str:
-    """Rend ``<id> = OpenAPIToolset(spec_str=..., spec_str_type="json")`` (stable ruff).
+# --------------------------------------------------------------------------- #
+# Rendu de l'auth (set_auth) — ``auth_credential=AuthCredential(...)`` + imports
+# --------------------------------------------------------------------------- #
+def _auth_credential_call(auth: AuthSpec) -> tuple[_Call, tuple[str, ...]]:
+    """Construit le :class:`_Call` ``AuthCredential(...)`` + les imports ``google.adk.auth`` requis.
 
-    Inline si la ligne tient dans :data:`LINE_LENGTH` ; sinon, ruff replie l'appel avec les
-    deux arguments sur **une** ligne indentée (4 espaces) tant qu'ils y tiennent — on reproduit
-    exactement cette forme (l'éclatement un-arg-par-ligne n'est pas nécessaire ici).
+    Le schéma dicte ``auth_type`` et le sous-objet porté :
+
+    - ``apikey`` -> ``api_key="..."`` ;
+    - ``bearer`` -> ``http=HttpAuth(scheme="bearer", credentials=HttpCredentials(token="..."))`` ;
+    - ``oauth2`` -> ``oauth2=OAuth2Auth(client_id=..., client_secret=..., [access_token=...])`` ;
+    - ``service_account`` -> ``service_account=ServiceAccount(use_default_credential=True |
+      scopes=[...])``.
     """
-    spec_lit = _py_str(tool.spec)
-    args = f'spec_str={spec_lit}, spec_str_type="json"'
-    inline = f"{tool.name} = OpenAPIToolset({args})"
-    if len(inline) <= LINE_LENGTH:
-        return inline + "\n"
-    # Repli niveau 1 : les deux args sur une ligne indentée (4 espaces), si elle tient.
-    if 4 + len(args) <= LINE_LENGTH:
-        return f"{tool.name} = OpenAPIToolset(\n    {args}\n)\n"
-    # Repli niveau 2 : un argument par ligne (indent 4, virgule finale) — forme ruff au-delà.
-    return (
-        f'{tool.name} = OpenAPIToolset(\n    spec_str={spec_lit},\n    spec_str_type="json",\n)\n'
-    )
+    cred = dict(auth.credential)
+    auth_type = _AUTH_TYPE_FOR_SCHEME[auth.scheme]
+    imports: list[str] = [f"from {_AUTH_IMPORT_MODULE} import AuthCredential, AuthCredentialTypes"]
+    inner: str | _Call
+
+    if auth.scheme == "apikey":
+        inner = f"api_key={_py_str(cred['api_key'])}"
+    elif auth.scheme == "bearer":
+        imports.append(f"from {_AUTH_CRED_IMPORT_MODULE} import HttpAuth, HttpCredentials")
+        creds = _Call("HttpCredentials", (f"token={_py_str(cred['token'])}",))
+        http = _Call("HttpAuth", ('scheme="bearer"', _kwarg_call("credentials", creds)))
+        inner = _kwarg_call("http", http)
+    elif auth.scheme == "oauth2":
+        imports.append(f"from {_AUTH_CRED_IMPORT_MODULE} import OAuth2Auth")
+        oauth = _Call("OAuth2Auth", tuple(f"{k}={_py_str(v)}" for k, v in auth.credential))
+        inner = _kwarg_call("oauth2", oauth)
+    else:  # service_account
+        imports.append(f"from {_AUTH_CRED_IMPORT_MODULE} import ServiceAccount")
+        sa = _Call("ServiceAccount", tuple(_service_account_kwargs(cred)))
+        inner = _kwarg_call("service_account", sa)
+
+    call = _Call("AuthCredential", (f"auth_type=AuthCredentialTypes.{auth_type}", inner))
+    return call, tuple(imports)
+
+
+def _service_account_kwargs(cred: dict[str, str]) -> list[str]:
+    """Liste des kwargs d'un ``ServiceAccount`` depuis le dict credential (booléens/listes gérés).
+
+    ``use_default_credential`` : valeur ``"true"``/``"false"`` -> littéral booléen Python.
+    ``scopes`` : valeur séparée par des virgules -> liste de chaînes.
+    """
+    parts: list[str] = []
+    for key, value in cred.items():
+        if key == "use_default_credential":
+            parts.append(f"use_default_credential={_py_bool(value)}")
+        elif key == "scopes":
+            scopes = [s.strip() for s in value.split(",") if s.strip()]
+            parts.append(f"scopes=[{', '.join(_py_str(s) for s in scopes)}]")
+        else:
+            parts.append(f"{key}={_py_str(value)}")
+    return parts
+
+
+def _py_bool(value: str) -> str:
+    """``"true"``/``"1"``/``"yes"`` -> ``True`` (sinon ``False``) — littéral source Python."""
+    return "True" if value.strip().lower() in ("true", "1", "yes") else "False"
+
+
+@dataclass(frozen=True)
+class _Call:
+    """Représentation structurée d'un appel ``Callee(arg1, arg2, ...)`` pour le rendu ruff-stable.
+
+    Chaque argument est soit une **chaîne atomique** déjà rendue (``"key=value"``, un littéral,
+    une liste/dict inline), soit un :class:`_Call` imbriqué (rendu récursivement). On ne replie
+    jamais l'intérieur d'un littéral atomique — seuls les ``_Call`` sont éclatés récursivement,
+    ce qui suffit pour reproduire la sortie ``ruff format`` de nos constructions.
+    """
+
+    callee: str
+    args: tuple[str | _Call, ...]
+
+
+def _render_call(call: _Call, col: int, base_indent: int) -> str:
+    """Rend un :class:`_Call` **stable pour ``ruff format``**.
+
+    ``col`` = colonne où débute ce rendu (budget de largeur inline) ; ``base_indent`` =
+    indentation de la **ligne logique** propriétaire (le corps éclaté est indenté de
+    ``base_indent + 4``, comme ``ruff format``). Algorithme reproduit :
+
+    - forme inline si elle tient dans :data:`LINE_LENGTH` à partir de ``col`` ;
+    - sinon, éclatement **un argument par ligne** (indent ``base_indent+4``). La virgule finale
+      (« magic trailing comma ») n'est ajoutée **que** si le call a **≥ 2 arguments** : un call à
+      argument unique qui doit être replié met cet argument seul sur sa ligne **sans** virgule
+      finale (comportement exact de ``ruff format`` — vérifié par introspection).
+
+    Ne termine **pas** par ``\\n`` (l'appelant gère sauts de ligne / suffixe ``= var``).
+    """
+    inline = _call_inline(call)
+    if col + len(inline) <= LINE_LENGTH:
+        return inline
+    inner_indent = base_indent + 4
+    pad = " " * inner_indent
+    multi = len(call.args) >= 2
+    trailing = "," if multi else ""
+    lines: list[str] = []
+    for arg in call.args:
+        if isinstance(arg, _Call):
+            rendered = _render_call(arg, col=inner_indent, base_indent=inner_indent)
+            lines.append(f"{pad}{rendered}{trailing}")
+        else:
+            lines.append(f"{pad}{arg}{trailing}")
+    body = "\n".join(lines)
+    return f"{call.callee}(\n{body}\n{' ' * base_indent})"
+
+
+def _call_inline(call: _Call) -> str:
+    """Forme inline complète d'un :class:`_Call` (récursive, sans sauts de ligne)."""
+    parts = [a if isinstance(a, str) else _call_inline(a) for a in call.args]
+    return f"{call.callee}({', '.join(parts)})"
+
+
+def _kwarg_call(key: str, call: _Call) -> _Call:
+    """Combine ``key=`` + un :class:`_Call` en un :class:`_Call` repliable (``callee=key=Callee``).
+
+    :func:`_render_call` choisit ensuite inline (``key=Callee(...)``) ou éclaté
+    (``key=Callee(\\n ... \\n)``) selon la largeur — exactement la forme ``ruff format``.
+    """
+    return _Call(callee=f"{key}={call.callee}", args=call.args)
+
+
+def _render_toolset_helper(var: str, call: _Call) -> str:
+    """Rend ``<var> = <Call>`` (récursivement replié) terminé par un seul ``\\n``.
+
+    Le call débute à la colonne ``len(var) + 3`` (``"<var> = "``) ; le corps éclaté est indenté
+    depuis ``base_indent=0`` (statement top-level) -> +4, conforme à ``ruff format``.
+    """
+    return f"{var} = {_render_call(call, col=len(var) + 3, base_indent=0)}\n"
+
+
+def _maybe_auth_arg(tool: ToolSpec) -> tuple[list[str | _Call], tuple[str, ...]]:
+    """Renvoie ``([auth_credential=...] | [], imports)`` pour un toolset auth-capable.
+
+    Si ``tool.auth`` est défini, rend ``auth_credential=AuthCredential(...)`` (repliable) + les
+    imports d'auth requis ; sinon, listes vides. (La validation garantit que seuls les genres
+    auth-capables portent un ``auth``.)
+    """
+    if tool.auth is None:
+        return [], ()
+    call, imports = _auth_credential_call(tool.auth)
+    return [_kwarg_call("auth_credential", call)], imports
+
+
+def _render_openapi(tool: ToolSpec) -> ToolRender:
+    """``<id> = OpenAPIToolset(spec_str=..., spec_str_type="json"[, auth_credential=...])``."""
+    args: list[str | _Call] = [f"spec_str={_py_str(tool.spec)}", 'spec_str_type="json"']
+    auth_args, auth_imports = _maybe_auth_arg(tool)
+    args += auth_args
+    helper = _render_toolset_helper(tool.name, _Call("OpenAPIToolset", tuple(args)))
+    return ToolRender(imports=(_OPENAPI_IMPORT, *auth_imports), helpers=(helper,), ref=tool.name)
+
+
+def _render_gcp_toolset(tool: ToolSpec, class_name: str, import_stmt: str) -> ToolRender:
+    """``<id> = BigQueryToolset(<args>)`` / ``SpannerToolset(<args>)``.
+
+    Les ``args`` sont des **expressions source** (pas des littéraux chaîne) : un utilisateur
+    fournit p.ex. ``{"bigquery_tool_config": "my_cfg"}`` pour référencer une variable/objet
+    construit ailleurs. Pas d'auth ici (ces toolsets utilisent ``credentials_config``).
+    """
+    args: tuple[str | _Call, ...] = tuple(f"{k}={v}" for k, v in tool.args)
+    helper = _render_toolset_helper(tool.name, _Call(class_name, args))
+    return ToolRender(imports=(import_stmt,), helpers=(helper,), ref=tool.name)
+
+
+def _render_apihub(tool: ToolSpec) -> ToolRender:
+    """``<id> = APIHubToolset(apihub_resource_name="..."[, auth_credential=...])``."""
+    args: list[str | _Call] = [f"apihub_resource_name={_py_str(tool.apihub_resource_name)}"]
+    auth_args, auth_imports = _maybe_auth_arg(tool)
+    args += auth_args
+    helper = _render_toolset_helper(tool.name, _Call("APIHubToolset", tuple(args)))
+    return ToolRender(imports=(_APIHUB_IMPORT, *auth_imports), helpers=(helper,), ref=tool.name)
+
+
+def _mcp_connection_params_call(tool: ToolSpec) -> tuple[_Call, tuple[str, ...]]:
+    """Construit le :class:`_Call` ``connection_params=...`` selon le transport + imports requis.
+
+    - ``stdio`` -> ``StdioConnectionParams(server_params=StdioServerParameters(command=...,
+      args=[...]))`` (importe aussi ``StdioServerParameters`` depuis ``mcp``) ;
+    - ``sse`` -> ``SseConnectionParams(url="..."[, headers={...}])`` ;
+    - ``http`` -> ``StreamableHTTPConnectionParams(url="..."[, headers={...}])``.
+    """
+    params_cls = _MCP_TRANSPORTS[tool.transport]
+    imports: list[str] = [f"from {_MCP_TOOLSET_IMPORT_MODULE} import McpToolset, {params_cls}"]
+    if tool.transport == "stdio":
+        imports.append(_MCP_STDIO_PARAMS_IMPORT)
+        args_list = f"[{', '.join(_py_str(a) for a in tool.mcp_args)}]"
+        server = _Call(
+            "StdioServerParameters", (f"command={_py_str(tool.command)}", f"args={args_list}")
+        )
+        conn = _Call(params_cls, (_kwarg_call("server_params", server),))
+        return conn, tuple(imports)
+    # sse / http : url + headers optionnels.
+    inner: list[str] = [f"url={_py_str(tool.url)}"]
+    if tool.headers:
+        headers = ", ".join(f"{_py_str(k)}: {_py_str(v)}" for k, v in tool.headers)
+        inner.append(f"headers={{{headers}}}")
+    conn = _Call(params_cls, tuple(inner))
+    return conn, tuple(imports)
+
+
+def _render_mcp_toolset(tool: ToolSpec) -> ToolRender:
+    """``<id> = McpToolset(connection_params=...[, tool_filter=[...]][, auth_credential=...])``."""
+    conn_call, conn_imports = _mcp_connection_params_call(tool)
+    args: list[str | _Call] = [_kwarg_call("connection_params", conn_call)]
+    if tool.tool_filter:
+        flt = ", ".join(_py_str(f) for f in tool.tool_filter)
+        args.append(f"tool_filter=[{flt}]")
+    auth_args, auth_imports = _maybe_auth_arg(tool)
+    args += auth_args
+    helper = _render_toolset_helper(tool.name, _Call("McpToolset", tuple(args)))
+    return ToolRender(imports=(*conn_imports, *auth_imports), helpers=(helper,), ref=tool.name)
 
 
 # --------------------------------------------------------------------------- #
@@ -622,6 +1027,12 @@ def validate_tool_spec(tool: ToolSpec, model: ProjectModel, owner: str) -> str |
     """
     if tool.kind not in _TOOL_KINDS:
         return f"Genre d'outil inconnu : {tool.kind!r}. Connus : {', '.join(sorted(_TOOL_KINDS))}."
+
+    # Auth : seuls openapi/apihub/mcp_toolset acceptent auth_scheme/auth_credential (confirmé).
+    if tool.auth is not None:
+        auth_error = _validate_auth(tool)
+        if auth_error is not None:
+            return auth_error
 
     if tool.kind in ("function", "long_running"):
         if not is_identifier(tool.name):
@@ -670,7 +1081,80 @@ def validate_tool_spec(tool: ToolSpec, model: ProjectModel, owner: str) -> str |
             return "La spec OpenAPI est vide."
         return None
 
+    if tool.kind in ("bigquery", "spanner"):
+        if not is_identifier(tool.name):
+            return (
+                f"Nom de toolset {tool.kind} invalide : {tool.name!r} (identifiant Python attendu)."
+            )
+        return None
+
+    if tool.kind == "mcp_toolset":
+        return _validate_mcp(tool)
+
+    if tool.kind == "apihub":
+        if not is_identifier(tool.name):
+            return f"Nom de toolset APIHub invalide : {tool.name!r} (identifiant Python attendu)."
+        if not tool.apihub_resource_name.strip():
+            return "apihub_resource_name est vide (ex. 'projects/<p>/locations/<l>/apis/<a>')."
+        return None
+
+    if tool.kind in ("langchain", "crewai"):
+        if not tool.import_line.strip():
+            return f"{tool.kind} : import_line est vide (ex. 'from x.tools import MyTool')."
+        if not tool.tool_expr.strip():
+            return f"{tool.kind} : tool_expr est vide (ex. 'MyTool(arg=...)')."
+        if tool.kind == "crewai" and not tool.name.strip():
+            return "crewai : 'name' est requis (CrewaiTool exige un nom, keyword-only)."
+        return None
+
     return None  # pragma: no cover
+
+
+def _validate_mcp(tool: ToolSpec) -> str | None:
+    """Valide un ``mcp_toolset`` : nom identifiant, transport connu, et champs requis."""
+    if not is_identifier(tool.name):
+        return f"Nom de toolset MCP invalide : {tool.name!r} (identifiant Python attendu)."
+    if tool.transport not in _MCP_TRANSPORTS:
+        return (
+            f"Transport MCP inconnu : {tool.transport!r}. "
+            f"Connus : {', '.join(sorted(_MCP_TRANSPORTS))}."
+        )
+    if tool.transport == "stdio":
+        if not tool.command.strip():
+            return "Transport 'stdio' : 'command' est requis (ex. 'npx')."
+    elif not tool.url.strip():
+        return f"Transport {tool.transport!r} : 'url' est requis."
+    return None
+
+
+def _validate_auth(tool: ToolSpec) -> str | None:
+    """Valide une sous-spec ``auth`` : genre auth-capable, schéma connu, champs requis du schéma."""
+    if tool.kind not in _AUTH_CAPABLE_KINDS:
+        return (
+            f"Le genre {tool.kind!r} n'accepte pas d'auth (auth_scheme/auth_credential). "
+            f"Genres compatibles : {', '.join(sorted(_AUTH_CAPABLE_KINDS))} "
+            "(bigquery/spanner utilisent plutôt un credentials_config)."
+        )
+    auth = tool.auth
+    assert auth is not None  # garanti par l'appelant
+    if auth.scheme not in _AUTH_SCHEMES:
+        return (
+            f"Schéma d'auth inconnu : {auth.scheme!r}. Connus : {', '.join(sorted(_AUTH_SCHEMES))}."
+        )
+    keys = {k for k, _ in auth.credential}
+    required: dict[str, set[str]] = {
+        "apikey": {"api_key"},
+        "bearer": {"token"},
+        "oauth2": {"client_id"},
+        "service_account": set(),  # use_default_credential OU scopes : au moins une clé
+    }
+    missing = required[auth.scheme] - keys
+    if missing:
+        fields = ", ".join(sorted(missing))
+        return f"Auth {auth.scheme!r} : champ(s) credential manquant(s) : {fields}."
+    if auth.scheme == "service_account" and not keys:
+        return "Auth 'service_account' : fournir 'use_default_credential' ou 'scopes'."
+    return None
 
 
 def _is_allowed_type(t: str) -> bool:
@@ -877,10 +1361,23 @@ def _merge_tool_imports(import_stmts: list[str]) -> list[str]:
         for name in names.split(","):
             bucket.add(name.strip())
     merged = [
-        f"from {module} import {', '.join(sorted(by_module[module]))}"
-        for module in sorted(by_module)
+        _render_import_line(module, sorted(by_module[module])) for module in sorted(by_module)
     ]
     return _dedup_preserve(passthrough) + merged
+
+
+def _render_import_line(module: str, names: list[str]) -> str:
+    """Rend ``from <module> import a, b`` **stable pour ``ruff format``**.
+
+    Inline si la ligne tient dans :data:`LINE_LENGTH` ; sinon, forme parenthésée multi-lignes
+    (un nom par ligne, indent 4, virgule finale) — exactement ce que ``ruff format`` produit
+    au-delà de la limite pour un import à noms multiples.
+    """
+    inline = f"from {module} import {', '.join(names)}"
+    if len(inline) <= LINE_LENGTH:
+        return inline
+    body = "".join(f"    {name},\n" for name in names)
+    return f"from {module} import (\n{body})"
 
 
 # --------------------------------------------------------------------------- #
