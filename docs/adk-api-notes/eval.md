@@ -124,11 +124,13 @@ async def evaluate_eval_set(agent_module: str, eval_set: EvalSet,
 ```
 
 - **Both are `async`** (`inspect.iscoroutinefunction` → True). Await them.
-- **Verdict is assert-based:** on success they return `None`; on **failure** they raise
-  `AssertionError` whose message lists `"<metric> for <module> Failed. Expected <threshold>, but
-  got <score>."` per failing metric. The toolkit catches `AssertionError` → `ok({passed: False,
-  ...})` (an eval *failure* is a normal result, NOT a tool error). Other exceptions (missing
-  model creds, import errors) → `err(...)`.
+- **Verdict is assert-based** (public API): on success they return `None`; on **failure** they
+  raise `AssertionError` whose message lists `"<metric> for <module> Failed. Expected
+  <threshold>, but got <score>."` per failing metric. However the toolkit's `eval_run` does NOT
+  use this assert path: it calls `_get_eval_results_by_eval_id` directly (the same internal core
+  these methods use) to capture per-metric scores alongside the verdict. See
+  "Per-metric scores" section below. Other exceptions (missing model creds, import errors) →
+  `err(...)`.
 - `criteria` (flat dict) still works but is **deprecated** (a `logger.warning`, NOT a
   `DeprecationWarning` — does not trip `-W error::DeprecationWarning`); it is auto-mapped to an
   `EvalConfig`. The toolkit builds an `EvalConfig` and passes `eval_config=` (the non-deprecated

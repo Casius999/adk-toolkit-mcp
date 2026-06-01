@@ -101,8 +101,10 @@ FastMCP.mount(self, server, namespace: str | None = None, as_proxy: bool | None 
 - Use `namespace="project"`. (We diverge from the literal `prefix=` in the task brief to
   avoid the deprecation warning and keep ruff/mypy/pytest clean — the brief explicitly
   allows adapting to the real signature.)
-- Naming rule: a mounted tool `project_create` under namespace `project` is exposed as
-  **`project_project_create`** (namespace + `_` + tool name).
+- Naming rule: a tool function with **bare name** `create` mounted under `namespace="project"` is
+  exposed as **`project_create`** (single prefix: `namespace + "_" + bare_name`). Tool functions
+  must NOT already include the domain prefix (that would produce `project_project_create`).
+  See `docs/adk-api-notes/conventions.md` for the full convention table.
 
 ## `Client.call_tool` return shape
 
