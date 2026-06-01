@@ -1,6 +1,6 @@
 # adk-toolkit-mcp — Tool Catalog
 
-All **81 tools** across 14 domains. Every tool returns `{ok, data, error}`. Exposed name =
+All **81 tools** across 15 domains. Every tool returns `{ok, data, error}`. Exposed name =
 `<domain>_<bare>`. Tool parameters shown beside each entry; `path` and `app_name` are
 required by most tools (the project directory and agent package name).
 

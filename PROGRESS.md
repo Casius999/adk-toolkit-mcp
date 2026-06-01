@@ -496,7 +496,7 @@ LLM-judge / eval-extra-absent return a clean `err` (no hang). P3a still green (r
 - **`docs/ARCHITECTURE.md`** (new): directory tree, sub-server mount pattern, code-first sidecar
   model, `project_model` package table, `runtime.py` singleton cache, `run_core.py` function table,
   `adk_cli.py` CLI + process registry, envelope, Code Mode, lazy deps, key invariants.
-- **`docs/TOOL_CATALOG.md`** (new): all 81 tools, grouped by 14 domains, each with purpose and
+- **`docs/TOOL_CATALOG.md`** (new): all 81 tools, grouped by 15 domains, each with purpose and
   key params. Count check: 5+10+13+3+8+3+6+5+4+6+6+3+2+3+4 = 81. Resources + 5 prompts also
   documented. Load-bearing cross-check: script confirmed all 81 real tool names cited, 0 missing,
   0 extra.
