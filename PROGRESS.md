@@ -20,8 +20,8 @@
 | **P2 State** | sessions (P2a), memory + artifacts (P2b) | ✅ DONE |
 | **P3 Runtime/Eval** | run (P3a) ✅ · eval (P3b) ✅ | ✅ DONE |
 | **P4 Ops** | deploy (P4a) ✅ · dev (P4a) ✅ · a2a (P4b) ✅ · mcp_bridge (P4b) ✅ · safety (P4c) ✅ · observability (P4c) ✅ | ✅ **DONE** |
-| **P5 Skill** | `adk-toolkit` skill (SKILL.md + 14 refs) | ⬜ **(next)** |
-| **P6 Finish** | Code Mode, prompts, docs, repo publish (confirm GitHub) | ⬜ |
+| **P5 Skill** | `adk-toolkit` skill (SKILL.md + 14 refs) + install + test | ✅ **DONE** |
+| **P6 Finish** | Code Mode, prompts, docs, repo publish (confirm GitHub) | ⬜ **(next)** |
 
 ## Exposed tools so far (81)
 - `project_*`: create, inspect, set_env, add_extra, agent_config
@@ -343,7 +343,12 @@
   change** (OTel SDK is a core google-adk dep; OTLP codegen-only).
 
 ## Test/quality state
-**633 passed, 6 skipped, coverage 95.44%** (after P4c). ruff + mypy clean (34 source files); full
+**641 passed, 6 skipped** (after P5; +4 skill tests + prior additions on top of P4c's 633). Coverage
+gate green (suite exits 0; the skill test lives in `tests/`, source coverage unchanged ~95%). ruff +
+mypy clean (34 source files); full
+suite green under `-W error::DeprecationWarning` (28 warnings, all benign `UserWarning` from
+experimental ADK features — zero `DeprecationWarning`). **`uv.lock`/`pyproject` UNCHANGED by P5**
+(docs + stdlib-only test). P5 facts below; P4c snapshot:
 suite green under `-W error::DeprecationWarning` (28 warnings, all benign `UserWarning` from
 experimental ADK features — zero `DeprecationWarning`). **`uv.lock`/`pyproject` UNCHANGED by P4c**
 (no new deps — OTel SDK already a google-adk dep; OTLP/plugins codegen-only). P4c files:
@@ -357,6 +362,37 @@ before_model guardrail returns the canned refusal AND the instrumented FakeLlm's
 EMPTY (short-circuit proven end-to-end); a `block_tool` denylist short-circuits the tool; a generated
 `logging` plugin records events + a `tool_denylist` plugin blocks a tool through `build_runner`(App).
 The 6 skips are unchanged (gcp×2 + real-api_server boot + 3 a2a-gated). No orphaned processes/ports.
+
+## P5 skill facts (the `adk-toolkit` companion skill)
+- **Deliverable:** `skill/SKILL.md` + `skill/references/00..13-*.md` (14 refs), ALSO installed to
+  `C:\Users\bojac\.claude\skills\adk-toolkit\` (SKILL.md + references/) — the only out-of-repo write.
+  Skill confirmed discoverable (appears in the harness `available_skills` list after install).
+- **SKILL.md** = a SHORT routing index (mental model + a task→reference→tool-prefix table + the golden
+  workflow). Frontmatter `name: adk-toolkit` + a pushy, trigger-rich `description` (build/scaffold ADK
+  agent, google-adk, LlmAgent, sub_agents, AgentTool, tools, LiteLlm, state prefixes, Runner/RunConfig,
+  evalset, deploy Agent Engine/Cloud Run/GKE, A2A/RemoteA2aAgent, guardrail/callback/plugin, OTel, etc.).
+  Progressive disclosure: detail lives in the references, not the body.
+- **References (dense, accurate to the api-notes + real tool names):** 00-mental-model (ADK + sidecar +
+  `project_*`), 01-agent-types (decision tree sub_agents vs AgentTool vs RemoteA2aAgent; Loop/Parallel
+  deprecated-but-functional; `agents_*`), 02-tools (all kinds + extras + auth; `tools_*`), 03-models
+  (Gemini vs LiteLlm/LM-Studio loopback; GCC+safety; `models_*`), 04-sessions-state (backends, prefixes,
+  temp-not-persisted, async; `sessions_*`), 05-memory-artifacts (keyword recall vs versioned Parts;
+  `memory_*`/`artifacts_*`), 06-runtime (Runner/RunConfig/streaming; `run_*`), 07-eval (offline metrics
+  vs LLM-judge; `eval_*`), 08-deploy (REAL 2.1.0 flags + dev servers; `deploy_*`/`dev_*`), 09-a2a
+  (expose/consume + MCP bridge; `a2a_*`/`mcp_bridge_*`), 10-observability (OTel/Cloud Trace/3rd-party;
+  `observability_*`), 11-safety (callbacks vs plugins via App; `safety_*`), 12-troubleshooting (every
+  known pitfall: deprecations, `request_input` gone, RemoteA2aAgent import path, DB async URL, drifted
+  CLI flags, missing extras, regen-don't-edit), 13-tool-catalog (THE bridge: all 81 tools by domain).
+- **Tool-name cross-check (load-bearing):** built the server, listed tools (**81**), grepped every
+  `<domain>_<name>` token across the skill — ALL 81 real tools are mentioned; the only non-matching
+  tokens were legitimate ADK API terms / param names, NOT claimed tools (`a2a_app` the generated var,
+  `a2a_experimental` the decorator, `eval_set_file`/`run_config`/`run_async` params, `project_model` the
+  internal module explicitly flagged as not-exposed). Per-domain counts in 13-tool-catalog match reality
+  exactly (5/10/13/3/8/3/6/5/4/6/6/2/3/3/4 = 81).
+- **Test:** `tests/unit/test_skill.py` (4 tests, no new deps) — minimal frontmatter parse (handles the
+  `>-` block scalar): asserts SKILL.md exists, `name == "adk-toolkit"` + non-empty description, every
+  `references/*.md` cited by SKILL.md exists, and the 14 canonical refs are present.
+- **No `pyproject`/`uv.lock` change** (docs + a stdlib-only test). README already pointed at `skill/`.
 
 ## (historical) P4b test/quality snapshot
 **572 passed, 6 skipped, coverage 95.67%** (after P4b). ruff + mypy clean (30 source files); full
@@ -389,14 +425,19 @@ OFFLINE (no key) via a REAL `AgentEvaluator`; a wrong expected answer correctly 
 LLM-judge / eval-extra-absent return a clean `err` (no hang). P3a still green (run_core/run 100%).
 
 ## Resume instructions
-**P4 COMPLETE** (deploy+dev P4a ✅ · a2a+mcp_bridge P4b ✅ · safety+observability P4c ✅).
-Next: **P5 — the `adk-toolkit` skill** (SKILL.md + 14 reference docs). The skill should document
-all 81 exposed tools across the 17 domains, the code-first sidecar workflow (`agents.json` +
-`runtime.json`), and the offline-testable runtime (`run_core` + FakeLlm). Then P6 (Code Mode,
-prompts, docs, repo publish — confirm GitHub push).
+**P5 COMPLETE** (the `adk-toolkit` skill: SKILL.md + 14 refs, installed to `~/.claude/skills/adk-toolkit/`,
+4-test stdlib-only `test_skill.py`, all 81 tools cross-checked). P4 also COMPLETE (deploy+dev P4a ✅ ·
+a2a+mcp_bridge P4b ✅ · safety+observability P4c ✅).
+Next: **P6 — Finish** (Code Mode / `fastmcp` transforms, MCP prompts, docs `ARCHITECTURE.md` /
+`TOOL_CATALOG.md` / `CONTRIBUTING.md`, then repo publish — **confirm GitHub push with the user** before
+adding any remote; local-only until then).
 - Established patterns to keep: lazy optional imports, `{ok,data,error}` envelope, bare tool names
   mounted via `namespace=`, sidecar/Workspace for generated files, actionable `err` for an absent
   extra (`gcp`/`db`/`eval`/`a2a`), generated code held to ast.parse + ruff format + isort.
+- P5 notes: the skill is the user-facing surface for the 81 tools — if P6 ADDS/renames a tool, update
+  BOTH `skill/references/13-tool-catalog.md` (+ the relevant domain ref) AND re-run the grep cross-check,
+  AND re-copy the skill to `~/.claude/skills/adk-toolkit/` (the test only checks structure, not tool
+  names — keep the catalog honest manually). The skill description in SKILL.md is the trigger surface.
 - P4c notes: agent guardrails render as real functions attached via the real `LlmAgent` callback
   kwargs; plugins wire via `Runner(app=App(plugins=[...]))` (NOT the deprecated `plugins=` kwarg);
   `safety_settings` reuses the models GCC/SafetySetting rendering; observability wraps standard
