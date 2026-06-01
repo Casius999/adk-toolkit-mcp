@@ -49,6 +49,9 @@ packages = ["src/adk_toolkit_mcp"]
 testpaths = ["tests"]
 asyncio_mode = "auto"
 addopts = "-q"
+markers = [
+    "integration: live end-to-end tests requiring real credentials (skipped without them)",
+]
 
 [tool.coverage.run]
 source = ["adk_toolkit_mcp"]
