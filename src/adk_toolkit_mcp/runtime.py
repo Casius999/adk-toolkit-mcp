@@ -127,18 +127,57 @@ class ArtifactBackend:
 
 
 @dataclass(frozen=True)
+class PluginSpec:
+    """Manifeste d'un plugin de projet (P4c) déclaré dans ``<app_dir>/<app>/plugins.py``.
+
+    ``var`` est le **nom de la variable module-level** portant l'instance de plugin dans
+    ``plugins.py`` (ex. ``logging_plugin``). ``name`` (optionnel) est le nom logique du plugin
+    (``BasePlugin.name``) et ``kind`` une étiquette descriptive (``logging`` / ``tool_denylist``)
+    — tous deux purement informatifs ; seul ``var`` est utilisé par ``build_runner`` pour
+    récupérer l'instance et la passer à ``Runner`` (via ``App``).
+
+    Gelé (immuable) pour rester cohérent avec le reste de la config.
+    """
+
+    var: str
+    name: str = ""
+    kind: str = ""
+
+    def to_dict(self) -> dict[str, str]:
+        d: dict[str, str] = {"var": self.var}
+        if self.name:
+            d["name"] = self.name
+        if self.kind:
+            d["kind"] = self.kind
+        return d
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> PluginSpec:
+        return cls(
+            var=str(data.get("var", "")),
+            name=str(data.get("name", "")),
+            kind=str(data.get("kind", "")),
+        )
+
+
+@dataclass(frozen=True)
 class RuntimeConfig:
-    """Configuration runtime complète d'une app (sessions + memory + artifacts).
+    """Configuration runtime complète d'une app (sessions + memory + artifacts + plugins).
 
     En P2a, seul ``session`` était exploité (memory/artifacts étaient des dicts opaques
     réservés). P2b les remplace par de vrais dataclasses. ``memory`` et ``artifacts`` restent
     ``None`` tant qu'aucun backend n'a été choisi — ce qui préserve la compat ascendante avec
     une ``runtime.json`` écrite par P2a (où ces champs valaient ``null``).
+
+    P4c ajoute ``plugins`` : un tuple (éventuellement vide) de :class:`PluginSpec` listant les
+    plugins ``BasePlugin`` déclarés dans ``plugins.py``. Vide -> aucun plugin (``build_runner``
+    inchangé, compat ascendante stricte avec une ``runtime.json`` sans clé ``plugins``).
     """
 
     session: SessionBackend = field(default_factory=SessionBackend)
     memory: MemoryBackend | None = None
     artifacts: ArtifactBackend | None = None
+    plugins: tuple[PluginSpec, ...] = ()
 
 
 def _backend_from_dict(data: dict[str, Any] | None) -> SessionBackend:
@@ -188,6 +227,17 @@ def _artifacts_from_dict(data: dict[str, Any] | None) -> ArtifactBackend | None:
     return ArtifactBackend(kind=kind, bucket=data.get("bucket"))
 
 
+def _plugins_from_list(data: Any) -> tuple[PluginSpec, ...]:
+    """Construit le tuple de ``PluginSpec`` depuis une liste JSON (vide/absente -> ``()``).
+
+    Tolérant : les entrées sans ``var`` non vide sont ignorées (rien à importer).
+    """
+    if not isinstance(data, list):
+        return ()
+    specs = [PluginSpec.from_dict(d) for d in data if isinstance(d, dict)]
+    return tuple(s for s in specs if s.var)
+
+
 def load_runtime_config(ws: Workspace, app_name: str) -> RuntimeConfig:
     """Charge la config runtime de l'app, ou renvoie une config par défaut si absente.
 
@@ -207,6 +257,7 @@ def load_runtime_config(ws: Workspace, app_name: str) -> RuntimeConfig:
         session=_backend_from_dict(raw.get("session")),
         memory=_memory_from_dict(raw.get("memory")),
         artifacts=_artifacts_from_dict(raw.get("artifacts")),
+        plugins=_plugins_from_list(raw.get("plugins")),
     )
 
 
@@ -214,13 +265,17 @@ def save_runtime_config(ws: Workspace, config: RuntimeConfig) -> bool:
     """Persiste la config runtime (JSON déterministe). Renvoie True si écrit/modifié.
 
     Idempotent via ``Workspace.write`` (n'écrit pas si le contenu est identique). ``memory`` et
-    ``artifacts`` non configurés restent sérialisés à ``null`` (format identique à P2a).
+    ``artifacts`` non configurés restent sérialisés à ``null`` (format identique à P2a). La clé
+    ``plugins`` n'est émise QUE si au moins un plugin est déclaré (compat ascendante stricte :
+    une ``runtime.json`` sans plugin reste byte-identique au format P2a/P2b).
     """
-    payload = {
+    payload: dict[str, Any] = {
         "session": asdict(config.session),
         "memory": asdict(config.memory) if config.memory is not None else None,
         "artifacts": asdict(config.artifacts) if config.artifacts is not None else None,
     }
+    if config.plugins:
+        payload["plugins"] = [p.to_dict() for p in config.plugins]
     text = json.dumps(payload, indent=2, sort_keys=True) + "\n"
     return ws.write(RUNTIME_CONFIG_FILE, text)
 

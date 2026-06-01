@@ -46,6 +46,10 @@ if TYPE_CHECKING:  # pragma: no cover - hints seulement, imports réels paresseu
 #: Compteur monotone garantissant un nom de module unique par ``import_root_agent``.
 _IMPORT_COUNTER = itertools.count()
 
+#: Compteur monotone pour un nom de module unique par ``import_project_plugins`` (même raison
+#: que pour ``import_root_agent`` : pas de cache ``sys.modules`` périmé après édition).
+_PLUGINS_IMPORT_COUNTER = itertools.count()
+
 #: Callback de progression : reçoit ``(index_1_based, serialized_event)`` et est awaité.
 ProgressCallback = Callable[[int, dict[str, Any]], Awaitable[None]]
 
@@ -54,6 +58,13 @@ class RootAgentImportError(Exception):
     """Échec d'import de ``root_agent`` (fichier absent, erreur d'exécution, attribut manquant).
 
     Le domaine ``run`` convertit cette exception en ``err(...)`` avec un message actionnable.
+    """
+
+
+class PluginsImportError(Exception):
+    """Échec d'import des plugins de projet (``plugins.py`` absent/cassé, variable manquante).
+
+    Les domaines convertissent cette exception en ``err(...)`` avec un message actionnable.
     """
 
 
@@ -102,10 +113,58 @@ def import_root_agent(path: str, app_name: str) -> BaseAgent:
     return root_agent
 
 
+def import_project_plugins(path: str, app_name: str, plugin_vars: list[str]) -> list[Any]:
+    """Importe ``<path>/<app_name>/plugins.py`` et renvoie les instances nommées dans la liste.
+
+    ``plugin_vars`` est la liste des **noms de variables module-level** (issus du manifeste
+    ``runtime.json``). Chaque nom doit désigner une instance de plugin déclarée dans
+    ``plugins.py``. Renvoie les instances dans l'ordre de ``plugin_vars`` (vide si la liste est
+    vide — appelée seulement quand au moins un plugin est déclaré).
+
+    Comme :func:`import_root_agent`, on lit+``compile()``+``exec()`` la source sous un nom de
+    module **unique** (pas de cache ``sys.modules`` périmé après édition). Lève
+    :class:`PluginsImportError` (fichier absent, exécution échouée, variable manquante).
+    """
+    plugins_file = Path(path) / app_name / "plugins.py"
+    if not plugins_file.is_file():
+        raise PluginsImportError(
+            f"plugins.py introuvable : {plugins_file}. Déclare un plugin (safety_add_plugin)."
+        )
+
+    module_name = f"_adk_toolkit_plugins_{app_name}_{next(_PLUGINS_IMPORT_COUNTER)}"
+    spec = importlib.util.spec_from_file_location(module_name, plugins_file)
+    if spec is None:  # pragma: no cover - cas dégénéré d'importlib
+        raise PluginsImportError(f"Impossible de préparer l'import de {plugins_file}.")
+
+    module = importlib.util.module_from_spec(spec)
+    try:
+        source = plugins_file.read_text(encoding="utf-8")
+        code = compile(source, str(plugins_file), "exec")
+        exec(code, module.__dict__)  # noqa: S102 - exécution voulue du code utilisateur (plugins.py)
+    except Exception as exc:  # noqa: BLE001 - on enveloppe toute erreur d'exécution du module
+        raise PluginsImportError(f"Échec de l'import de {plugins_file} : {exc}") from exc
+
+    instances: list[Any] = []
+    for var in plugin_vars:
+        instance = getattr(module, var, None)
+        if instance is None:
+            raise PluginsImportError(
+                f"{plugins_file} ne définit pas la variable de plugin {var!r}. "
+                "Vérifie le manifeste runtime.json (clé 'plugins')."
+            )
+        instances.append(instance)
+    return instances
+
+
 # --------------------------------------------------------------------------- #
 # Construction du Runner (services issus de runtime.py)
 # --------------------------------------------------------------------------- #
-def build_runner(app_name: str, root_agent: BaseAgent, runtime_config: RuntimeConfig) -> Runner:
+def build_runner(
+    app_name: str,
+    root_agent: BaseAgent,
+    runtime_config: RuntimeConfig,
+    plugins: list[Any] | None = None,
+) -> Runner:
     """Construit un ``Runner`` câblé sur les services de ``runtime_config``.
 
     Le service de **sessions** est toujours requis (fabrique singleton ``get_session_service``).
@@ -114,21 +173,34 @@ def build_runner(app_name: str, root_agent: BaseAgent, runtime_config: RuntimeCo
     ``InMemoryRunner``, qui recréerait ses propres services et court-circuiterait la config et
     le cache singleton du toolkit).
 
+    **Plugins (P4c)** : si ``plugins`` est non vide, on emprunte le chemin NON déprécié
+    ``Runner(app=App(name=app_name, root_agent=root_agent, plugins=[...]), ...)`` — l'argument
+    ``plugins=`` direct de ``Runner`` est DÉPRÉCIÉ en 2.1.0 (``DeprecationWarning``), tandis que
+    ``App`` ne déclenche aucun warning (vérifié par introspection). Sans plugin (défaut), on
+    garde le chemin historique ``Runner(app_name=, agent=, ...)`` — comportement strictement
+    inchangé (compat ascendante).
+
     Les erreurs de backend (``ValueError`` : champ requis manquant / extra absent) remontent à
     l'appelant, qui les convertit en ``err(...)``.
     """
     from google.adk.runners import Runner
 
     session_service = get_session_service(runtime_config.session)
-    kwargs: dict[str, Any] = {
-        "app_name": app_name,
-        "agent": root_agent,
-        "session_service": session_service,
-    }
+    kwargs: dict[str, Any] = {"session_service": session_service}
     if runtime_config.memory is not None:
         kwargs["memory_service"] = get_memory_service(runtime_config.memory)
     if runtime_config.artifacts is not None:
         kwargs["artifact_service"] = get_artifact_service(runtime_config.artifacts)
+
+    if plugins:
+        # Chemin non déprécié : App porte name/root_agent/plugins ; Runner en dérive app_name.
+        from google.adk.apps import App
+
+        app = App(name=app_name, root_agent=root_agent, plugins=list(plugins))
+        return Runner(app=app, **kwargs)
+
+    kwargs["app_name"] = app_name
+    kwargs["agent"] = root_agent
     return Runner(**kwargs)
 
 
