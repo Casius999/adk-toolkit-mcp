@@ -31,6 +31,8 @@ dev = [
     "mypy>=1.10",
     # DatabaseSessionService needs SQLAlchemy; install in CI so persistence tests run.
     "sqlalchemy>=2.0",
+    # `eval` extra (rouge-score/pandas/tabulate) so the offline eval pipeline is testable in CI.
+    "adk-toolkit-mcp[eval]",
 ]
 
 [project.scripts]

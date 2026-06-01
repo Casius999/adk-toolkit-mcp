@@ -70,6 +70,7 @@ db = [
     { name = "sqlalchemy" },
 ]
 dev = [
+    { name = "google-adk", extra = ["eval"] },
     { name = "mypy" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
@@ -95,6 +96,7 @@ spanner = [
 
 [package.metadata]
 requires-dist = [
+    { name = "adk-toolkit-mcp", extras = ["eval"], marker = "extra == 'dev'" },
     { name = "adk-toolkit-mcp", extras = ["litellm", "gcp", "bigquery", "spanner", "a2a", "eval", "mcp", "community", "db"], marker = "extra == 'all'" },
     { name = "fastmcp", specifier = ">=3.3.1" },
     { name = "google-adk", specifier = ">=2.0,<3" },
