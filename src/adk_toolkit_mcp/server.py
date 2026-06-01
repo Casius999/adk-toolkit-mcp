@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from fastmcp import FastMCP
 
+from .domains.a2a import a2a_server
 from .domains.agents import agents_server
 from .domains.artifacts import artifacts_server
 from .domains.deploy import deploy_server
@@ -50,6 +51,8 @@ def build_server() -> FastMCP:
     mcp.mount(dev_server, namespace="dev")
     # P4 domaine b : mcp_bridge (exposer des outils ADK comme MCP). Exposés `mcp_bridge_<nom>`.
     mcp.mount(mcp_bridge_server, namespace="mcp_bridge")
+    # P4 domaine b : a2a (consume/expose/agent_card Agent-to-Agent). Exposés `a2a_<nom>`.
+    mcp.mount(a2a_server, namespace="a2a")
     return mcp
 
 
