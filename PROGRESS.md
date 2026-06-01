@@ -19,11 +19,11 @@
 | **P1 Author** | project, agents, tools (3a+3b), models | ✅ DONE |
 | **P2 State** | sessions (P2a), memory + artifacts (P2b) | ✅ DONE |
 | **P3 Runtime/Eval** | run (P3a) ✅ · eval (P3b) ✅ | ✅ DONE |
-| **P4 Ops** | deploy (P4a) ✅ · dev (P4a) ✅ · a2a (P4b) ✅ · mcp_bridge (P4b) ✅ · observability, safety | ⬜ **(P4a+P4b done; safety/observability next)** |
-| **P5 Skill** | `adk-toolkit` skill (SKILL.md + 14 refs) | ⬜ |
+| **P4 Ops** | deploy (P4a) ✅ · dev (P4a) ✅ · a2a (P4b) ✅ · mcp_bridge (P4b) ✅ · safety (P4c) ✅ · observability (P4c) ✅ | ✅ **DONE** |
+| **P5 Skill** | `adk-toolkit` skill (SKILL.md + 14 refs) | ⬜ **(next)** |
 | **P6 Finish** | Code Mode, prompts, docs, repo publish (confirm GitHub) | ⬜ |
 
-## Exposed tools so far (74)
+## Exposed tools so far (81)
 - `project_*`: create, inspect, set_env, add_extra, agent_config
 - `agents_*`: create_llm, create_sequential, create_parallel, create_loop, create_custom, compose, as_tool, set_root, list, get
 - `tools_*`: add_function, add_long_running, add_builtin, add_agent_tool, add_openapi, add_bigquery, add_spanner, add_mcp_toolset, add_apihub, add_langchain, add_crewai, set_auth, list
@@ -37,6 +37,8 @@
 - `dev_*`: web, api_server, run, stop, status, logs
 - `a2a_*`: consume, expose, agent_card
 - `mcp_bridge_*`: expose_adk_tools, convert_builtin
+- `safety_*`: add_callback, add_plugin, settings
+- `observability_*`: enable_otel, cloud_trace, third_party, trace_view
 - Resources: `adk://version`, `adk://models`
 
 ## P2a runtime/sessions facts (see `docs/adk-api-notes/sessions.md`)
@@ -298,7 +300,65 @@
 - `LiteLlm` from `google.adk.models.lite_llm`. `GenerateContentConfig`/`SafetySetting`/`HarmCategory`/`HarmBlockThreshold` from `google.genai.types`.
 - langchain/crewai re-exported under `google.adk.integrations.*` (the `google.adk.tools.*` paths warn-deprecate).
 
+## P4c safety+observability facts (see `docs/adk-api-notes/safety-observability.md`)
+- **Agent callbacks (`LlmAgent` kwargs, positional callables)**: `before_model_callback(callback_
+  context, llm_request) -> LlmResponse | None` (non-None short-circuits the LLM — PROVEN offline),
+  `before_tool_callback(tool, args, tool_context) -> dict | None` (non-None short-circuits the
+  tool), `before_agent_callback(callback_context) -> Content | None`; also after_*/on_*_error. Each
+  kwarg accepts a single callable OR list OR None. `project_model` gains `CallbackSpec` (hook +
+  policy + params) on `AgentSpec.callbacks`; renders a REAL generated guardrail `def` per hook
+  attached via the real kwarg. 3 concrete policies: `block_keywords`/`max_input_chars` (before_model)
+  + `block_tool` (before_tool). Shared `_user_text`/`_refuse` helpers emitted once (the `_refuse`
+  helper keeps the guardrail body a single-arg call → ruff-stable even for long refusals; E501 only
+  fires on a long refusal *with spaces*, same as a long instruction — generated code is held to
+  format+isort, the established bar). ast.parse + ruff format + isort clean (proven).
+- **Plugins via `App` (NOT deprecated `Runner(plugins=)`)**: `Runner(plugins=[...])` emits a real
+  `DeprecationWarning` in 2.1.0; the clean path is `Runner(app=App(name=, root_agent=, plugins=[...]),
+  session_service=...)` — ZERO warnings (verified). `build_runner(..., plugins=None)`: no plugins →
+  unchanged `Runner(app_name=, agent=)`; with plugins → the App path. `runtime.json` gains a
+  `plugins` manifest (`PluginSpec{var,name,kind}`), emitted ONLY when non-empty (byte-identical to
+  P2a/P2b otherwise). `import_project_plugins` loads `plugins.py` instances by var name (fresh
+  compile/exec, no stale `sys.modules`). PROVEN offline: a `BasePlugin.on_event_callback` plugin
+  records events through `build_runner`+App.
+- **`BasePlugin` hooks are keyword-only async** (`on_event_callback(self,*,invocation_context,event)`,
+  `before_tool_callback(self,*,tool,tool_args,tool_context)`). `safety_add_plugin` generates real
+  subclasses: `logging` (on_event → module-level `<var>_events` list + `logging`) / `tool_denylist`
+  (before_tool → blocks denylisted tools). Both PROVEN offline (events recorded / tool blocked).
+- **`safety_settings`**: `gemini_safety` routes through the EXISTING `GenerateContentConfigSpec` +
+  models-domain `types.SafetySetting` rendering (merges with an existing GCC; NO duplication).
+  `max_llm_calls` → new `AgentSpec.max_llm_calls` field, serialized to the sidecar but NOT rendered
+  into `agent.py` (it's a `RunConfig` setting). PROVEN: SafetySetting lands in GCC; max_llm_calls
+  absent from `agent.py`.
+- **Observability = standard OpenTelemetry**. ADK's `google.adk.telemetry.tracer` is an OTel
+  `ProxyTracer` on the GLOBAL provider → a user enables a custom exporter by installing a
+  `TracerProvider` as the global provider. `enable_otel` generates `otel_setup.py` (ast-valid,
+  ruff/isort-clean): console exporter (base OTel SDK — CORE, `setup_otel()` actually runs + installs
+  the global provider, PROVEN) or OTLP (lazy import; `opentelemetry-exporter-otlp` is a SEPARATE
+  package, NOT installed — codegen-only with an install hint). `cloud_trace(target)` returns the REAL
+  `--trace_to_cloud` flag (+ `--otel_to_cloud`), both confirmed on deploy cloud_run/agent_engine/gke
+  + web/api_server (NOT `adk run`), and references the deploy/dev tool that applies it (no flag emitted
+  — no duplication). `third_party(provider)` (phoenix/arize/weave/signoz/otlp) emits OTLP env vars +
+  a setup snippet (secrets via env, never hardcoded). `trace_view` DELEGATES to `dev.web` (the ADK
+  Web UI hosts the trace view) via the same `adk_cli` process registry. **NO `uv.lock`/`pyproject`
+  change** (OTel SDK is a core google-adk dep; OTLP codegen-only).
+
 ## Test/quality state
+**633 passed, 6 skipped, coverage 95.44%** (after P4c). ruff + mypy clean (34 source files); full
+suite green under `-W error::DeprecationWarning` (28 warnings, all benign `UserWarning` from
+experimental ADK features — zero `DeprecationWarning`). **`uv.lock`/`pyproject` UNCHANGED by P4c**
+(no new deps — OTel SDK already a google-adk dep; OTLP/plugins codegen-only). P4c files:
+`domains/safety.py` (141 stmts, 87% cov), `domains/safety_plugins.py` (75, 91%),
+`domains/observability.py` (64, 98%), `domains/observability_setup.py` (29, 97%), `project_model`
+callbacks (specs/_codegen/render/sidecar — specs 100%, render 98%, _codegen 98%), `run_core` plugins
+(100% cov), `runtime` PluginSpec (91%); tests `test_safety.py` (20, incl. 5 functional offline),
+`test_observability.py` (19), extended `test_project_model.py` (+13 callbacks), `test_run_core.py`
+(+6 plugins), `test_runtime.py` (+3 manifest). FUNCTIONAL safety proof (no key): a `block_keywords`
+before_model guardrail returns the canned refusal AND the instrumented FakeLlm's call-list stays
+EMPTY (short-circuit proven end-to-end); a `block_tool` denylist short-circuits the tool; a generated
+`logging` plugin records events + a `tool_denylist` plugin blocks a tool through `build_runner`(App).
+The 6 skips are unchanged (gcp×2 + real-api_server boot + 3 a2a-gated). No orphaned processes/ports.
+
+## (historical) P4b test/quality snapshot
 **572 passed, 6 skipped, coverage 95.67%** (after P4b). ruff + mypy clean (30 source files); full
 suite green under `-W error::DeprecationWarning` (28 warnings, all benign `UserWarning` from
 experimental ADK features — zero `DeprecationWarning`). **`uv.lock`/`pyproject` UNCHANGED by P4b**
@@ -329,19 +389,17 @@ OFFLINE (no key) via a REAL `AgentEvaluator`; a wrong expected answer correctly 
 LLM-judge / eval-extra-absent return a clean `err` (no hang). P3a still green (run_core/run 100%).
 
 ## Resume instructions
-P4a (deploy + dev) ✅ · P4b (a2a + mcp_bridge) ✅ DONE. Next: **P4 remaining — safety,
-observability**. Follow the established pattern: lazy optional imports, `{ok,data,error}`
-envelope, bare tool names mounted via `namespace=`, sidecar/Workspace for any generated files,
-actionable `err` for an absent extra (mirror `gcp`/`db`/`eval`/`a2a`). Introspect each ADK surface
-BEFORE building and record facts in `docs/adk-api-notes/<domain>.md`; commit per-domain.
-- `observability` may wrap OpenTelemetry (already a core google-adk dep) — note the real CLI flags
-  `--trace_to_cloud`/`--otel_to_cloud` already discovered on web/api_server/deploy.
-- `safety` overlaps with `models` SafetySetting (P1) — check for reuse; ADK eval also has safety
-  LLM-judge metrics (needs creds — keep offline-friendly).
-- a2a/mcp_bridge DONE: `mcp_bridge` is the SERVING side of MCP (ADK tools → MCP schemas via
-  `adk_to_mcp_tool_type`), distinct from P1 `tools_add_mcp_toolset` (the CONSUMING side). a2a
-  `consume`/`expose`/`agent_card` cover Agent-to-Agent. NB: `adk deploy cloud_run`/`gke` may also
-  expose an `--a2a` endpoint flag — the dev/deploy domains could surface that later if wanted.
-Reuse `adk_cli` (process registry + `run_adk` + `available_flags`) for any new CLI-backed tool.
-Keep the suite green under `-W error::DeprecationWarning`, coverage ≥80%, no orphaned processes.
-After P4: P5 (skill) then P6 (Code Mode, prompts, docs, repo publish — confirm GitHub push).
+**P4 COMPLETE** (deploy+dev P4a ✅ · a2a+mcp_bridge P4b ✅ · safety+observability P4c ✅).
+Next: **P5 — the `adk-toolkit` skill** (SKILL.md + 14 reference docs). The skill should document
+all 81 exposed tools across the 17 domains, the code-first sidecar workflow (`agents.json` +
+`runtime.json`), and the offline-testable runtime (`run_core` + FakeLlm). Then P6 (Code Mode,
+prompts, docs, repo publish — confirm GitHub push).
+- Established patterns to keep: lazy optional imports, `{ok,data,error}` envelope, bare tool names
+  mounted via `namespace=`, sidecar/Workspace for generated files, actionable `err` for an absent
+  extra (`gcp`/`db`/`eval`/`a2a`), generated code held to ast.parse + ruff format + isort.
+- P4c notes: agent guardrails render as real functions attached via the real `LlmAgent` callback
+  kwargs; plugins wire via `Runner(app=App(plugins=[...]))` (NOT the deprecated `plugins=` kwarg);
+  `safety_settings` reuses the models GCC/SafetySetting rendering; observability wraps standard
+  OTel (console core, OTLP codegen-only) and `cloud_trace`/`trace_view` reference deploy/dev (no
+  duplication). Reuse `adk_cli` (process registry) for any new CLI-backed tool.
+- Keep the suite green under `-W error::DeprecationWarning`, coverage ≥80%, no orphaned processes.
