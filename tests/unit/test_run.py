@@ -78,6 +78,27 @@ def _scaffold_tool_agent(root: Path, app_name: str = "calc") -> str:
     return str(root)
 
 
+def _persist_max_llm_calls(path: str, app_name: str, value: int) -> None:
+    """Persiste ``max_llm_calls=value`` sur l'agent ROOT via le VRAI outil ``safety_settings``.
+
+    On crée d'abord l'agent root dans le sidecar (``agents_create_llm`` + ``agents_set_root``),
+    puis on appelle ``safety_settings(max_llm_calls=value)`` — exactement le chemin utilisateur.
+    ``safety_settings`` régénère ``agent.py`` (modèle Gemini), donc l'appelant le RÉÉCRIT ensuite
+    avec un FakeLlm pour rester exécutable hors-ligne (le sidecar ``agents.json`` — d'où la valeur
+    persistée est relue — n'est pas affecté par cette réécriture d'``agent.py``).
+    """
+    from adk_toolkit_mcp.domains import agents as AGENTS
+    from adk_toolkit_mcp.domains import safety as SAFETY
+
+    assert AGENTS.create_llm(path=path, app_name=app_name, name=app_name)["ok"]
+    assert AGENTS.set_root(path=path, app_name=app_name, name=app_name)["ok"]
+    res = SAFETY.safety_settings(
+        path=path, app_name=app_name, agent_name=app_name, max_llm_calls=value
+    )
+    assert res["ok"], res
+    assert res["data"]["max_llm_calls"] == value
+
+
 # --------------------------------------------------------------------------- #
 # FUNCTIONAL — run_agent exécute un agent FakeLlm hors-ligne
 # --------------------------------------------------------------------------- #
@@ -125,6 +146,106 @@ async def test_run_agent_reuses_session_across_calls(tmp_path: Path) -> None:
     got = await S.get(path=path, app_name="myapp", user_id="u1", session_id="s1")
     assert got["ok"] is True
     assert got["data"]["event_count"] >= first_count
+
+
+# --------------------------------------------------------------------------- #
+# FUNCTIONAL — persisted max_llm_calls (safety_settings) is honored by run_*
+# --------------------------------------------------------------------------- #
+async def test_run_agent_uses_persisted_max_llm_calls(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """run_agent SANS max_llm_calls explicite applique le plafond PERSISTÉ (=7) du root agent.
+
+    On persiste ``safety_settings(..., max_llm_calls=7)`` sur le root (vrai chemin utilisateur),
+    on réécrit ``agent.py`` en FakeLlm (offline), puis on appelle ``run_agent`` SANS passer
+    ``max_llm_calls``. On capte la ``RunConfig`` réellement construite via un seam : on monkeypatch
+    ``R.build_run_config`` pour enregistrer l'argument ``max_llm_calls`` reçu et le ``RunConfig``
+    renvoyé (en déléguant à la vraie fabrique pour que le run aboutisse).
+
+    Ce test ÉCHOUE avant le correctif (run_* ignorait la valeur persistée → build_run_config
+    recevait ``None`` au lieu de 7).
+    """
+    from adk_toolkit_mcp import run_core
+
+    path = _scaffold_fake_agent(tmp_path, "myapp", answer="capped")
+    _persist_max_llm_calls(path, "myapp", 7)
+    # safety_settings a régénéré agent.py (Gemini) : on le remet en FakeLlm (exécution offline).
+    _scaffold_fake_agent(tmp_path, "myapp", answer="capped")
+
+    seen: dict[str, object] = {}
+    real_build = run_core.build_run_config
+
+    def _spy_build_run_config(**kwargs: object) -> object:
+        seen["max_llm_calls"] = kwargs.get("max_llm_calls")
+        cfg = real_build(**kwargs)  # type: ignore[arg-type]
+        seen["run_config"] = cfg
+        return cfg
+
+    monkeypatch.setattr(R, "build_run_config", _spy_build_run_config)
+
+    result = await R.agent(path=path, app_name="myapp", user_id="u1", session_id="s1", message="hi")
+    assert result["ok"] is True, result
+    # Le plafond persisté (7) a été résolu et passé à build_run_config…
+    assert seen["max_llm_calls"] == 7
+    # …et le RunConfig réellement utilisé par le runner porte bien max_llm_calls == 7.
+    assert seen["run_config"].max_llm_calls == 7  # type: ignore[attr-defined]
+
+
+async def test_run_agent_explicit_max_llm_calls_overrides_persisted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Une valeur d'appelant explicite PRIME sur le persisté (7 persisté, 3 explicite → 3)."""
+    from adk_toolkit_mcp import run_core
+
+    path = _scaffold_fake_agent(tmp_path, "myapp", answer="capped")
+    _persist_max_llm_calls(path, "myapp", 7)
+    _scaffold_fake_agent(tmp_path, "myapp", answer="capped")
+
+    seen: dict[str, object] = {}
+    real_build = run_core.build_run_config
+
+    def _spy_build_run_config(**kwargs: object) -> object:
+        seen["max_llm_calls"] = kwargs.get("max_llm_calls")
+        return real_build(**kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(R, "build_run_config", _spy_build_run_config)
+
+    result = await R.agent(
+        path=path,
+        app_name="myapp",
+        user_id="u1",
+        session_id="s1",
+        message="hi",
+        max_llm_calls=3,
+    )
+    assert result["ok"] is True, result
+    # L'explicite (3) écrase le persisté (7).
+    assert seen["max_llm_calls"] == 3
+
+
+async def test_run_agent_without_sidecar_uses_adk_default(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Sans sidecar ni valeur explicite, max_llm_calls reste None → défaut ADK (pas de régression).
+
+    Garantit que l'enrichissement par valeur persistée est best-effort : une app scaffoldée sans
+    sidecar ``agents.json`` (cas historique de ces tests) garde le comportement d'avant (``None``).
+    """
+    from adk_toolkit_mcp import run_core
+
+    path = _scaffold_fake_agent(tmp_path, "myapp", answer="default")
+    seen: dict[str, object] = {}
+    real_build = run_core.build_run_config
+
+    def _spy_build_run_config(**kwargs: object) -> object:
+        seen["max_llm_calls"] = kwargs.get("max_llm_calls")
+        return real_build(**kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(R, "build_run_config", _spy_build_run_config)
+
+    result = await R.agent(path=path, app_name="myapp", user_id="u1", session_id="s1", message="hi")
+    assert result["ok"] is True, result
+    assert seen["max_llm_calls"] is None
 
 
 # --------------------------------------------------------------------------- #

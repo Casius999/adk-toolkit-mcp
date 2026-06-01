@@ -18,7 +18,9 @@ Trois surfaces (cf. ``docs/adk-api-notes/safety-observability.md`` pour les API 
    pour que ``run_core.build_runner`` la câble sur le ``Runner`` (via ``App``).
 3. :func:`settings` — fine convenance : ``gemini_safety`` route vers le rendu EXISTANT de
    ``generate_content_config`` (réutilise ``project_model`` — pas de duplication) ;
-   ``max_llm_calls`` est persisté comme plafond d'exécution de l'agent (exposé à ``RunConfig``).
+   ``max_llm_calls`` est persisté comme plafond d'exécution par défaut de l'agent et **réellement
+   appliqué** par les outils ``run_*`` quand l'appel ne passe pas de ``max_llm_calls`` explicite
+   (le domaine ``run`` lit la valeur persistée de l'agent root → ``RunConfig.max_llm_calls``).
 """
 
 from __future__ import annotations
@@ -313,9 +315,12 @@ def safety_settings(
       ``project_model.GenerateContentConfigSpec`` + le rendu des ``types.SafetySetting`` — AUCUNE
       duplication de la logique de sûreté du domaine ``models``). Fusionne avec une
       ``generate_content_config`` existante (préserve temperature, etc.).
-    - ``max_llm_calls`` : plafond d'appels LLM par défaut, persisté dans le sidecar (clé d'app
-      ``max_llm_calls``) et exposé à ``RunConfig.max_llm_calls`` par le domaine ``run`` (ce n'est
-      pas un kwarg d'``LlmAgent`` — donc non rendu dans ``agent.py``).
+    - ``max_llm_calls`` : stocké comme plafond d'appels LLM **par défaut de l'agent**, persisté
+      dans le sidecar (``AgentSpec.max_llm_calls``). Il est **réellement utilisé** par les outils
+      ``run_*`` (``run_agent``/``run_stream``/``run_live``) quand l'appel ne passe PAS de
+      ``max_llm_calls`` explicite : le domaine ``run`` lit la valeur persistée de l'agent ROOT et
+      la transmet à ``RunConfig.max_llm_calls``. Une valeur d'appelant explicite prime toujours.
+      Ce n'est pas un kwarg d'``LlmAgent`` — donc non rendu dans ``agent.py``.
 
     Appeler sans aucun des deux est une erreur (rien à faire).
     """

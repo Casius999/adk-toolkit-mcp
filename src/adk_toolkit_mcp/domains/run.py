@@ -25,6 +25,7 @@ from typing import TYPE_CHECKING, Any
 from fastmcp import Context, FastMCP
 
 from ..envelope import err, ok
+from ..project_model import load_model
 from ..run_core import (
     RootAgentImportError,
     build_run_config,
@@ -87,6 +88,31 @@ def _final_text(serialized: list[dict[str, Any]]) -> str | None:
     return finals[-1]["text"] if finals else None
 
 
+def _resolve_max_llm_calls(path: str, app_name: str, caller_value: int | None) -> int | None:
+    """Résout le plafond effectif d'appels LLM pour un run.
+
+    Précédence : une valeur d'appelant explicite (``caller_value is not None``) **prime toujours**.
+    Sinon, on retombe sur la valeur **persistée** par ``safety_settings(..., max_llm_calls=N)`` :
+    le ``AgentSpec.max_llm_calls`` de l'agent ROOT du projet (``model.root``), lu dans le sidecar
+    ``.adk_toolkit/agents.json`` via :func:`load_model`. Si rien n'est persisté (ou pas de root,
+    ou pas de sidecar), on renvoie ``None`` → défaut ADK (500), comme avant.
+
+    Best-effort et non bloquant : un sidecar corrompu (``ValueError``) ne fait PAS échouer le run
+    (le domaine ``run`` ne lisait historiquement pas ``agents.json``) — on retombe simplement sur
+    ``None``. La config runtime corrompue, elle, reste gérée en amont par ``_config_for``.
+    """
+    if caller_value is not None:
+        return caller_value
+    try:
+        model = load_model(_app_ws(path, app_name), app_name)
+    except ValueError:
+        return None
+    if model.root is None:
+        return None
+    root_spec = model.get(model.root)
+    return root_spec.max_llm_calls if root_spec is not None else None
+
+
 def _model_supports_live(agent: BaseAgent) -> bool:
     """Indique si le modèle de l'agent supporte la connexion Live (``connect`` surchargé).
 
@@ -139,8 +165,10 @@ async def agent(
     la liste des événements **sérialisés** et le texte de la réponse finale.
 
     ``streaming_mode`` ∈ {``NONE``, ``SSE``, ``BIDI``} (par défaut ``NONE`` : un seul
-    ``LlmResponse`` final par tour). ``max_llm_calls`` borne le nombre d'appels LLM (défaut ADK
-    500 si ``None``).
+    ``LlmResponse`` final par tour). ``max_llm_calls`` borne le nombre d'appels LLM : une valeur
+    explicite **prime** ; si ``None``, on retombe sur le plafond **persisté** par
+    ``safety_settings(..., max_llm_calls=N)`` (``AgentSpec.max_llm_calls`` de l'agent root du
+    sidecar) ; à défaut, sur le défaut ADK (500).
     """
     if not user_id.strip():
         return err("user_id est vide.")
@@ -154,8 +182,13 @@ async def agent(
         return prepared
     root_agent, config = prepared
 
+    # Plafond effectif : valeur d'appelant explicite, sinon valeur persistée (root spec).
+    resolved_max_llm_calls = _resolve_max_llm_calls(path, app_name, max_llm_calls)
+
     try:
-        run_config = build_run_config(streaming_mode=streaming_mode, max_llm_calls=max_llm_calls)
+        run_config = build_run_config(
+            streaming_mode=streaming_mode, max_llm_calls=resolved_max_llm_calls
+        )
         runner = build_runner(app_name, root_agent, config)
         events = await collect_events(
             runner,
@@ -196,7 +229,8 @@ async def stream(
 
     Force ``streaming_mode="SSE"``. Pour chaque événement produit, rapporte la progression au
     client MCP (``ctx.report_progress`` + ``ctx.info``) — utile pour un suivi en temps réel.
-    Renvoie les mêmes données que ``agent`` (événements sérialisés + texte final).
+    Renvoie les mêmes données que ``agent`` (événements sérialisés + texte final). ``max_llm_calls``
+    suit la même précédence que ``agent`` (explicite > plafond persisté du root > défaut ADK 500).
     """
     if not user_id.strip():
         return err("user_id est vide.")
@@ -218,8 +252,11 @@ async def stream(
         await ctx.report_progress(index, message=f"event {index} ({label})")
         await ctx.info(f"[run.stream] event {index}: author={label} final={event['is_final']}")
 
+    # Plafond effectif : valeur d'appelant explicite, sinon valeur persistée (root spec).
+    resolved_max_llm_calls = _resolve_max_llm_calls(path, app_name, max_llm_calls)
+
     try:
-        run_config = build_run_config(streaming_mode="SSE", max_llm_calls=max_llm_calls)
+        run_config = build_run_config(streaming_mode="SSE", max_llm_calls=resolved_max_llm_calls)
         runner = build_runner(app_name, root_agent, config)
         events = await collect_events(
             runner,
@@ -264,7 +301,8 @@ async def live(
     et renvoie un ``err`` actionnable AVANT toute connexion — il ne bloque jamais.
 
     En présence des prérequis, il ouvrirait une ``LiveRequestQueue``, y pousserait ``message``,
-    et streamerait les événements de ``runner.run_live(...)``.
+    et streamerait les événements de ``runner.run_live(...)``. ``max_llm_calls`` suit la même
+    précédence que ``agent`` (explicite > plafond persisté du root > défaut ADK 500).
     """
     if not user_id.strip() or not session_id.strip():
         return err("user_id et session_id sont requis.")
@@ -290,12 +328,15 @@ async def live(
             "(BaseLlm.connect non surchargé). Utilise un modèle Gemini live-capable."
         )
 
+    # Plafond effectif : valeur d'appelant explicite, sinon valeur persistée (root spec).
+    resolved_max_llm_calls = _resolve_max_llm_calls(path, app_name, max_llm_calls)
+
     # Prérequis présents : câblage fidèle de la voie Live (non couvert en CI).
     try:  # pragma: no cover - nécessite une vraie API Live + websocket
         from google.adk.agents.live_request_queue import LiveRequestQueue
         from google.genai import types
 
-        run_config = build_run_config(streaming_mode="BIDI", max_llm_calls=max_llm_calls)
+        run_config = build_run_config(streaming_mode="BIDI", max_llm_calls=resolved_max_llm_calls)
         runner = build_runner(app_name, root_agent, config)
         session_service = runner.session_service
         session = await session_service.get_session(
