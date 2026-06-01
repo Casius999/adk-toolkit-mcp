@@ -19,11 +19,11 @@
 | **P1 Author** | project, agents, tools (3a+3b), models | ✅ DONE |
 | **P2 State** | sessions (P2a), memory + artifacts (P2b) | ✅ DONE |
 | **P3 Runtime/Eval** | run (P3a) ✅ · eval (P3b) ✅ | ✅ DONE |
-| **P4 Ops** | deploy (P4a) ✅ · dev (P4a) ✅ · a2a, observability, safety, mcp_bridge | ⬜ **(P4a done; a2/mcp_bridge/safety/observability next)** |
+| **P4 Ops** | deploy (P4a) ✅ · dev (P4a) ✅ · a2a (P4b) ✅ · mcp_bridge (P4b) ✅ · observability, safety | ⬜ **(P4a+P4b done; safety/observability next)** |
 | **P5 Skill** | `adk-toolkit` skill (SKILL.md + 14 refs) | ⬜ |
 | **P6 Finish** | Code Mode, prompts, docs, repo publish (confirm GitHub) | ⬜ |
 
-## Exposed tools so far (69)
+## Exposed tools so far (74)
 - `project_*`: create, inspect, set_env, add_extra, agent_config
 - `agents_*`: create_llm, create_sequential, create_parallel, create_loop, create_custom, compose, as_tool, set_root, list, get
 - `tools_*`: add_function, add_long_running, add_builtin, add_agent_tool, add_openapi, add_bigquery, add_spanner, add_mcp_toolset, add_apihub, add_langchain, add_crewai, set_auth, list
@@ -35,6 +35,8 @@
 - `eval_*`: create_set, set_criteria, run, report
 - `deploy_*`: preflight, agent_engine, cloud_run, gke, containerize, status
 - `dev_*`: web, api_server, run, stop, status, logs
+- `a2a_*`: consume, expose, agent_card
+- `mcp_bridge_*`: expose_adk_tools, convert_builtin
 - Resources: `adk://version`, `adk://models`
 
 ## P2a runtime/sessions facts (see `docs/adk-api-notes/sessions.md`)
@@ -232,6 +234,60 @@
   registry lifecycle (start real `adk api_server` → status running → logs → stop → not-running)
   is always tested, plus argv construction + flag-validity.
 
+## P4b a2a+mcp_bridge facts (see `docs/adk-api-notes/a2a-mcp-bridge.md`)
+- **Introspection done after a transient `uv pip install "google-adk[a2a]"`** (added only
+  `a2a-sdk==0.3.26`), then `uv sync --extra dev` restored the env. `uv.lock`/`pyproject` blob
+  hashes UNCHANGED (verified vs baseline `fc5334a7`/`e792cbef`); the `a2a` extra was already
+  declared in pyproject from P0 — only INSTALLED transiently, never re-locked.
+- **`adk_to_mcp_tool_type(tool: BaseTool) -> mcp.types.Tool`** — `mcp` is **CORE** (fastmcp dep),
+  so `mcp_bridge` is fully CI-testable with **NO extra**. Returns an `mcp.types.Tool` (fields:
+  name/title/description/inputSchema(dict)/outputSchema/icons/annotations/meta/execution).
+  FUNCTIONAL: `google_search` → `{name:'google_search', description:'google_search',
+  inputSchema:{}}` (builtin, no params → EMPTY schema); a `FunctionTool(add_numbers)` → real
+  JSON-Schema `{properties:{a,b}, required:[a,b], type:'object', title:'add_numbersParams'}`.
+- **`expose_adk_tools` robust path**: `agent.tools` holds RAW entries (a plain `def` is a bare
+  `function`, NOT a FunctionTool). Use **`await agent.canonical_tools(ctx=None)`** (async →
+  `list[BaseTool]`): wraps functions into FunctionTool, normalises to BaseTool — every element then
+  converts. Import the project agent via `run_core.import_root_agent`, locate it with
+  **`BaseAgent.find_agent(name)`** (recursive; returns self for the root name, None if absent),
+  then convert. Workflow agents (Sequential/Parallel/Loop) lack `canonical_tools` → guarded `err`.
+- **`convert_builtin(kind)`**: only `CORE_BUILTINS` (no-arg). Some "core" builtins are BaseTool
+  instances (google_search/url_context/load_memory/get_user_choice → convert directly); a few are
+  bare functions (`exit_loop`/`transfer_to_agent` → wrapped in FunctionTool). `vertex_ai_search`
+  (ARG_BUILTIN) is rejected with guidance to use `expose_adk_tools`.
+- **a2a needs the `a2a` extra for ALL three surfaces** (each module imports `a2a.*` at top):
+  - **`to_a2a(agent, *, host='localhost', port=8000, protocol='http', agent_card=None, ...) ->
+    Starlette`** (`@a2a_experimental` → `UserWarning`, NOT Deprecation). ⚠️ Real sig adds
+    `host`/`protocol` vs the task's guess. **Routes are registered LAZILY in the Starlette
+    lifespan (on startup)** via `A2AStarletteApplication.add_routes_to_app` — `app.routes` is empty
+    until uvicorn starts the app (only a LIVE probe sees the route). Well-known card route =
+    `a2a.utils.constants.AGENT_CARD_WELL_KNOWN_PATH` = **`/.well-known/agent-card.json`**. A `str`
+    `agent_card=` is a FILE PATH (not a URL).
+  - **⚠️ `RemoteA2aAgent` is NOT in `google.adk.agents`** in 2.1.0 (not in `__all__`, no lazy
+    getattr). The ONLY import is **`from google.adk.agents.remote_a2a_agent import
+    RemoteA2aAgent`**. Sig `RemoteA2aAgent(name: str, agent_card: AgentCard|str, *, ...)` —
+    `agent_card` is the 2nd positional; a `BaseAgent` subclass → composes as a `sub_agent`.
+  - **`AgentCardBuilder(*, agent: BaseAgent, rpc_url=None, ...)`** with **async** `build() ->
+    a2a.types.AgentCard`. `to_a2a` uses it internally (`rpc_url=f"{protocol}://{host}:{port}/"`).
+- **project_model `remote_a2a`** (new AgentType): renders `<name> = RemoteA2aAgent(name=...,
+  agent_card="<url>")` + the submodule import; `_needed_agent_imports` EXCLUDES it (different
+  module → `_REMOTE_A2A_IMPORT` appended separately, merged/sorted by `_merge_tool_imports` →
+  isort-clean). Topological order treats it like any agent reference (no children, can be a
+  sub_agent). `validate_spec` requires a non-empty `agent_card`. ast.parse + ruff format + isort
+  all clean (proven).
+- **a2a domain** (`domains/a2a.py`, 78% cov — gated execute/build blocks need the extra):
+  `consume` adds a `remote_a2a` proxy (codegen-only, no extra) + regenerates; `expose` writes
+  `a2a_app.py` (`a2a_app = to_a2a(root_agent, port=PORT)` + `from agent import root_agent`),
+  `execute=False` returns file + `uvicorn a2a_app:a2a_app` (cwd = app dir resolves the sibling
+  `agent` import), `execute=True` gates on `find_spec('a2a')` + starts a managed uvicorn via the
+  adk_cli registry; `agent_card` builds the AgentCard (gated, actionable `err` when absent). The
+  real-type subprocess probe, live uvicorn boot (`ADK_TOOLKIT_TEST_A2A=1`), and real AgentCard
+  build are GATED on `find_spec('a2a')` and SKIP without the extra (3 of the 6 suite skips).
+- **mcp_bridge domain** (`domains/mcp_bridge.py`, 92% cov): FULLY functional in CI (no extra).
+  In-process construction of a deprecated `SequentialAgent` (in two tests) emits a real
+  `DeprecationWarning` → wrapped in a scoped `warnings.catch_warnings()` ignore filter (mirrors the
+  eval domain pattern; OUR code stays strict under `-W error::DeprecationWarning`).
+
 ## Key ADK 2.1.0 facts learned (see `docs/adk-api-notes/`)
 - `google-adk` 2.1.0, `fastmcp` 3.3.1, Python 3.12 local (CI matrix 3.11/3.12).
 - `FastMCP.mount(prefix=)` is DEPRECATED → use `namespace=`.
@@ -243,9 +299,18 @@
 - langchain/crewai re-exported under `google.adk.integrations.*` (the `google.adk.tools.*` paths warn-deprecate).
 
 ## Test/quality state
-537 passed, 3 skipped, coverage 96.28%. ruff + mypy clean; full suite green under
-`-W error::DeprecationWarning` (27 warnings, all benign `UserWarning` from experimental ADK
-features — zero `DeprecationWarning`). P4a files: `adk_cli.py` (~280 lines, 93% cov),
+**572 passed, 6 skipped, coverage 95.67%** (after P4b). ruff + mypy clean (30 source files); full
+suite green under `-W error::DeprecationWarning` (28 warnings, all benign `UserWarning` from
+experimental ADK features — zero `DeprecationWarning`). **`uv.lock`/`pyproject` UNCHANGED by P4b**
+(a2a extra installed transiently for introspection only; blob hashes verified vs baseline). P4b
+files: `domains/a2a.py` (104 stmts, 78% cov — execute/build blocks gated on the extra),
+`domains/mcp_bridge.py` (52 stmts, 92% cov), `project_model` `remote_a2a` (specs/render/sidecar);
+tests `test_a2a.py` (22 tests, 3 gated skips), `test_mcp_bridge.py` (12 tests, fully CI), extended
+`test_project_model.py` (+7 remote_a2a tests). The 6 skips = 3 prior (gcp×2 + real-api_server boot)
++ 3 new a2a-gated (real RemoteA2aAgent type / live uvicorn boot / real AgentCard build). FUNCTIONAL
+mcp_bridge proof (no extra): `adk_to_mcp_tool_type(google_search)` → MCP Tool
+`{name:'google_search', description:'google_search', inputSchema:{}}`; a FunctionTool → a real
+JSON-Schema. P4a files: `adk_cli.py` (~280 lines, 93% cov),
 `domains/deploy.py` (155 stmts, 94% cov), `domains/dev.py` (86 stmts, 95% cov); test files
 `test_adk_cli.py` (21 tests), `test_deploy.py` (33), `test_dev.py` (15, 1 gated skip). The 3rd
 skip is the gated real-`adk api_server`-boot test (`ADK_TOOLKIT_TEST_API_SERVER=1`; PASSES locally
@@ -264,20 +329,19 @@ OFFLINE (no key) via a REAL `AgentEvaluator`; a wrong expected answer correctly 
 LLM-judge / eval-extra-absent return a clean `err` (no hang). P3a still green (run_core/run 100%).
 
 ## Resume instructions
-P4a (deploy + dev) ✅ DONE. Next: **P4 remaining — a2a, mcp_bridge, safety, observability**.
-Follow the established pattern: lazy optional imports, `{ok,data,error}` envelope, bare tool
-names mounted via `namespace=`, sidecar/Workspace for any generated files, actionable `err` for
-an absent extra (mirror `gcp`/`db`/`eval`). Introspect each ADK surface BEFORE building and record
-facts in `docs/adk-api-notes/<domain>.md`; commit per-domain.
-- `a2a` (Agent-to-Agent) likely needs the `a2a` extra — introspect `google.adk` for the A2A
-  server/card surface (e.g. `to_a2a`/agent card export) AND note `adk deploy cloud_run`/`gke`
-  already expose an `--a2a` endpoint flag (the dev/deploy domains could surface that too).
+P4a (deploy + dev) ✅ · P4b (a2a + mcp_bridge) ✅ DONE. Next: **P4 remaining — safety,
+observability**. Follow the established pattern: lazy optional imports, `{ok,data,error}`
+envelope, bare tool names mounted via `namespace=`, sidecar/Workspace for any generated files,
+actionable `err` for an absent extra (mirror `gcp`/`db`/`eval`/`a2a`). Introspect each ADK surface
+BEFORE building and record facts in `docs/adk-api-notes/<domain>.md`; commit per-domain.
 - `observability` may wrap OpenTelemetry (already a core google-adk dep) — note the real CLI flags
   `--trace_to_cloud`/`--otel_to_cloud` already discovered on web/api_server/deploy.
 - `safety` overlaps with `models` SafetySetting (P1) — check for reuse; ADK eval also has safety
   LLM-judge metrics (needs creds — keep offline-friendly).
-- `mcp_bridge` wraps `McpToolset` (P1 `tools_add_mcp_toolset` already exists — avoid duplication;
-  expose the *serving* side if distinct: ADK can also EXPOSE tools as an MCP server).
+- a2a/mcp_bridge DONE: `mcp_bridge` is the SERVING side of MCP (ADK tools → MCP schemas via
+  `adk_to_mcp_tool_type`), distinct from P1 `tools_add_mcp_toolset` (the CONSUMING side). a2a
+  `consume`/`expose`/`agent_card` cover Agent-to-Agent. NB: `adk deploy cloud_run`/`gke` may also
+  expose an `--a2a` endpoint flag — the dev/deploy domains could surface that later if wanted.
 Reuse `adk_cli` (process registry + `run_adk` + `available_flags`) for any new CLI-backed tool.
 Keep the suite green under `-W error::DeprecationWarning`, coverage ≥80%, no orphaned processes.
 After P4: P5 (skill) then P6 (Code Mode, prompts, docs, repo publish — confirm GitHub push).
