@@ -11,6 +11,7 @@ from .domains.eval import eval_server
 from .domains.mcp_bridge import mcp_bridge_server
 from .domains.memory import memory_server
 from .domains.models import models_server
+from .domains.observability import observability_server
 from .domains.project import project_server
 from .domains.run import run_server
 from .domains.safety import safety_server
@@ -56,6 +57,8 @@ def build_server() -> FastMCP:
     mcp.mount(a2a_server, namespace="a2a")
     # P4 domaine c : safety (callbacks/plugins/réglages de sûreté). Exposés `safety_<nom>`.
     mcp.mount(safety_server, namespace="safety")
+    # P4 domaine c : observability (OpenTelemetry/Cloud Trace). Exposés `observability_<nom>`.
+    mcp.mount(observability_server, namespace="observability")
     return mcp
 
 
