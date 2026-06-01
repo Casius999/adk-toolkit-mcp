@@ -680,6 +680,10 @@ class AgentSpec:
     #: Garde-fous (P4c) : un :class:`CallbackSpec` par hook. Rendu comme une fonction générée
     #: attachée via le vrai kwarg (``before_model_callback=...``). LlmAgent uniquement.
     callbacks: tuple[CallbackSpec, ...] = ()
+    #: Plafond d'appels LLM par défaut (P4c). Persisté dans le sidecar mais **NON rendu** dans
+    #: ``agent.py`` (ce n'est pas un kwarg d'``LlmAgent`` mais un réglage de ``RunConfig`` exposé
+    #: par le domaine ``run``). ``None`` = défaut ADK (500).
+    max_llm_calls: int | None = None
 
     def tool_specs(self) -> tuple[ToolSpec, ...]:
         """Normalise ``tools`` en ``ToolSpec`` (les chaînes héritées -> ``builtin``)."""
@@ -708,6 +712,8 @@ class AgentSpec:
                 base["generate_content_config"] = self.generate_content_config.to_dict()
             if self.callbacks:
                 base["callbacks"] = [c.to_dict() for c in self.callbacks]
+            if self.max_llm_calls is not None:
+                base["max_llm_calls"] = self.max_llm_calls
         elif self.type in ("sequential", "parallel"):
             base["sub_agents"] = list(self.sub_agents)
         elif self.type == "loop":
@@ -736,6 +742,8 @@ class AgentSpec:
         )
         raw_cbs = data.get("callbacks") or []
         callbacks = tuple(CallbackSpec.from_dict(c) for c in raw_cbs if isinstance(c, dict))
+        raw_max = data.get("max_llm_calls")
+        max_llm_calls = int(raw_max) if isinstance(raw_max, int) else None
         return cls(
             name=str(data["name"]),
             type=atype,
@@ -750,6 +758,7 @@ class AgentSpec:
             model_spec=model_spec,
             generate_content_config=generate_content_config,
             callbacks=callbacks,
+            max_llm_calls=max_llm_calls,
         )
 
 

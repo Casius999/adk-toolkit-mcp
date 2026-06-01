@@ -13,6 +13,7 @@ from .domains.memory import memory_server
 from .domains.models import models_server
 from .domains.project import project_server
 from .domains.run import run_server
+from .domains.safety import safety_server
 from .domains.sessions import sessions_server
 from .domains.tools import tools_server
 from .prompts import register_prompts
@@ -53,6 +54,8 @@ def build_server() -> FastMCP:
     mcp.mount(mcp_bridge_server, namespace="mcp_bridge")
     # P4 domaine b : a2a (consume/expose/agent_card Agent-to-Agent). Exposés `a2a_<nom>`.
     mcp.mount(a2a_server, namespace="a2a")
+    # P4 domaine c : safety (callbacks/plugins/réglages de sûreté). Exposés `safety_<nom>`.
+    mcp.mount(safety_server, namespace="safety")
     return mcp
 
 
