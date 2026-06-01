@@ -29,6 +29,52 @@ from typing import Any, Literal
 from .workspace import Workspace
 
 # --------------------------------------------------------------------------- #
+# Constantes modèles
+# --------------------------------------------------------------------------- #
+#: Providers LiteLLM supportés (validation domaine models).
+LITELLM_PROVIDERS: frozenset[str] = frozenset(
+    {
+        "openai",
+        "anthropic",
+        "ollama",
+        "ollama_chat",
+        "openrouter",
+        "vllm",
+        "lm_studio",
+        "gemini",
+    }
+)
+
+#: Membres valides de ``HarmCategory`` (confirmés par introspection google-genai).
+HARM_CATEGORIES: frozenset[str] = frozenset(
+    {
+        "HARM_CATEGORY_UNSPECIFIED",
+        "HARM_CATEGORY_HARASSMENT",
+        "HARM_CATEGORY_HATE_SPEECH",
+        "HARM_CATEGORY_SEXUALLY_EXPLICIT",
+        "HARM_CATEGORY_DANGEROUS_CONTENT",
+        "HARM_CATEGORY_CIVIC_INTEGRITY",
+        "HARM_CATEGORY_IMAGE_HATE",
+        "HARM_CATEGORY_IMAGE_DANGEROUS_CONTENT",
+        "HARM_CATEGORY_IMAGE_HARASSMENT",
+        "HARM_CATEGORY_IMAGE_SEXUALLY_EXPLICIT",
+        "HARM_CATEGORY_JAILBREAK",
+    }
+)
+
+#: Membres valides de ``HarmBlockThreshold`` (confirmés par introspection google-genai).
+HARM_BLOCK_THRESHOLDS: frozenset[str] = frozenset(
+    {
+        "HARM_BLOCK_THRESHOLD_UNSPECIFIED",
+        "BLOCK_LOW_AND_ABOVE",
+        "BLOCK_MEDIUM_AND_ABOVE",
+        "BLOCK_ONLY_HIGH",
+        "BLOCK_NONE",
+        "OFF",
+    }
+)
+
+# --------------------------------------------------------------------------- #
 # Constantes
 # --------------------------------------------------------------------------- #
 #: Dossier du sidecar, relatif au dossier de l'app (`<path>/<app_name>`).
@@ -396,11 +442,119 @@ class ToolRender:
 
 
 @dataclass(frozen=True)
+class LiteLlmSpec:
+    """Spécification immuable d'un modèle LiteLLM.
+
+    ``provider`` ∈ :data:`LITELLM_PROVIDERS`. Pour ``lm_studio``, le provider est rendu
+    comme ``openai`` dans le code généré, et ``api_base`` vaut par défaut
+    ``http://127.0.0.1:1234/v1``.
+
+    ``api_key_env`` : si fourni, le code généré inclut ``api_key=os.getenv("<ENV>")`` ; sinon
+    ``api_key`` est omis (LiteLLM lit les variables d'env du provider automatiquement).
+    **La clé n'est jamais écrite en dur.**
+    """
+
+    provider: str
+    model: str
+    api_base: str = ""
+    api_key_env: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        d: dict[str, Any] = {"provider": self.provider, "model": self.model}
+        if self.api_base:
+            d["api_base"] = self.api_base
+        if self.api_key_env:
+            d["api_key_env"] = self.api_key_env
+        return d
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> LiteLlmSpec:
+        return cls(
+            provider=str(data.get("provider", "")),
+            model=str(data.get("model", "")),
+            api_base=str(data.get("api_base", "")),
+            api_key_env=str(data.get("api_key_env", "")),
+        )
+
+
+@dataclass(frozen=True)
+class SafetySettingSpec:
+    """Spécification immuable d'un SafetySetting (``category`` + ``threshold``).
+
+    Les valeurs sont des **noms de membres enum** (ex. ``"HARM_CATEGORY_HARASSMENT"``,
+    ``"BLOCK_MEDIUM_AND_ABOVE"``) — validées contre :data:`HARM_CATEGORIES` /
+    :data:`HARM_BLOCK_THRESHOLDS`.
+    """
+
+    category: str
+    threshold: str
+
+    def to_dict(self) -> dict[str, str]:
+        return {"category": self.category, "threshold": self.threshold}
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> SafetySettingSpec:
+        return cls(category=str(data.get("category", "")), threshold=str(data.get("threshold", "")))
+
+
+@dataclass(frozen=True)
+class GenerateContentConfigSpec:
+    """Spécification immuable d'un ``types.GenerateContentConfig``.
+
+    Seuls les champs non-None sont rendus dans le code généré.
+    ``safety_settings`` est un tuple de :class:`SafetySettingSpec` (gelé pour l'immuabilité).
+    """
+
+    temperature: float | None = None
+    max_output_tokens: int | None = None
+    top_p: float | None = None
+    top_k: float | None = None
+    safety_settings: tuple[SafetySettingSpec, ...] = ()
+    response_modalities: tuple[str, ...] = ()
+
+    def to_dict(self) -> dict[str, Any]:
+        d: dict[str, Any] = {}
+        if self.temperature is not None:
+            d["temperature"] = self.temperature
+        if self.max_output_tokens is not None:
+            d["max_output_tokens"] = self.max_output_tokens
+        if self.top_p is not None:
+            d["top_p"] = self.top_p
+        if self.top_k is not None:
+            d["top_k"] = self.top_k
+        if self.safety_settings:
+            d["safety_settings"] = [s.to_dict() for s in self.safety_settings]
+        if self.response_modalities:
+            d["response_modalities"] = list(self.response_modalities)
+        return d
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> GenerateContentConfigSpec:
+        raw_ss = data.get("safety_settings") or []
+        safety = tuple(SafetySettingSpec.from_dict(s) for s in raw_ss)
+        raw_rm = data.get("response_modalities") or []
+        return cls(
+            temperature=data.get("temperature"),
+            max_output_tokens=data.get("max_output_tokens"),
+            top_p=data.get("top_p"),
+            top_k=data.get("top_k"),
+            safety_settings=safety,
+            response_modalities=tuple(str(m) for m in raw_rm),
+        )
+
+
+@dataclass(frozen=True)
 class AgentSpec:
     """Spécification immuable d'un agent dans le modèle de projet.
 
     Les champs non pertinents pour un type donné restent à leur valeur par défaut
     (ex. ``model``/``instruction`` ignorés pour un agent ``sequential``).
+
+    ``model`` : chaîne Gemini (compat ascendante, ex. ``"gemini-2.5-flash"``).
+    ``model_spec`` : si non-None, un :class:`LiteLlmSpec` ; prend la priorité sur ``model``
+    pour le rendu du champ ``model=`` de ``LlmAgent``.
+    ``generate_content_config`` : si non-None, un :class:`GenerateContentConfigSpec` ; rendu
+    comme ``generate_content_config=types.GenerateContentConfig(...)`` sur ``LlmAgent``.
     """
 
     name: str
@@ -414,6 +568,10 @@ class AgentSpec:
     tools: tuple[ToolSpec | str, ...] = ()
     sub_agents: tuple[str, ...] = ()
     max_iterations: int = 3
+    #: Spec LiteLLM (P4). Si non-None, prend la priorité sur ``model`` pour le rendu.
+    model_spec: LiteLlmSpec | None = None
+    #: Config generate_content (P4). Rendu comme ``generate_content_config=...``.
+    generate_content_config: GenerateContentConfigSpec | None = None
 
     def tool_specs(self) -> tuple[ToolSpec, ...]:
         """Normalise ``tools`` en ``ToolSpec`` (les chaînes héritées -> ``builtin``)."""
@@ -436,6 +594,10 @@ class AgentSpec:
                     "sub_agents": list(self.sub_agents),
                 }
             )
+            if self.model_spec is not None:
+                base["model_spec"] = self.model_spec.to_dict()
+            if self.generate_content_config is not None:
+                base["generate_content_config"] = self.generate_content_config.to_dict()
         elif self.type in ("sequential", "parallel"):
             base["sub_agents"] = list(self.sub_agents)
         elif self.type == "loop":
@@ -454,6 +616,12 @@ class AgentSpec:
         tools: tuple[ToolSpec | str, ...] = tuple(
             t if isinstance(t, str) else ToolSpec.from_dict(t) for t in raw_tools
         )
+        raw_ms = data.get("model_spec")
+        model_spec = LiteLlmSpec.from_dict(raw_ms) if isinstance(raw_ms, dict) else None
+        raw_gcc = data.get("generate_content_config")
+        generate_content_config = (
+            GenerateContentConfigSpec.from_dict(raw_gcc) if isinstance(raw_gcc, dict) else None
+        )
         return cls(
             name=str(data["name"]),
             type=atype,
@@ -464,6 +632,8 @@ class AgentSpec:
             tools=tools,
             sub_agents=tuple(data.get("sub_agents", []) or []),
             max_iterations=int(data.get("max_iterations", 3)),
+            model_spec=model_spec,
+            generate_content_config=generate_content_config,
         )
 
 
@@ -1195,11 +1365,123 @@ def _render_list_kwarg(key: str, refs: list[str]) -> str:
     return f"[\n{items}    ]"
 
 
-def _render_llm(spec: AgentSpec) -> str:
-    """Rend un ``LlmAgent(...)`` en omettant les kwargs vides/None."""
+def _render_litellm_model(spec: LiteLlmSpec) -> tuple[str, tuple[str, ...]]:
+    """Rend ``LiteLlm(model="<provider>/<model>"[, api_base=...][, api_key=...])`` + imports.
+
+    - Pour ``lm_studio``, le provider est rendu comme ``openai`` et ``api_base`` vaut
+      ``http://127.0.0.1:1234/v1`` si non fourni.
+    - ``api_key`` est rendu comme ``os.getenv("<ENV>")`` (+ ``import os``) uniquement si
+      ``api_key_env`` est défini. **La clé n'est jamais écrite en dur.**
+    """
+    provider = spec.provider
+    api_base = spec.api_base
+
+    # lm_studio : provider rendu comme openai, api_base par défaut.
+    if provider == "lm_studio":
+        provider = "openai"
+        if not api_base:
+            api_base = "http://127.0.0.1:1234/v1"
+
+    model_str = f"{provider}/{spec.model}"
+    args: list[str | _Call] = [f"model={_py_str(model_str)}"]
+    if api_base:
+        args.append(f"api_base={_py_str(api_base)}")
+
+    imports: list[str] = ["from google.adk.models.lite_llm import LiteLlm"]
+    if spec.api_key_env:
+        args.append(f"api_key=os.getenv({_py_str(spec.api_key_env)})")
+        imports.append("import os")
+
+    call = _Call("LiteLlm", tuple(args))
+    rendered = _render_call(call, col=len("    model="), base_indent=4)
+    return rendered, tuple(imports)
+
+
+def _render_safety_settings_arg(safety_settings: tuple[SafetySettingSpec, ...]) -> str:
+    """Rend l'argument ``safety_settings=[...]`` pour ``GenerateContentConfig``.
+
+    Les ``SafetySetting`` items sont dans la liste à ``base_indent=8`` (dans le corps
+    de ``GenerateContentConfig`` qui est lui-même à base_indent=4 dans ``LlmAgent``).
+    Chaque ``SafetySetting(...)`` est rendu avec ``_render_call(col=12, base_indent=12)``
+    pour que le repli soit stable pour ``ruff format``.
+
+    Ruff rend les items d'une liste multi-lignes avec **12 espaces** (8 + 4) — c'est la forme
+    standard quand la liste est un argument d'un call replié à ``base_indent=8``.
+    """
+    # inner_indent = base_indent des items dans le corps du call GenerateContentConfig
+    # = 8 (base_indent=4 pour les kwargs de GCC + 4 pour le repli).
+    item_indent = 12  # 8 (inner du GCC replié) + 4 (un niveau de liste supplémentaire)
+    pad = " " * item_indent
+    closing_pad = " " * 8  # même niveau que les args de GenerateContentConfig
+
+    rendered_items: list[str] = []
+    for ss in safety_settings:
+        ss_call = _Call(
+            "types.SafetySetting",
+            (
+                f"category=types.HarmCategory.{ss.category}",
+                f"threshold=types.HarmBlockThreshold.{ss.threshold}",
+            ),
+        )
+        # col = item_indent (on est à 12 col dans le source), base_indent = item_indent
+        r = _render_call(ss_call, col=item_indent, base_indent=item_indent)
+        rendered_items.append(f"{pad}{r},")
+
+    items_str = "\n".join(rendered_items)
+    return f"safety_settings=[\n{items_str}\n{closing_pad}]"
+
+
+def _render_generate_content_config(gcc: GenerateContentConfigSpec) -> tuple[str, tuple[str, ...]]:
+    """Rend ``types.GenerateContentConfig(...)`` + imports.
+
+    Seuls les champs non-None/non-vides sont inclus. La structure est rendue via
+    :class:`_Call` pour être stable pour ``ruff format``.
+    """
+    imports: list[str] = ["from google.genai import types"]
+    args: list[str | _Call] = []
+
+    if gcc.temperature is not None:
+        args.append(f"temperature={gcc.temperature!r}")
+    if gcc.max_output_tokens is not None:
+        args.append(f"max_output_tokens={gcc.max_output_tokens!r}")
+    if gcc.top_p is not None:
+        args.append(f"top_p={gcc.top_p!r}")
+    if gcc.top_k is not None:
+        args.append(f"top_k={gcc.top_k!r}")
+
+    if gcc.safety_settings:
+        args.append(_render_safety_settings_arg(gcc.safety_settings))
+
+    if gcc.response_modalities:
+        mods = ", ".join(_py_str(m) for m in gcc.response_modalities)
+        args.append(f"response_modalities=[{mods}]")
+
+    call = _Call("types.GenerateContentConfig", tuple(args))
+    # col = len("    generate_content_config=") to match how it's embedded in LlmAgent kwargs
+    rendered = _render_call(call, col=len("    generate_content_config="), base_indent=4)
+    return rendered, tuple(imports)
+
+
+def _render_llm_with_imports(spec: AgentSpec) -> tuple[str, tuple[str, ...]]:
+    """Rend un ``LlmAgent(...)`` en omettant les kwargs vides/None + renvoie les imports modèle.
+
+    Si ``model_spec`` est défini, rend ``model=LiteLlm(...)`` ; sinon ``model="<gemini>"``.
+    Si ``generate_content_config`` est défini, rend le kwarg correspondant.
+    Renvoie ``(bloc_source, imports_supplémentaires)``.
+    """
+    extra_imports: list[str] = []
+
+    # Rendu du model=
+    if spec.model_spec is not None:
+        model_rendered, model_imports = _render_litellm_model(spec.model_spec)
+        extra_imports.extend(model_imports)
+        model_value = model_rendered
+    else:
+        model_value = _py_str(spec.model)
+
     pairs: list[tuple[str, str]] = [
         ("name", _py_str(spec.name)),
-        ("model", _py_str(spec.model)),
+        ("model", model_value),
         ("instruction", _py_str(spec.instruction)),
     ]
     if spec.description:
@@ -1211,7 +1493,20 @@ def _render_llm(spec: AgentSpec) -> str:
         pairs.append(("tools", _render_list_kwarg("tools", refs)))
     if spec.sub_agents:
         pairs.append(("sub_agents", _render_list_kwarg("sub_agents", list(spec.sub_agents))))
-    return f"{spec.name} = LlmAgent(\n{_render_kwargs(pairs)})\n"
+    if spec.generate_content_config is not None:
+        gcc_rendered, gcc_imports = _render_generate_content_config(spec.generate_content_config)
+        extra_imports.extend(gcc_imports)
+        pairs.append(("generate_content_config", gcc_rendered))
+
+    block = f"{spec.name} = LlmAgent(\n{_render_kwargs(pairs)})\n"
+    return block, tuple(extra_imports)
+
+
+def _render_llm(spec: AgentSpec) -> str:
+    """Wrapper de :func:`_render_llm_with_imports` — les imports supplémentaires sont collectés
+    séparément via :func:`_collect_model_imports` lors du rendu du module complet."""
+    block, _ = _render_llm_with_imports(spec)
+    return block
 
 
 def _render_workflow(spec: AgentSpec, class_name: str) -> str:
@@ -1323,6 +1618,24 @@ def _collect_tool_renders(ordered: list[AgentSpec]) -> list[ToolRender]:
     return renders
 
 
+def _collect_model_imports(ordered: list[AgentSpec]) -> list[str]:
+    """Collecte les imports supplémentaires liés au rendu du modèle (LiteLlm, types, os).
+
+    Appelle :func:`_render_litellm_model` / :func:`_render_generate_content_config` directement
+    (sans re-rendre le bloc LlmAgent entier) pour éviter la duplication.
+    """
+    imports: list[str] = []
+    for spec in ordered:
+        if spec.type == "llm":
+            if spec.model_spec is not None:
+                _, model_imps = _render_litellm_model(spec.model_spec)
+                imports.extend(model_imps)
+            if spec.generate_content_config is not None:
+                _, gcc_imps = _render_generate_content_config(spec.generate_content_config)
+                imports.extend(gcc_imps)
+    return imports
+
+
 def _dedup_preserve(items: list[str]) -> list[str]:
     """Déduplique en préservant l'ordre de première apparition."""
     seen: set[str] = set()
@@ -1410,18 +1723,37 @@ def render_agent_module(model: ProjectModel) -> str:
     tool_renders = _collect_tool_renders(ordered)
     tool_helpers = [helper for tr in tool_renders for helper in tr.helpers]
 
+    # Imports supplémentaires du rendu modèle (LiteLlm, types, os).
+    model_imports = _collect_model_imports(ordered)
+
     # Section d'imports. La ligne des classes d'agents garde l'**ordre canonique** ADK
     # (LlmAgent, Sequential, Parallel, Loop, BaseAgent) — pas un tri alphabétique. Les imports
-    # d'outils sont fusionnés par module (noms dédupliqués + triés, un module par ligne) et
-    # placés après. ``ruff format`` ne réordonne pas les imports : la stabilité de format est
-    # préservée (le tri isort n'est pas requis pour le fichier généré, jamais linté en repo).
-    import_stmts: list[str] = []
-    agent_imports = _agent_import_line(model)
-    if agent_imports:
-        import_stmts.append(agent_imports.rstrip("\n"))
-    import_stmts.extend(_merge_tool_imports([imp for tr in tool_renders for imp in tr.imports]))
-    # Bloc d'imports terminé par une ligne vide (séparation avec le corps).
-    import_block = ("\n".join(import_stmts) + "\n\n") if import_stmts else ""
+    # d'outils + modèle sont fusionnés par module (noms dédupliqués + triés). Les imports stdlib
+    # (ex. ``import os``) sont extraits et placés **avant** les imports third-party (ruff isort).
+    all_tool_and_model_imports = [imp for tr in tool_renders for imp in tr.imports] + model_imports
+    merged = _merge_tool_imports(all_tool_and_model_imports)
+
+    # Sépare stdlib plain-imports (ex. ``import os``) des ``from <module> import ...`` third-party.
+    stdlib_imports: list[str] = []
+    thirdparty_imports: list[str] = []
+    for stmt in merged:
+        if stmt.startswith("import ") and not stmt.startswith("import google"):
+            stdlib_imports.append(stmt)
+        else:
+            thirdparty_imports.append(stmt)
+
+    # Ordre final : stdlib seul si présent, puis agents ADK (from google.adk.agents),
+    # puis autres third-party. Un saut de ligne entre les groupes (isort).
+    import_lines: list[str] = []
+    if stdlib_imports:
+        import_lines.extend(stdlib_imports)
+        import_lines.append("")  # blank line between stdlib and third-party
+    agent_import_stmt = _agent_import_line(model).rstrip("\n")
+    if agent_import_stmt:
+        import_lines.append(agent_import_stmt)
+    import_lines.extend(thirdparty_imports)
+
+    import_block = ("\n".join(import_lines) + "\n\n") if import_lines else ""
 
     # Blocs top-level : d'abord les helpers d'outils (defs/toolsets), puis les agents.
     # Chaque agent émet 1 bloc (llm/workflow/loop) ou 2 (custom : classe + instance).
