@@ -166,7 +166,7 @@ def _replace_tool_fields(tool: ToolSpec, **changes: Any) -> ToolSpec:
 # --------------------------------------------------------------------------- #
 # Outils MCP — ajout d'outils par genre
 # --------------------------------------------------------------------------- #
-@tools_server.tool
+@tools_server.tool(tags={"tools"})
 def add_function(
     path: str,
     app_name: str,
@@ -198,7 +198,7 @@ def add_function(
     return _attach(path, app_name, agent_name, tool)
 
 
-@tools_server.tool
+@tools_server.tool(tags={"tools"})
 def add_long_running(
     path: str,
     app_name: str,
@@ -225,7 +225,7 @@ def add_long_running(
     return _attach(path, app_name, agent_name, tool)
 
 
-@tools_server.tool
+@tools_server.tool(tags={"tools"})
 def add_builtin(
     path: str,
     app_name: str,
@@ -247,7 +247,7 @@ def add_builtin(
     return _attach(path, app_name, agent_name, tool)
 
 
-@tools_server.tool
+@tools_server.tool(tags={"tools"})
 def add_agent_tool(
     path: str,
     app_name: str,
@@ -265,7 +265,7 @@ def add_agent_tool(
     return _attach(path, app_name, agent_name, tool)
 
 
-@tools_server.tool
+@tools_server.tool(tags={"tools"})
 def add_openapi(
     path: str,
     app_name: str,
@@ -294,7 +294,7 @@ def _toolset_name(name: str | None, agent_name: str, suffix: str) -> str:
     return name if name is not None else f"{agent_name}_{suffix}"
 
 
-@tools_server.tool
+@tools_server.tool(tags={"tools"})
 def add_bigquery(
     path: str,
     app_name: str,
@@ -316,7 +316,7 @@ def add_bigquery(
     return _attach(path, app_name, agent_name, tool)
 
 
-@tools_server.tool
+@tools_server.tool(tags={"tools"})
 def add_spanner(
     path: str,
     app_name: str,
@@ -336,7 +336,7 @@ def add_spanner(
     return _attach(path, app_name, agent_name, tool)
 
 
-@tools_server.tool
+@tools_server.tool(tags={"tools"})
 def add_mcp_toolset(
     path: str,
     app_name: str,
@@ -375,7 +375,7 @@ def add_mcp_toolset(
     return _attach(path, app_name, agent_name, tool)
 
 
-@tools_server.tool
+@tools_server.tool(tags={"tools"})
 def add_apihub(
     path: str,
     app_name: str,
@@ -395,7 +395,7 @@ def add_apihub(
     return _attach(path, app_name, agent_name, tool)
 
 
-@tools_server.tool
+@tools_server.tool(tags={"tools"})
 def add_langchain(
     path: str,
     app_name: str,
@@ -421,7 +421,7 @@ def add_langchain(
     return _attach(path, app_name, agent_name, tool)
 
 
-@tools_server.tool
+@tools_server.tool(tags={"tools"})
 def add_crewai(
     path: str,
     app_name: str,
@@ -450,7 +450,7 @@ def add_crewai(
 # --------------------------------------------------------------------------- #
 # Outil MCP — auth (set_auth) : attache une sous-spec auth à un toolset existant
 # --------------------------------------------------------------------------- #
-@tools_server.tool
+@tools_server.tool(tags={"tools"})
 def set_auth(
     path: str,
     app_name: str,
@@ -520,7 +520,7 @@ def set_auth(
 # --------------------------------------------------------------------------- #
 # Outil MCP — lecture
 # --------------------------------------------------------------------------- #
-@tools_server.tool(name="list")
+@tools_server.tool(tags={"tools"}, name="list")
 def list_tools_for_agent(path: str, app_name: str, agent_name: str) -> dict[str, Any]:
     """Liste les outils attachés à ``agent_name`` (genre + détail synthétique). Lecture seule.
 

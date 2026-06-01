@@ -143,7 +143,7 @@ def _log_path(path: str, app_name: str, port: int) -> str:
 # --------------------------------------------------------------------------- #
 # consume — ajoute un proxy RemoteA2aAgent au modèle
 # --------------------------------------------------------------------------- #
-@a2a_server.tool
+@a2a_server.tool(tags={"a2a"})
 def consume(path: str, app_name: str, name: str, agent_card_url: str) -> dict[str, Any]:
     """Ajoute un agent ``remote_a2a`` (proxy ``RemoteA2aAgent``) au projet et régénère ``agent.py``.
 
@@ -197,7 +197,7 @@ def consume(path: str, app_name: str, name: str, agent_card_url: str) -> dict[st
 # --------------------------------------------------------------------------- #
 # expose — génère a2a_app.py ; optionnellement sert via uvicorn (process géré)
 # --------------------------------------------------------------------------- #
-@a2a_server.tool
+@a2a_server.tool(tags={"a2a"})
 def expose(path: str, app_name: str, port: int = 8001, execute: bool = False) -> dict[str, Any]:
     """Génère ``a2a_app.py`` (``to_a2a(root_agent, port=PORT)``) ; sert optionnellement via uvicorn.
 
@@ -291,7 +291,7 @@ def expose(path: str, app_name: str, port: int = 8001, execute: bool = False) ->
 # --------------------------------------------------------------------------- #
 # agent_card — best-effort build de l'AgentCard du root_agent
 # --------------------------------------------------------------------------- #
-@a2a_server.tool
+@a2a_server.tool(tags={"a2a"})
 async def agent_card(path: str, app_name: str, port: int = 8001) -> dict[str, Any]:
     """Construit/inspecte l'``AgentCard`` du ``root_agent`` du projet (best-effort, gaté ``a2a``).
 

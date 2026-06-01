@@ -151,7 +151,7 @@ def _start_serve(
 # --------------------------------------------------------------------------- #
 # Outils MCP — serveurs longue durée
 # --------------------------------------------------------------------------- #
-@dev_server.tool
+@dev_server.tool(tags={"dev"})
 async def web(
     path: str, app_name: str | None = None, port: int = 8000, host: str = "127.0.0.1"
 ) -> dict[str, Any]:
@@ -166,7 +166,7 @@ async def web(
     return _start_serve("web", path, app_name, port, host)
 
 
-@dev_server.tool
+@dev_server.tool(tags={"dev"})
 async def api_server(
     path: str, app_name: str | None = None, port: int = 8000, host: str = "127.0.0.1"
 ) -> dict[str, Any]:
@@ -178,7 +178,7 @@ async def api_server(
     return _start_serve("api_server", path, app_name, port, host)
 
 
-@dev_server.tool
+@dev_server.tool(tags={"dev"})
 async def run(path: str, app_name: str, message: str | None = None) -> dict[str, Any]:
     """One-shot ``adk run <agent_dir> "<message>"`` (non interactif), avec court timeout.
 
@@ -221,7 +221,7 @@ async def run(path: str, app_name: str, message: str | None = None) -> dict[str,
 # --------------------------------------------------------------------------- #
 # Outils MCP — pilotage des process gérés
 # --------------------------------------------------------------------------- #
-@dev_server.tool
+@dev_server.tool(tags={"dev"})
 async def stop(key: str) -> dict[str, Any]:
     """Arrête (terminaison d'arbre de process) un serveur géré par sa ``key``.
 
@@ -234,7 +234,7 @@ async def stop(key: str) -> dict[str, Any]:
     return ok(result)
 
 
-@dev_server.tool
+@dev_server.tool(tags={"dev"})
 async def status(key: str) -> dict[str, Any]:
     """Renvoie l'état d'un serveur géré : ``{found, running, pid, returncode, log_path, argv}``."""
     if not key.strip():
@@ -242,7 +242,7 @@ async def status(key: str) -> dict[str, Any]:
     return ok(adk_cli.process_status(key))
 
 
-@dev_server.tool
+@dev_server.tool(tags={"dev"})
 async def logs(key: str, tail: int = 50) -> dict[str, Any]:
     """Renvoie les ``tail`` dernières lignes du log d'un serveur géré.
 

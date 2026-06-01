@@ -142,7 +142,7 @@ def _resolve_llm_agent(
 # --------------------------------------------------------------------------- #
 # Outil 1 — add_callback (garde-fou attaché à l'agent)
 # --------------------------------------------------------------------------- #
-@safety_server.tool
+@safety_server.tool(tags={"safety"})
 def add_callback(
     path: str,
     app_name: str,
@@ -199,7 +199,7 @@ def add_callback(
 # --------------------------------------------------------------------------- #
 # Outil 2 — add_plugin (politique globale via BasePlugin + manifeste runtime)
 # --------------------------------------------------------------------------- #
-@safety_server.tool
+@safety_server.tool(tags={"safety"})
 def add_plugin(
     path: str,
     app_name: str,
@@ -297,7 +297,7 @@ def _plugin_payloads(
 # --------------------------------------------------------------------------- #
 # Outil 3 — settings (gemini_safety -> rendu existant ; max_llm_calls -> plafond)
 # --------------------------------------------------------------------------- #
-@safety_server.tool(name="settings")
+@safety_server.tool(tags={"safety"}, name="settings")
 def safety_settings(
     path: str,
     app_name: str,

@@ -148,7 +148,7 @@ def _has_live_credentials() -> bool:
 # --------------------------------------------------------------------------- #
 # Outils MCP
 # --------------------------------------------------------------------------- #
-@run_server.tool
+@run_server.tool(tags={"run"})
 async def agent(
     path: str,
     app_name: str,
@@ -215,7 +215,7 @@ async def agent(
     )
 
 
-@run_server.tool
+@run_server.tool(tags={"run"})
 async def stream(
     path: str,
     app_name: str,
@@ -283,7 +283,7 @@ async def stream(
     )
 
 
-@run_server.tool
+@run_server.tool(tags={"run"})
 async def live(
     path: str,
     app_name: str,
@@ -373,7 +373,7 @@ async def live(
         return err(f"Échec de l'exécution Live : {exc}")
 
 
-@run_server.tool
+@run_server.tool(tags={"run"})
 def config_build(
     streaming_mode: str = "NONE",
     max_llm_calls: int | None = None,
@@ -403,7 +403,7 @@ def config_build(
     )
 
 
-@run_server.tool
+@run_server.tool(tags={"run"})
 def inspect_events(events: list[dict[str, Any]]) -> dict[str, Any]:
     """Résume une liste d'événements sérialisés (telle que renvoyée par ``run_agent``).
 

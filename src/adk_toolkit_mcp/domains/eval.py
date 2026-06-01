@@ -339,7 +339,7 @@ async def _evaluate_offline(
 # --------------------------------------------------------------------------- #
 # Outils MCP
 # --------------------------------------------------------------------------- #
-@eval_server.tool
+@eval_server.tool(tags={"eval"})
 async def create_set(
     path: str, app_name: str, name: str, cases: list[dict[str, Any]]
 ) -> dict[str, Any]:
@@ -379,7 +379,7 @@ async def create_set(
     )
 
 
-@eval_server.tool
+@eval_server.tool(tags={"eval"})
 async def set_criteria(
     path: str,
     app_name: str,
@@ -421,7 +421,7 @@ async def set_criteria(
     )
 
 
-@eval_server.tool
+@eval_server.tool(tags={"eval"})
 async def run(
     path: str,
     app_name: str,
@@ -487,7 +487,7 @@ async def run(
     )
 
 
-@eval_server.tool
+@eval_server.tool(tags={"eval"})
 async def report(path: str, app_name: str, report_id: str) -> dict[str, Any]:
     """Relit un rapport d'évaluation stocké par ``(path, app_name, report_id)``.
 

@@ -106,7 +106,7 @@ def _entry_to_dict(entry: MemoryEntry) -> dict[str, Any]:
 # --------------------------------------------------------------------------- #
 # Outils MCP
 # --------------------------------------------------------------------------- #
-@memory_server.tool
+@memory_server.tool(tags={"memory"})
 def service_set(
     path: str,
     app_name: str,
@@ -170,7 +170,7 @@ def service_set(
     )
 
 
-@memory_server.tool
+@memory_server.tool(tags={"memory"})
 async def add_session(
     path: str,
     app_name: str,
@@ -217,7 +217,7 @@ async def add_session(
     )
 
 
-@memory_server.tool
+@memory_server.tool(tags={"memory"})
 async def search(path: str, app_name: str, user_id: str, query: str) -> dict[str, Any]:
     """Cherche dans la mémoire et renvoie les souvenirs correspondants (sérialisés).
 

@@ -113,7 +113,7 @@ def _add_spec(path: str, app_name: str, spec: AgentSpec) -> dict[str, Any]:
 # --------------------------------------------------------------------------- #
 # Outils MCP — création par type
 # --------------------------------------------------------------------------- #
-@agents_server.tool
+@agents_server.tool(tags={"agents"})
 def create_llm(
     path: str,
     app_name: str,
@@ -137,7 +137,7 @@ def create_llm(
     return _add_spec(path, app_name, spec)
 
 
-@agents_server.tool
+@agents_server.tool(tags={"agents"})
 def create_sequential(
     path: str,
     app_name: str,
@@ -155,7 +155,7 @@ def create_sequential(
     return _add_spec(path, app_name, spec)
 
 
-@agents_server.tool
+@agents_server.tool(tags={"agents"})
 def create_parallel(
     path: str,
     app_name: str,
@@ -173,7 +173,7 @@ def create_parallel(
     return _add_spec(path, app_name, spec)
 
 
-@agents_server.tool
+@agents_server.tool(tags={"agents"})
 def create_loop(
     path: str,
     app_name: str,
@@ -193,7 +193,7 @@ def create_loop(
     return _add_spec(path, app_name, spec)
 
 
-@agents_server.tool
+@agents_server.tool(tags={"agents"})
 def create_custom(
     path: str,
     app_name: str,
@@ -208,7 +208,7 @@ def create_custom(
 # --------------------------------------------------------------------------- #
 # Outils MCP — composition / racine / lecture
 # --------------------------------------------------------------------------- #
-@agents_server.tool
+@agents_server.tool(tags={"agents"})
 def compose(
     path: str,
     app_name: str,
@@ -250,7 +250,7 @@ def compose(
     return _commit(path, app_name, model)
 
 
-@agents_server.tool
+@agents_server.tool(tags={"agents"})
 def set_root(path: str, app_name: str, name: str) -> dict[str, Any]:
     """Désigne ``name`` comme ``root_agent`` du sidecar, puis régénère ``agent.py``."""
     if not is_identifier(app_name):
@@ -267,7 +267,7 @@ def set_root(path: str, app_name: str, name: str) -> dict[str, Any]:
     return _commit(path, app_name, model)
 
 
-@agents_server.tool
+@agents_server.tool(tags={"agents"})
 def as_tool(path: str, app_name: str, agent_name: str) -> dict[str, Any]:
     """Renvoie le **snippet source** pour envelopper ``agent_name`` via ``AgentTool``.
 
@@ -300,7 +300,7 @@ def as_tool(path: str, app_name: str, agent_name: str) -> dict[str, Any]:
     )
 
 
-@agents_server.tool(name="list")
+@agents_server.tool(tags={"agents"}, name="list")
 def list_agents(path: str, app_name: str) -> dict[str, Any]:
     """Liste les agents du sidecar (nom, type, racine). Lecture seule.
 
@@ -324,7 +324,7 @@ def list_agents(path: str, app_name: str) -> dict[str, Any]:
     )
 
 
-@agents_server.tool
+@agents_server.tool(tags={"agents"})
 def get(path: str, app_name: str, name: str) -> dict[str, Any]:
     """Renvoie la spec complète d'un agent du sidecar (telle que sérialisée). Lecture seule."""
     if not is_identifier(app_name):

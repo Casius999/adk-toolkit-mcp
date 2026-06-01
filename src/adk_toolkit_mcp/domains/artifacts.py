@@ -121,7 +121,7 @@ def _part_to_payload(part: types.Part, version: int | None) -> dict[str, Any]:
 # --------------------------------------------------------------------------- #
 # Outils MCP
 # --------------------------------------------------------------------------- #
-@artifacts_server.tool
+@artifacts_server.tool(tags={"artifacts"})
 def service_set(path: str, app_name: str, kind: str, bucket: str | None = None) -> dict[str, Any]:
     """Choisit et persiste le backend du service d'artifacts de l'app (``runtime.json``).
 
@@ -157,7 +157,7 @@ def service_set(path: str, app_name: str, kind: str, bucket: str | None = None) 
     )
 
 
-@artifacts_server.tool
+@artifacts_server.tool(tags={"artifacts"})
 async def save(
     path: str,
     app_name: str,
@@ -218,7 +218,7 @@ async def save(
     )
 
 
-@artifacts_server.tool
+@artifacts_server.tool(tags={"artifacts"})
 async def load(
     path: str,
     app_name: str,
@@ -257,7 +257,7 @@ async def load(
     return ok(payload)
 
 
-@artifacts_server.tool(name="list")
+@artifacts_server.tool(tags={"artifacts"}, name="list")
 async def list_artifacts_tool(
     path: str, app_name: str, user_id: str, session_id: str
 ) -> dict[str, Any]:
@@ -283,7 +283,7 @@ async def list_artifacts_tool(
     )
 
 
-@artifacts_server.tool
+@artifacts_server.tool(tags={"artifacts"})
 async def delete(
     path: str, app_name: str, user_id: str, session_id: str, filename: str
 ) -> dict[str, Any]:
@@ -309,7 +309,7 @@ async def delete(
     )
 
 
-@artifacts_server.tool
+@artifacts_server.tool(tags={"artifacts"})
 async def versions(
     path: str, app_name: str, user_id: str, session_id: str, filename: str
 ) -> dict[str, Any]:

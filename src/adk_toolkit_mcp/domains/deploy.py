@@ -119,7 +119,7 @@ def _finalize(
 # --------------------------------------------------------------------------- #
 # preflight
 # --------------------------------------------------------------------------- #
-@deploy_server.tool
+@deploy_server.tool(tags={"deploy"})
 def preflight(target: str = "cloud_run") -> dict[str, Any]:
     """Vérifications best-effort avant un déploiement (ne lève/échoue jamais).
 
@@ -160,7 +160,7 @@ def preflight(target: str = "cloud_run") -> dict[str, Any]:
 # --------------------------------------------------------------------------- #
 # agent_engine
 # --------------------------------------------------------------------------- #
-@deploy_server.tool
+@deploy_server.tool(tags={"deploy"})
 def agent_engine(
     path: str,
     app_name: str,
@@ -218,7 +218,7 @@ def agent_engine(
 # --------------------------------------------------------------------------- #
 # cloud_run
 # --------------------------------------------------------------------------- #
-@deploy_server.tool
+@deploy_server.tool(tags={"deploy"})
 def cloud_run(
     path: str,
     app_name: str,
@@ -271,7 +271,7 @@ def cloud_run(
 # --------------------------------------------------------------------------- #
 # gke
 # --------------------------------------------------------------------------- #
-@deploy_server.tool
+@deploy_server.tool(tags={"deploy"})
 def gke(
     path: str,
     app_name: str,
@@ -311,7 +311,7 @@ def gke(
 # --------------------------------------------------------------------------- #
 # containerize
 # --------------------------------------------------------------------------- #
-@deploy_server.tool
+@deploy_server.tool(tags={"deploy"})
 def containerize(path: str, app_name: str) -> dict[str, Any]:
     """Génère un ``Dockerfile`` pour l'app (servant ``adk api_server``). Idempotent via Workspace.
 
@@ -364,7 +364,7 @@ def _dockerfile_content(app_name: str) -> str:
 # --------------------------------------------------------------------------- #
 # status
 # --------------------------------------------------------------------------- #
-@deploy_server.tool
+@deploy_server.tool(tags={"deploy"})
 def status(
     target: str,
     project: str | None = None,

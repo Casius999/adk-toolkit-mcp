@@ -143,7 +143,7 @@ def _validate_app_name(app_name: str) -> str | None:
 # --------------------------------------------------------------------------- #
 # Outils MCP
 # --------------------------------------------------------------------------- #
-@project_server.tool
+@project_server.tool(tags={"project"})
 def create(
     path: str,
     app_name: str,
@@ -181,7 +181,7 @@ def create(
     return ok({"app_name": app_name, "backend": backend, "created": created, "changed": changed})
 
 
-@project_server.tool
+@project_server.tool(tags={"project"})
 def inspect(path: str) -> dict[str, Any]:
     """Inspecte une app ADK : présence de ``root_agent``, fichiers ``*.py``, clés `.env`.
 
@@ -210,7 +210,7 @@ def inspect(path: str) -> dict[str, Any]:
     )
 
 
-@project_server.tool
+@project_server.tool(tags={"project"})
 def set_env(path: str, values: dict[str, str]) -> dict[str, Any]:
     """Fusionne ``values`` dans le `.env` du projet (idempotent, sans écraser le reste).
 
@@ -235,7 +235,7 @@ def set_env(path: str, values: dict[str, str]) -> dict[str, Any]:
     return ok({"env_keys": _redact_keys(sorted(merged.keys())), "changed": changed})
 
 
-@project_server.tool
+@project_server.tool(tags={"project"})
 def add_extra(path: str, extra: str) -> dict[str, Any]:
     """Ajoute un extra ``google-adk`` aux dépendances du projet.
 
@@ -268,7 +268,7 @@ def add_extra(path: str, extra: str) -> dict[str, Any]:
     return ok({"target": "requirements.txt", "extra": extra, "changed": changed})
 
 
-@project_server.tool
+@project_server.tool(tags={"project"})
 def agent_config(path: str, yaml_content: str | None = None) -> dict[str, Any]:
     """Voie Agent Config (no-code) d'ADK.
 

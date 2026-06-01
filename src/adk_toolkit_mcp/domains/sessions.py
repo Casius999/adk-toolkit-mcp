@@ -154,7 +154,7 @@ async def _append_state_delta(
 # --------------------------------------------------------------------------- #
 # Outils MCP
 # --------------------------------------------------------------------------- #
-@sessions_server.tool
+@sessions_server.tool(tags={"sessions"})
 def service_set(
     path: str,
     app_name: str,
@@ -209,7 +209,7 @@ def service_set(
     )
 
 
-@sessions_server.tool
+@sessions_server.tool(tags={"sessions"})
 async def create(
     path: str,
     app_name: str,
@@ -238,7 +238,7 @@ async def create(
     return ok(_session_payload(session))
 
 
-@sessions_server.tool
+@sessions_server.tool(tags={"sessions"})
 async def get(path: str, app_name: str, user_id: str, session_id: str) -> dict[str, Any]:
     """Renvoie une session : id, compteur d'événements, état complet (dict)."""
     if not session_id.strip():
@@ -254,7 +254,7 @@ async def get(path: str, app_name: str, user_id: str, session_id: str) -> dict[s
     return ok(_session_payload(session))
 
 
-@sessions_server.tool(name="list")
+@sessions_server.tool(tags={"sessions"}, name="list")
 async def list_sessions_tool(path: str, app_name: str, user_id: str) -> dict[str, Any]:
     """Liste les ids de session pour ``(app_name, user_id)``.
 
@@ -270,7 +270,7 @@ async def list_sessions_tool(path: str, app_name: str, user_id: str) -> dict[str
     return ok({"app_name": app_name, "user_id": user_id, "session_ids": session_ids})
 
 
-@sessions_server.tool
+@sessions_server.tool(tags={"sessions"})
 async def delete(path: str, app_name: str, user_id: str, session_id: str) -> dict[str, Any]:
     """Supprime une session. Renvoie l'id supprimé (idempotent côté service)."""
     if not session_id.strip():
@@ -284,7 +284,7 @@ async def delete(path: str, app_name: str, user_id: str, session_id: str) -> dic
     return ok({"deleted": session_id, "app_name": app_name, "user_id": user_id})
 
 
-@sessions_server.tool
+@sessions_server.tool(tags={"sessions"})
 async def state_set(
     path: str,
     app_name: str,
@@ -332,7 +332,7 @@ async def state_set(
     )
 
 
-@sessions_server.tool
+@sessions_server.tool(tags={"sessions"})
 async def state_get(
     path: str,
     app_name: str,
@@ -375,7 +375,7 @@ async def state_get(
     )
 
 
-@sessions_server.tool
+@sessions_server.tool(tags={"sessions"})
 async def append_event(
     path: str,
     app_name: str,

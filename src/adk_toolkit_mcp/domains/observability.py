@@ -73,7 +73,7 @@ _THIRD_PARTY: dict[str, str | None] = {
 # --------------------------------------------------------------------------- #
 # Outil 1 — enable_otel (génère otel_setup.py)
 # --------------------------------------------------------------------------- #
-@observability_server.tool
+@observability_server.tool(tags={"observability"})
 def enable_otel(
     path: str,
     app_name: str,
@@ -146,7 +146,7 @@ def _otel_notes(exporter: str) -> list[str]:
 # --------------------------------------------------------------------------- #
 # Outil 2 — cloud_trace (renvoie le vrai flag + référence l'outil deploy/dev)
 # --------------------------------------------------------------------------- #
-@observability_server.tool
+@observability_server.tool(tags={"observability"})
 def cloud_trace(target: str) -> dict[str, Any]:
     """Renvoie le flag CLI activant Cloud Trace pour ``target`` + l'outil qui l'applique.
 
@@ -191,7 +191,7 @@ def cloud_trace(target: str) -> dict[str, Any]:
 # --------------------------------------------------------------------------- #
 # Outil 3 — third_party (env OTLP + snippet pour un backend tiers)
 # --------------------------------------------------------------------------- #
-@observability_server.tool
+@observability_server.tool(tags={"observability"})
 def third_party(
     provider: str,
     endpoint: str | None = None,
@@ -248,7 +248,7 @@ def third_party(
 # --------------------------------------------------------------------------- #
 # Outil 4 — trace_view (délègue à dev_web : l'UI ADK héberge la vue des traces)
 # --------------------------------------------------------------------------- #
-@observability_server.tool
+@observability_server.tool(tags={"observability"})
 async def trace_view(path: str, app_name: str | None = None, port: int = 8000) -> dict[str, Any]:
     """Lance l'UI Web d'ADK (qui héberge la **vue des traces**) en **déléguant** à ``dev_web``.
 

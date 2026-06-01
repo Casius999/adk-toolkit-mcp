@@ -88,7 +88,7 @@ def _builtin_to_base_tool(kind: str) -> BaseTool:
 # --------------------------------------------------------------------------- #
 # Outil MCP — convert_builtin
 # --------------------------------------------------------------------------- #
-@mcp_bridge_server.tool
+@mcp_bridge_server.tool(tags={"mcp_bridge"})
 def convert_builtin(kind: str) -> dict[str, Any]:
     """Instancie un builtin ADK « core » par ``kind`` et renvoie son schéma MCP.
 
@@ -116,7 +116,7 @@ def convert_builtin(kind: str) -> dict[str, Any]:
 # --------------------------------------------------------------------------- #
 # Outil MCP — expose_adk_tools
 # --------------------------------------------------------------------------- #
-@mcp_bridge_server.tool
+@mcp_bridge_server.tool(tags={"mcp_bridge"})
 async def expose_adk_tools(path: str, app_name: str, agent_name: str) -> dict[str, Any]:
     """Convertit les outils ADK d'un agent du projet en **schémas d'outils MCP**.
 

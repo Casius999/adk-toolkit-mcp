@@ -119,7 +119,7 @@ def _resolve_agent(
 # --------------------------------------------------------------------------- #
 # Outils MCP
 # --------------------------------------------------------------------------- #
-@models_server.tool(name="set")
+@models_server.tool(tags={"models"}, name="set")
 def set_model(
     path: str,
     app_name: str,
@@ -148,7 +148,7 @@ def set_model(
     return _commit(path, app_name, pm)
 
 
-@models_server.tool
+@models_server.tool(tags={"models"})
 def configure_litellm(
     path: str,
     app_name: str,
@@ -193,7 +193,7 @@ def configure_litellm(
     return _commit(path, app_name, pm)
 
 
-@models_server.tool
+@models_server.tool(tags={"models"})
 def generate_config(
     path: str,
     app_name: str,
