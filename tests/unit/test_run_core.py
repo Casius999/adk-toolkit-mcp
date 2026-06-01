@@ -25,10 +25,12 @@ import pytest
 from fake_llm import FakeLlm, ScriptedLlm, add_numbers
 
 from adk_toolkit_mcp.run_core import (
+    PluginsImportError,
     RootAgentImportError,
     build_run_config,
     build_runner,
     collect_events,
+    import_project_plugins,
     import_root_agent,
     serialize_event,
     streaming_mode_names,
@@ -345,3 +347,92 @@ def test_build_run_config_invalid_mode_raises() -> None:
 def test_streaming_mode_names() -> None:
     names = streaming_mode_names()
     assert set(names) == {"NONE", "SSE", "BIDI"}
+
+
+# --------------------------------------------------------------------------- #
+# Plugins (P4c) — build_runner via App + import_project_plugins
+# --------------------------------------------------------------------------- #
+def _rec_plugin() -> object:
+    """Construit un BasePlugin qui enregistre l'auteur de chaque évènement (preuve hors-ligne)."""
+    from google.adk.plugins import BasePlugin
+
+    class _RecPlugin(BasePlugin):
+        def __init__(self, name: str) -> None:
+            super().__init__(name=name)
+            self.seen: list[str] = []
+
+        async def on_event_callback(self, *, invocation_context, event):  # noqa: ANN001
+            self.seen.append(event.author)
+            return None
+
+    return _RecPlugin(name="rec")
+
+
+async def test_functional_plugin_wired_via_build_runner() -> None:
+    """PREUVE : un plugin passé à build_runner câble Runner(app=App(plugins=[...])) et s'exécute.
+
+    On lance un FakeLlm hors-ligne ; le plugin enregistre les évènements. Prouve le câblage
+    Runner(plugins) via le chemin App (non déprécié) de bout en bout, sans clé API.
+    """
+    plugin = _rec_plugin()
+    agent = _llm_agent("fa", FakeLlm(model="f", answer="plugged"))
+    runner = build_runner("app", agent, _in_memory_config(), plugins=[plugin])
+
+    # app_name est dérivé de App.name (chemin App).
+    assert runner.app_name == "app"
+
+    events = await collect_events(runner, user_id="u", session_id="s", new_message_text="hi")
+    finals = [serialize_event(e) for e in events if e.is_final_response()]
+    assert finals and finals[-1]["text"] == "plugged"
+    # Le plugin a bien vu des évènements (hook on_event_callback déclenché).
+    assert plugin.seen, "le plugin aurait dû enregistrer au moins un évènement"
+
+
+def test_build_runner_no_plugins_unchanged() -> None:
+    """Sans plugins, build_runner garde le chemin Runner(app_name=, agent=) (compat ascendante)."""
+    agent = _llm_agent("fa", FakeLlm(model="f"))
+    runner = build_runner("app", agent, _in_memory_config())
+    assert runner.app_name == "app"
+    # Aucun plugin câblé.
+    assert not getattr(runner, "plugin_manager", None) or not runner.plugin_manager.plugins
+
+
+def _write_plugins_py(root: Path, app_name: str, body: str) -> None:
+    """Écrit ``<root>/<app_name>/plugins.py`` avec le corps donné."""
+    app_dir = root / app_name
+    app_dir.mkdir(parents=True, exist_ok=True)
+    (app_dir / "plugins.py").write_text(body, encoding="utf-8")
+
+
+def test_import_project_plugins_returns_instances(tmp_path: Path) -> None:
+    """import_project_plugins renvoie les instances nommées dans plugins.py (ordre préservé)."""
+    _write_plugins_py(
+        tmp_path,
+        "myapp",
+        "from google.adk.plugins import BasePlugin\n"
+        "p1 = BasePlugin(name='one')\n"
+        "p2 = BasePlugin(name='two')\n",
+    )
+    instances = import_project_plugins(str(tmp_path), "myapp", ["p1", "p2"])
+    assert [p.name for p in instances] == ["one", "two"]
+
+
+def test_import_project_plugins_missing_file_raises(tmp_path: Path) -> None:
+    with pytest.raises(PluginsImportError, match="introuvable"):
+        import_project_plugins(str(tmp_path), "ghost", ["p"])
+
+
+def test_import_project_plugins_missing_var_raises(tmp_path: Path) -> None:
+    _write_plugins_py(
+        tmp_path,
+        "myapp",
+        "from google.adk.plugins import BasePlugin\np1 = BasePlugin(name='one')\n",
+    )
+    with pytest.raises(PluginsImportError, match="ne définit pas la variable"):
+        import_project_plugins(str(tmp_path), "myapp", ["missing"])
+
+
+def test_import_project_plugins_broken_module_raises(tmp_path: Path) -> None:
+    _write_plugins_py(tmp_path, "myapp", "raise RuntimeError('boom')\n")
+    with pytest.raises(PluginsImportError, match="Échec de l'import"):
+        import_project_plugins(str(tmp_path), "myapp", ["p"])

@@ -16,8 +16,10 @@ from pathlib import Path
 import pytest
 
 from adk_toolkit_mcp.runtime import (
+    RUNTIME_CONFIG_FILE,
     ArtifactBackend,
     MemoryBackend,
+    PluginSpec,
     RuntimeConfig,
     SessionBackend,
     get_artifact_service,
@@ -331,3 +333,50 @@ def test_memory_vertex_memory_bank_without_fields_raises() -> None:
 def test_artifact_gcs_without_bucket_raises() -> None:
     with pytest.raises(ValueError, match="bucket"):
         get_artifact_service(ArtifactBackend(kind="gcs"))
+
+
+# --------------------------------------------------------------------------- #
+# Plugins manifest (P4c) — sérialisation + compat ascendante
+# --------------------------------------------------------------------------- #
+def test_runtime_plugins_roundtrip(tmp_path: Path) -> None:
+    """Le manifeste de plugins est persisté puis relu (var/name/kind)."""
+    ws = Workspace(tmp_path)
+    config = RuntimeConfig(
+        session=SessionBackend(kind="in_memory"),
+        plugins=(
+            PluginSpec(var="logging_plugin", name="logging_plugin", kind="logging"),
+            PluginSpec(var="guard", name="guard", kind="tool_denylist"),
+        ),
+    )
+    save_runtime_config(ws, config)
+    loaded = load_runtime_config(ws, "app")
+    assert [(p.var, p.kind) for p in loaded.plugins] == [
+        ("logging_plugin", "logging"),
+        ("guard", "tool_denylist"),
+    ]
+
+
+def test_runtime_no_plugins_key_when_empty(tmp_path: Path) -> None:
+    """Sans plugin, la clé 'plugins' n'est PAS émise (runtime.json reste compat P2a/P2b)."""
+    ws = Workspace(tmp_path)
+    save_runtime_config(ws, RuntimeConfig(session=SessionBackend(kind="in_memory")))
+    raw = ws.read(RUNTIME_CONFIG_FILE)
+    assert "plugins" not in raw
+    # Et un fichier sans clé 'plugins' se relit avec plugins == () (pas d'erreur).
+    assert load_runtime_config(ws, "app").plugins == ()
+
+
+def test_runtime_plugins_ignores_entries_without_var(tmp_path: Path) -> None:
+    """Une entrée de manifeste sans 'var' non vide est ignorée (tolérance)."""
+    import json
+
+    ws = Workspace(tmp_path)
+    payload = {
+        "session": {"kind": "in_memory"},
+        "memory": None,
+        "artifacts": None,
+        "plugins": [{"var": "ok", "kind": "logging"}, {"kind": "logging"}, {"var": ""}],
+    }
+    ws.write(RUNTIME_CONFIG_FILE, json.dumps(payload))
+    loaded = load_runtime_config(ws, "app")
+    assert [p.var for p in loaded.plugins] == ["ok"]

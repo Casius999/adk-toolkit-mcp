@@ -17,9 +17,11 @@ from adk_toolkit_mcp.project_model import (
     SIDECAR_PATH,
     AgentSpec,
     AuthSpec,
+    CallbackSpec,
     ProjectModel,
     ToolRender,
     ToolSpec,
+    add_or_replace_callback,
     add_or_update_agent,
     load_model,
     regenerate,
@@ -28,6 +30,7 @@ from adk_toolkit_mcp.project_model import (
     save_model,
     set_root,
     topological_order,
+    validate_callback_spec,
     validate_spec,
     validate_tool_spec,
 )
@@ -1401,3 +1404,203 @@ def test_render_format_stable_all_3b_kinds(tmp_path: Path) -> None:
     """Tous les genres 3b + auth ensemble : sortie déjà formatée pour ruff."""
     src = render_agent_module(_all_3b_model())
     _assert_ruff_format_stable(src, tmp_path, "all_3b_kinds")
+
+
+# --------------------------------------------------------------------------- #
+# Callbacks (garde-fous, P4c) — (dé)sérialisation, validation, mutation, rendu
+# --------------------------------------------------------------------------- #
+def _kw_callback(refusal: str = "No.") -> CallbackSpec:
+    return CallbackSpec(
+        hook="before_model",
+        policy="block_keywords",
+        params=(("keywords", "bomb,hack"), ("refusal", refusal)),
+    )
+
+
+def test_callbackspec_roundtrip() -> None:
+    """CallbackSpec.to_dict / from_dict round-trip (hook + policy.kind + params)."""
+    cb = _kw_callback()
+    data = cb.to_dict()
+    assert data == {
+        "hook": "before_model",
+        "policy": {"kind": "block_keywords", "keywords": "bomb,hack", "refusal": "No."},
+    }
+    assert CallbackSpec.from_dict(data) == cb
+
+
+def test_callbackspec_kwarg_name() -> None:
+    """kwarg_name() mappe le hook vers le vrai kwarg LlmAgent (suffixe _callback)."""
+    assert _kw_callback().kwarg_name() == "before_model_callback"
+    assert CallbackSpec(hook="before_tool", policy="block_tool").kwarg_name() == (
+        "before_tool_callback"
+    )
+
+
+def test_agentspec_serializes_callbacks_and_max_llm_calls() -> None:
+    """Un LlmAgent sérialise callbacks + max_llm_calls ; from_dict les relit."""
+    spec = AgentSpec(name="a", type="llm", callbacks=(_kw_callback(),), max_llm_calls=42)
+    data = spec.to_dict()
+    assert data["callbacks"] == [_kw_callback().to_dict()]
+    assert data["max_llm_calls"] == 42
+    back = AgentSpec.from_dict(data)
+    assert back.callbacks == (_kw_callback(),)
+    assert back.max_llm_calls == 42
+
+
+def test_agentspec_omits_empty_callbacks_and_max_llm_calls() -> None:
+    """Sans callback ni plafond, les clés ne sont PAS émises (compat ascendante)."""
+    data = AgentSpec(name="a", type="llm").to_dict()
+    assert "callbacks" not in data
+    assert "max_llm_calls" not in data
+
+
+def test_validate_callback_spec_ok_and_errors() -> None:
+    """validate_callback_spec accepte les politiques valides et rejette les invalides."""
+    assert validate_callback_spec(_kw_callback()) is None
+    # Hook incompatible avec la politique (block_keywords est before_model uniquement).
+    bad_hook = CallbackSpec(
+        hook="before_tool", policy="block_keywords", params=(("keywords", "x"),)
+    )
+    assert "n'est pas compatible" in (validate_callback_spec(bad_hook) or "")
+    # block_keywords sans keywords.
+    no_kw = CallbackSpec(hook="before_model", policy="block_keywords")
+    assert "keywords" in (validate_callback_spec(no_kw) or "")
+    # max_input_chars avec un max_chars non entier.
+    bad_max = CallbackSpec(
+        hook="before_model", policy="max_input_chars", params=(("max_chars", "abc"),)
+    )
+    assert "max_chars" in (validate_callback_spec(bad_max) or "")
+    # block_tool sans denylist.
+    no_dl = CallbackSpec(hook="before_tool", policy="block_tool")
+    assert "denylist" in (validate_callback_spec(no_dl) or "")
+
+
+def test_add_or_replace_callback_one_per_hook() -> None:
+    """Un second callback sur le même hook REMPLACE le premier (un seul kwarg par hook)."""
+    spec = AgentSpec(name="a", type="llm")
+    spec = add_or_replace_callback(spec, _kw_callback(refusal="first"))
+    spec = add_or_replace_callback(spec, _kw_callback(refusal="second"))
+    assert len(spec.callbacks) == 1
+    assert spec.callbacks[0].param("refusal") == "second"
+    # Un hook différent s'ajoute (ne remplace pas).
+    spec = add_or_replace_callback(
+        spec, CallbackSpec(hook="before_tool", policy="block_tool", params=(("denylist", "rm"),))
+    )
+    assert {c.hook for c in spec.callbacks} == {"before_model", "before_tool"}
+
+
+def test_render_block_keywords_callback() -> None:
+    """block_keywords rend une fonction before_model attachée via le vrai kwarg + helpers."""
+    spec = AgentSpec(name="guarded", type="llm", callbacks=(_kw_callback(),))
+    src = render_agent_module(ProjectModel(app_name="app", root="guarded", agents=(spec,)))
+    # La fonction de garde-fou est définie et attachée via le vrai kwarg.
+    assert "def _guard_before_model_guarded(callback_context, llm_request):" in src
+    assert "before_model_callback=_guard_before_model_guarded" in src
+    # Helpers partagés émis.
+    assert "def _user_text(llm_request) -> str:" in src
+    assert "def _refuse(message: str) -> LlmResponse:" in src
+    # La liste de mots bloqués + le refus sont présents.
+    assert '["bomb", "hack"]' in src
+    assert 'return _refuse("No.")' in src
+
+
+def test_render_block_tool_callback() -> None:
+    """block_tool rend une fonction before_tool court-circuitant l'outil (dict)."""
+    cb = CallbackSpec(
+        hook="before_tool", policy="block_tool", params=(("denylist", "delete_db,drop"),)
+    )
+    spec = AgentSpec(name="guarded", type="llm", callbacks=(cb,))
+    src = render_agent_module(ProjectModel(app_name="app", root="guarded", agents=(spec,)))
+    assert "def _guard_before_tool_guarded(tool, args, tool_context):" in src
+    assert "before_tool_callback=_guard_before_tool_guarded" in src
+    assert '["delete_db", "drop"]' in src
+    assert "if tool.name in denylist:" in src
+    # block_tool n'a PAS besoin des helpers before_model.
+    assert "_refuse" not in src
+
+
+def test_render_max_input_chars_callback() -> None:
+    """max_input_chars rend une fonction before_model refusant au-delà de N caractères."""
+    cb = CallbackSpec(hook="before_model", policy="max_input_chars", params=(("max_chars", "500"),))
+    spec = AgentSpec(name="g", type="llm", callbacks=(cb,))
+    src = render_agent_module(ProjectModel(app_name="app", root="g", agents=(spec,)))
+    assert "max_chars = 500" in src
+    assert "if len(_user_text(llm_request)) > max_chars:" in src
+
+
+def test_max_llm_calls_not_rendered_in_agent_py() -> None:
+    """max_llm_calls est un réglage RunConfig : il ne doit PAS apparaître dans agent.py."""
+    spec = AgentSpec(name="a", type="llm", max_llm_calls=7)
+    src = render_agent_module(ProjectModel(app_name="app", root="a", agents=(spec,)))
+    assert "max_llm_calls" not in src
+
+
+def test_render_callbacks_ast_parse(tmp_path: Path) -> None:
+    """Le module avec les trois politiques (agents séparés) est ast-parseable."""
+    import ast
+
+    a1 = AgentSpec(name="kw", type="llm", callbacks=(_kw_callback(),))
+    a2 = AgentSpec(
+        name="mx",
+        type="llm",
+        callbacks=(
+            CallbackSpec(
+                hook="before_model", policy="max_input_chars", params=(("max_chars", "9"),)
+            ),
+        ),
+    )
+    a3 = AgentSpec(
+        name="tl",
+        type="llm",
+        callbacks=(
+            CallbackSpec(hook="before_tool", policy="block_tool", params=(("denylist", "rm"),)),
+        ),
+    )
+    src = render_agent_module(ProjectModel(app_name="app", root="kw", agents=(a1, a2, a3)))
+    ast.parse(src)  # ne lève pas
+
+
+def test_render_callbacks_format_stable(tmp_path: Path) -> None:
+    """Le code généré avec garde-fous est déjà ruff-format + isort clean (les 3 politiques)."""
+    a1 = AgentSpec(name="kw", type="llm", callbacks=(_kw_callback(refusal="I cannot help."),))
+    a2 = AgentSpec(
+        name="mx",
+        type="llm",
+        callbacks=(
+            CallbackSpec(
+                hook="before_model", policy="max_input_chars", params=(("max_chars", "2000"),)
+            ),
+        ),
+    )
+    a3 = AgentSpec(
+        name="tl",
+        type="llm",
+        callbacks=(
+            CallbackSpec(
+                hook="before_tool", policy="block_tool", params=(("denylist", "rm,drop"),)
+            ),
+        ),
+    )
+    src = render_agent_module(ProjectModel(app_name="app", root="kw", agents=(a1, a2, a3)))
+    _assert_ruff_format_stable(src, tmp_path, "callbacks_all_policies")
+
+
+def test_render_callbacks_with_tools_and_gcc_format_stable(tmp_path: Path) -> None:
+    """Un agent avec outil + gcc + callback reste ruff-stable (fusion des imports)."""
+    tool = ToolSpec(
+        kind="function",
+        name="greet",
+        params=(("name", "str", None),),
+        docstring="Greet",
+        returns="str",
+        body='return f"hi {name}"',
+    )
+    spec = AgentSpec(
+        name="full",
+        type="llm",
+        instruction="Be helpful",
+        tools=(tool,),
+        callbacks=(_kw_callback(refusal="Refused."),),
+    )
+    src = render_agent_module(ProjectModel(app_name="app", root="full", agents=(spec,)))
+    _assert_ruff_format_stable(src, tmp_path, "callbacks_with_tools")
