@@ -4,6 +4,7 @@ from fastmcp import FastMCP
 
 from .domains.agents import agents_server
 from .domains.artifacts import artifacts_server
+from .domains.deploy import deploy_server
 from .domains.eval import eval_server
 from .domains.memory import memory_server
 from .domains.models import models_server
@@ -41,6 +42,8 @@ def build_server() -> FastMCP:
     mcp.mount(run_server, namespace="run")
     # P3 domaine b : eval (évaluation d'agents). Outils exposés comme `eval_<nom>`.
     mcp.mount(eval_server, namespace="eval")
+    # P4 domaine a : deploy (construction de commandes adk deploy). Exposés `deploy_<nom>`.
+    mcp.mount(deploy_server, namespace="deploy")
     return mcp
 
 
