@@ -20,13 +20,17 @@ a2a = ["google-adk[a2a]>=2.0,<3"]
 eval = ["google-adk[eval]>=2.0,<3"]
 mcp = ["google-adk[mcp]>=2.0,<3"]
 community = ["google-adk[community]>=2.0,<3"]
-all = ["adk-toolkit-mcp[litellm,gcp,bigquery,spanner,a2a,eval,mcp,community]"]
+# `db` enables DatabaseSessionService (and other SQL-backed services) via SQLAlchemy.
+db = ["sqlalchemy>=2.0"]
+all = ["adk-toolkit-mcp[litellm,gcp,bigquery,spanner,a2a,eval,mcp,community,db]"]
 dev = [
     "pytest>=8",
     "pytest-asyncio>=0.23",
     "pytest-cov>=5",
     "ruff>=0.5",
     "mypy>=1.10",
+    # DatabaseSessionService needs SQLAlchemy; install in CI so persistence tests run.
+    "sqlalchemy>=2.0",
 ]
 
 [project.scripts]
