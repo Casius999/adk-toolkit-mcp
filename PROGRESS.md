@@ -19,11 +19,11 @@
 | **P1 Author** | project, agents, tools (3a+3b), models | ✅ DONE |
 | **P2 State** | sessions (P2a), memory + artifacts (P2b) | ✅ DONE |
 | **P3 Runtime/Eval** | run (P3a) ✅ · eval (P3b) ✅ | ✅ DONE |
-| **P4 Ops** | deploy, a2a, observability, safety, mcp_bridge, dev | ⬜ **(next)** |
+| **P4 Ops** | deploy (P4a) ✅ · dev (P4a) ✅ · a2a, observability, safety, mcp_bridge | ⬜ **(P4a done; a2/mcp_bridge/safety/observability next)** |
 | **P5 Skill** | `adk-toolkit` skill (SKILL.md + 14 refs) | ⬜ |
 | **P6 Finish** | Code Mode, prompts, docs, repo publish (confirm GitHub) | ⬜ |
 
-## Exposed tools so far (57)
+## Exposed tools so far (69)
 - `project_*`: create, inspect, set_env, add_extra, agent_config
 - `agents_*`: create_llm, create_sequential, create_parallel, create_loop, create_custom, compose, as_tool, set_root, list, get
 - `tools_*`: add_function, add_long_running, add_builtin, add_agent_tool, add_openapi, add_bigquery, add_spanner, add_mcp_toolset, add_apihub, add_langchain, add_crewai, set_auth, list
@@ -33,6 +33,8 @@
 - `artifacts_*`: service_set, save, load, list, delete, versions
 - `run_*`: agent, stream, live, config_build, inspect_events
 - `eval_*`: create_set, set_criteria, run, report
+- `deploy_*`: preflight, agent_engine, cloud_run, gke, containerize, status
+- `dev_*`: web, api_server, run, stop, status, logs
 - Resources: `adk://version`, `adk://models`
 
 ## P2a runtime/sessions facts (see `docs/adk-api-notes/sessions.md`)
@@ -189,6 +191,47 @@
   (via aiplatform) + `litellm`, so 2 gcp-absent tests now SKIP and the litellm probe runs (was
   1 skip → now 2). No regression.
 
+## P4a deploy+dev facts (see `docs/adk-api-notes/deploy-dev.md`)
+- New shared `adk_cli.py` (~280 lines, 93% cov): `adk_executable()` (prefers venv
+  `Scripts/adk.exe`, else PATH `adk`, else `[sys.executable,"-m","google.adk.cli"]` — VERIFIED
+  real module: `google.adk.cli.__main__` exists, `python -m google.adk.cli --version`=2.1.0);
+  `run_adk(args,cwd,timeout)` → `{argv,rc,stdout,stderr}` (argv list, **never shell=True**);
+  `available_flags(subcommand)` parses `--flag` tokens from real `--help` (CACHED per subcommand)
+  so the toolkit can't emit a flag this ADK lacks; a **process registry** (`make_key`,
+  `start_process`/`process_status`/`process_logs`/`stop_process`/`stop_all_processes`) using
+  `Popen` + a log file. Windows stop = `CREATE_NEW_PROCESS_GROUP` at launch + `taskkill /F /T`
+  to kill the TREE. PROVEN with a trivial `python -c "time.sleep(30)"`: starts (running), writes
+  log, `stop` genuinely terminates (status not-running after). No orphans left.
+- **EXACT 2.1.0 flags** (drifted from the task's guesses — captured the real truth):
+  - `deploy agent_engine AGENT`: `--project/--region/--display_name/--requirements_file`.
+    Has **NO `--app_name`**; **`--staging_bucket` is DEPRECATED (no-op)**. Toolkit maps the
+    `app_name` param → `--display_name`, and only NOTES `staging_bucket` (never emits it).
+  - `deploy cloud_run AGENT`: `--project/--region/--service_name/--app_name/--with_ui` +
+    **`--trace_to_cloud`** (NOT `--enable_cloud_trace` — toolkit's `enable_cloud_trace` maps to it).
+  - `deploy gke AGENT`: `--project/--region/`**`--cluster_name`** (NOT `--cluster`)`/--service_name/
+    --app_name/--service_type[ClusterIP|LoadBalancer]`. Toolkit's `cluster` param → `--cluster_name`.
+  - `web`/`api_server [AGENTS_DIR]`: positional AGENTS_DIR (dir-of-agents OR single agent folder);
+    real `--host`(127.0.0.1)/`--port`(INTEGER, no default). NO `--app_name` (point AGENTS_DIR at the
+    folder). api_server also has `--auto_create_session`/`--with_ui`.
+  - `run AGENT [QUERY]`: the message is a **positional QUERY** (NOT `--input` — that flag does NOT
+    exist); no QUERY ⇒ interactive (would block). `--jsonl`/`--timeout 30s`/`--in_memory` exist.
+- **`deploy.py`** (94% cov): builds the EXACT argv (positional AGENT=`<path>/<app_name>` LAST),
+  validates required args, and **validates every emitted flag against `available_flags`** → `err`
+  listing unknowns if drift. `execute=False` (default) returns `{argv,plan,notes,executed:False}`
+  and NEVER calls `run_adk`; `execute=True` runs the real deploy (GCP — NOT exercised in CI).
+  `containerize` writes an idempotent `Dockerfile` serving `adk api_server` on `$PORT`. `preflight`
+  (gcloud/adk/kubectl on PATH) + `status` (shell to gcloud/kubectl with a 20s timeout, else
+  `available:False` guidance) are best-effort and never hang. Real cloud deploy command
+  construction proven by exact-token asserts; flag-validity proven against real `--help`.
+- **`dev.py`** (95% cov): `web`/`api_server` start a MANAGED bg process via the registry (they
+  block serving, so NOT `run_adk`); return `{key,pid,port,url,...}`. `run` is one-shot
+  `adk run AGENT "<message>"` via `run_adk` with a bounded timeout (no message ⇒ guidance, since
+  interactive blocks); `stop`/`status`/`logs` drive a started process by key. **FUNCTIONAL proof
+  (gated `ADK_TOOLKIT_TEST_API_SERVER=1`, ran locally in ~3.4s):** a real `adk api_server` BOOTED
+  on an ephemeral port and answered HTTP `GET /docs`, then `stop` terminated it. Ungated, the
+  registry lifecycle (start real `adk api_server` → status running → logs → stop → not-running)
+  is always tested, plus argv construction + flag-validity.
+
 ## Key ADK 2.1.0 facts learned (see `docs/adk-api-notes/`)
 - `google-adk` 2.1.0, `fastmcp` 3.3.1, Python 3.12 local (CI matrix 3.11/3.12).
 - `FastMCP.mount(prefix=)` is DEPRECATED → use `namespace=`.
@@ -200,8 +243,16 @@
 - langchain/crewai re-exported under `google.adk.integrations.*` (the `google.adk.tools.*` paths warn-deprecate).
 
 ## Test/quality state
-472 passed, 2 skipped, coverage 96.66%. ruff + mypy clean; full suite green under
-`-W error::DeprecationWarning`. P3b files: `domains/eval.py` ≈400 lines (98% cov);
+537 passed, 3 skipped, coverage 96.28%. ruff + mypy clean; full suite green under
+`-W error::DeprecationWarning` (27 warnings, all benign `UserWarning` from experimental ADK
+features — zero `DeprecationWarning`). P4a files: `adk_cli.py` (~280 lines, 93% cov),
+`domains/deploy.py` (155 stmts, 94% cov), `domains/dev.py` (86 stmts, 95% cov); test files
+`test_adk_cli.py` (21 tests), `test_deploy.py` (33), `test_dev.py` (15, 1 gated skip). The 3rd
+skip is the gated real-`adk api_server`-boot test (`ADK_TOOLKIT_TEST_API_SERVER=1`; PASSES locally
+in ~3.4s). No orphaned processes/ports after the suite (verified). No pyproject/uv.lock change
+(adk_cli shells to the CLI; no new deps). P3b files below unchanged.
+
+P3b files: `domains/eval.py` ≈400 lines (98% cov);
 `tests/unit/test_eval.py` (33 tests) reusing `tests/unit/fake_llm.py`. `pyproject` `dev` extra
 now references `adk-toolkit-mcp[eval]`; `uv.lock` 2-line metadata edge only (eval packages were
 already locked). The 2 skips are gcp-absent conditional tests (now skipped because the eval extra
@@ -213,16 +264,20 @@ OFFLINE (no key) via a REAL `AgentEvaluator`; a wrong expected answer correctly 
 LLM-judge / eval-extra-absent return a clean `err` (no hang). P3a still green (run_core/run 100%).
 
 ## Resume instructions
-Next: **P4 — Ops domains** (deploy, a2a, observability, safety, mcp_bridge, dev). These mostly
-*write* config/code or wrap optional ADK features behind extras (`a2a`, `gcp`, `mcp`) — follow
-the established pattern: lazy optional imports, `{ok,data,error}` envelope, bare tool names
-mounted via `namespace=`, sidecar/Workspace for any generated files, actionable `err` for an
-absent extra (mirror `gcp`/`db`/`eval`). Introspect each ADK surface BEFORE building and record
-facts in `docs/adk-api-notes/<domain>.md`; commit per-domain. `a2a` (Agent-to-Agent) likely
-needs the `a2a` extra; `observability` may wrap OpenTelemetry (already a core google-adk dep);
-`safety` overlaps with `models` SafetySetting (P1) — check for reuse; `mcp_bridge` wraps
-`McpToolset` (P1 `tools_add_mcp_toolset` already exists — avoid duplication, expose the
-*serving* side if distinct); `dev` = local dev-loop helpers (e.g. `adk web`/`adk run`/`adk
-api_server` wrappers — confirm what's scriptable). Keep the full suite green under
-`-W error::DeprecationWarning` and coverage ≥80%. After P4: P5 (skill) then P6 (Code Mode,
-prompts, docs, repo publish — confirm GitHub push with the user).
+P4a (deploy + dev) ✅ DONE. Next: **P4 remaining — a2a, mcp_bridge, safety, observability**.
+Follow the established pattern: lazy optional imports, `{ok,data,error}` envelope, bare tool
+names mounted via `namespace=`, sidecar/Workspace for any generated files, actionable `err` for
+an absent extra (mirror `gcp`/`db`/`eval`). Introspect each ADK surface BEFORE building and record
+facts in `docs/adk-api-notes/<domain>.md`; commit per-domain.
+- `a2a` (Agent-to-Agent) likely needs the `a2a` extra — introspect `google.adk` for the A2A
+  server/card surface (e.g. `to_a2a`/agent card export) AND note `adk deploy cloud_run`/`gke`
+  already expose an `--a2a` endpoint flag (the dev/deploy domains could surface that too).
+- `observability` may wrap OpenTelemetry (already a core google-adk dep) — note the real CLI flags
+  `--trace_to_cloud`/`--otel_to_cloud` already discovered on web/api_server/deploy.
+- `safety` overlaps with `models` SafetySetting (P1) — check for reuse; ADK eval also has safety
+  LLM-judge metrics (needs creds — keep offline-friendly).
+- `mcp_bridge` wraps `McpToolset` (P1 `tools_add_mcp_toolset` already exists — avoid duplication;
+  expose the *serving* side if distinct: ADK can also EXPOSE tools as an MCP server).
+Reuse `adk_cli` (process registry + `run_adk` + `available_flags`) for any new CLI-backed tool.
+Keep the suite green under `-W error::DeprecationWarning`, coverage ≥80%, no orphaned processes.
+After P4: P5 (skill) then P6 (Code Mode, prompts, docs, repo publish — confirm GitHub push).
