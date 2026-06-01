@@ -230,6 +230,11 @@ async def test_eval_run_passes_offline_response_match(tmp_path: Path) -> None:
     metrics = {m["metric_name"]: m for m in result["data"]["metrics"]}
     assert "response_match_score" in metrics
     assert metrics["response_match_score"]["score"] >= 0.7
+    # summary doit être non-vide et refléter la conformité.
+    summary = result["data"]["summary"]
+    assert summary and isinstance(summary, str)
+    assert "PASSED" in summary
+    assert "1/1" in summary  # 1 case, 1 passed
 
 
 async def test_eval_run_passes_offline_tool_trajectory(tmp_path: Path) -> None:
@@ -286,6 +291,10 @@ async def test_eval_run_fails_offline_on_wrong_expected(tmp_path: Path) -> None:
     )
     assert result["ok"] is True, result
     assert result["data"]["passed"] is False, result["data"]
+    # summary doit indiquer FAILED pour une éval échouée.
+    summary = result["data"]["summary"]
+    assert summary and isinstance(summary, str)
+    assert "FAILED" in summary
 
 
 # --------------------------------------------------------------------------- #

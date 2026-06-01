@@ -473,12 +473,25 @@ async def run(
     relative = f"{_REPORTS_DIR}/{report['report_id']}.json"
     ws.write(relative, json.dumps(report, indent=2, sort_keys=True) + "\n")
 
+    passed_count = sum(1 for c in outcome["cases"] if c["passed"])
+    total = len(eval_set.eval_cases)
+    verdict = "PASSED" if outcome["passed"] else "FAILED"
+    metric_parts = ", ".join(
+        f"{m['metric_name']}={m['score']:.3f}"
+        for m in outcome["metrics"]
+        if m.get("score") is not None
+    )
+    summary = f"{verdict} ({passed_count}/{total} cases passed)"
+    if metric_parts:
+        summary = f"{summary} — {metric_parts}"
+
     return ok(
         {
             "app_name": app_name,
             "report_id": report["report_id"],
             "report_path": str(ws.path(relative)),
             "passed": outcome["passed"],
+            "summary": summary,
             "num_runs": num_runs,
             "case_count": len(eval_set.eval_cases),
             "cases": outcome["cases"],
