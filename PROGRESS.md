@@ -18,12 +18,12 @@
 | **P0 Foundation** | repo, packaging, envelope, deps, workspace, versions, resources, server, CI, Docker | ✅ DONE |
 | **P1 Author** | project, agents, tools (3a+3b), models | ✅ DONE |
 | **P2 State** | sessions (P2a), memory + artifacts (P2b) | ✅ DONE |
-| **P3 Runtime/Eval** | run, eval | ⬜ **(next)** |
+| **P3 Runtime/Eval** | run (P3a) ✅ · eval (P3b) ⬜ **(next)** | 🟡 IN PROGRESS |
 | **P4 Ops** | deploy, a2a, observability, safety, mcp_bridge, dev | ⬜ |
 | **P5 Skill** | `adk-toolkit` skill (SKILL.md + 14 refs) | ⬜ |
 | **P6 Finish** | Code Mode, prompts, docs, repo publish (confirm GitHub) | ⬜ |
 
-## Exposed tools so far (48)
+## Exposed tools so far (53)
 - `project_*`: create, inspect, set_env, add_extra, agent_config
 - `agents_*`: create_llm, create_sequential, create_parallel, create_loop, create_custom, compose, as_tool, set_root, list, get
 - `tools_*`: add_function, add_long_running, add_builtin, add_agent_tool, add_openapi, add_bigquery, add_spanner, add_mcp_toolset, add_apihub, add_langchain, add_crewai, set_auth, list
@@ -31,6 +31,7 @@
 - `sessions_*`: service_set, create, get, list, delete, state_set, state_get, append_event
 - `memory_*`: service_set, add_session, search
 - `artifacts_*`: service_set, save, load, list, delete, versions
+- `run_*`: agent, stream, live, config_build, inspect_events
 - Resources: `adk://version`, `adk://models`
 
 ## P2a runtime/sessions facts (see `docs/adk-api-notes/sessions.md`)
@@ -78,6 +79,51 @@
   actionable `ValueError` (uv add 'adk-toolkit-mcp[gcp]'). NO `uv.lock`/`pyproject` change
   (in_memory memory/artifacts + genai `types` are all core google-adk).
 
+## P3a runtime/run facts (see `docs/adk-api-notes/runtime-run.md`)
+- New `run_core.py` (221 lines, <300) factors the execution core for OFFLINE testing:
+  `build_runner(app_name, root_agent, runtime_config)` wires `google.adk.runners.Runner`
+  (keyword-only; `session_service` required; memory/artifact services passed only when a
+  backend is configured — NOT `InMemoryRunner`, which would bypass `runtime.json` + the
+  singleton cache); `collect_events(runner, *, user_id, session_id, new_message_text,
+  run_config=None, progress=None)` ensures the session exists (creates if `get_session` is
+  None — `Runner.auto_create_session` defaults False), runs `run_async`, collects `Event`s,
+  and **awaits a `progress` callback per event** (SSE); `serialize_event` → `{author, text,
+  function_calls:[{name,args}], function_responses:[{name,response}], state_delta,
+  transfer_to_agent, is_final, partial}`; `build_run_config(streaming_mode, max_llm_calls,
+  response_modalities)` validates the mode by NAME against the real `StreamingMode` enum
+  (NONE/SSE/BIDI; values None/'sse'/'bidi'); `max_llm_calls=None` keeps ADK default 500.
+- `Runner.run_async(*, user_id, session_id, new_message=None, run_config=None, ...)` is an
+  **async generator of `Event`**. `new_message` = `types.Content(role="user",
+  parts=[types.Part.from_text(text=msg)])`. `Event` accessors confirmed: `get_function_calls()`
+  (`.name`/`.args`), `get_function_responses()` (`.name`/`.response`), `.author`, `.content`,
+  `.actions.state_delta`/`.transfer_to_agent`, `.is_final_response()`, `.partial`.
+- **FakeLlm offline proof:** `BaseLlm.generate_content_async(self, llm_request, stream=False)`
+  is an **async generator** (NOT a coroutine) yielding `LlmResponse`. A `FakeLlm(BaseLlm)`
+  (pydantic; scripting state as a field) overrides it: final-text case yields one
+  `LlmResponse(content=Content(role="model", parts=[Part.from_text(...)]))`; tool-call case
+  yields a `Part.from_function_call(name=, args=)` first, then final text. Wiring an
+  `LlmAgent(name=, model=FakeLlm(...), tools=[py_fn])` through `build_runner`+`collect_events`
+  PROVED the full loop offline (no key): function_call event → function_response event (ADK
+  auto-ran the tool) → final-text event. A plain py fn in `tools=[...]` emits a benign
+  `UserWarning` (`JSON_SCHEMA_FOR_FUNC_DECL`) — NOT a `DeprecationWarning`, so it passes
+  `-W error::DeprecationWarning`.
+- `import_root_agent(path, app_name)` loads `<path>/<app_name>/agent.py`'s `root_agent` with a
+  UNIQUE module name per call. CRITICAL Windows gotcha: `spec.loader.exec_module` caches
+  bytecode by (path, mtime); two writes within one mtime tick serve a STALE version even with
+  a fresh module name. Fix: read the source and `compile()`+`exec()` it into the module dict
+  (defeats the source/bytecode cache). Errors wrapped in `RootAgentImportError` → tool `err`.
+  Reload-after-edit proven.
+- `run_live` (BIDI) uses `BaseLlm.connect` (Gemini Live websocket), NOT
+  `generate_content_async`; base `connect` raises `NotImplementedError`, only `Gemini`
+  overrides it. CANNOT run in CI. Degrades cleanly: detect (a) creds (`GOOGLE_API_KEY`/
+  `GEMINI_API_KEY` OR `GOOGLE_GENAI_USE_VERTEXAI=TRUE`+`GOOGLE_CLOUD_PROJECT`) and (b) model
+  live-capability (`type(model).connect is not BaseLlm.connect`); returns an actionable `err`
+  BEFORE opening any connection (never hangs). Marked experimental.
+- `fastmcp.Context` is auto-injected by FastMCP even with a `ctx: Context | None = None`
+  annotation, and is NOT exposed as a client input. `run_stream` awaits
+  `ctx.report_progress(i, message=...)` + `ctx.info(...)` per event (proven via a Client
+  `progress_handler`). `run.py` is the first domain to use `Context`.
+
 ## Key ADK 2.1.0 facts learned (see `docs/adk-api-notes/`)
 - `google-adk` 2.1.0, `fastmcp` 3.3.1, Python 3.12 local (CI matrix 3.11/3.12).
 - `FastMCP.mount(prefix=)` is DEPRECATED → use `namespace=`.
@@ -89,18 +135,24 @@
 - langchain/crewai re-exported under `google.adk.integrations.*` (the `google.adk.tools.*` paths warn-deprecate).
 
 ## Test/quality state
-375 passed, 1 skipped (litellm probe), coverage 96.6%. ruff + mypy clean; full suite green
-under `-W error::DeprecationWarning`. `runtime.py` 443 lines / 171 stmts (<500), `memory.py`
-+ `artifacts.py` both <350 lines. NO `uv.lock`/`pyproject` change in P2b (in_memory
-memory/artifacts + genai types are core google-adk). Functional results: memory keyword
-search hit proven; artifact version round-trip (text v0/v1 + binary base64) proven.
+439 passed, 1 skipped (litellm probe), coverage 96.96%. ruff + mypy clean; full suite green
+under `-W error::DeprecationWarning`. P3a files: `run_core.py` 221 lines (100% cov),
+`domains/run.py` 354 lines (100% cov); `tests/unit/test_run_core.py` + `test_run.py` +
+shared `tests/unit/fake_llm.py` (FakeLlm/ScriptedLlm fixture). NO `uv.lock`/`pyproject` change
+in P3a (Runner/RunConfig/BaseLlm/Content are all core google-adk). FUNCTIONAL result: a
+FakeLlm-backed `LlmAgent` runs a FULL agent loop OFFLINE (no key) — final text proven, and
+tool-call loop proven (function_call → ADK-executed function_response → final text), both via
+the core helpers AND via the mounted `run_agent` tool (file-imported agent). `run_stream`
+progress relayed to a `fastmcp.Client`; `run_live` returns an actionable `err` without a
+key/live-model (no hang).
 
 ## Resume instructions
-Next: **P3 — `run` and `eval` domains** (Runner/eval over the P2 services). Wire a
-`google.adk.runners.Runner` (or `InMemoryRunner`) using the configured session/memory/artifact
-services from `runtime.py` for a "hybrid execute" tool; introspect `Runner.__init__` +
-`run_async`/`run` signatures and `RunConfig`, and `google.adk.evaluation` (eval extra) before
-building. Reuse the `runtime.py` factories + `_*_service_for`-style helpers (load backend from
-`runtime.json`, return `err(...)` cleanly) and the `{ok,data,error}` envelope. Mirror the
-async tool style in `domains/sessions.py`/`memory.py`/`artifacts.py`. Record API facts in
-`docs/adk-api-notes/run-eval.md` and commit it. Update this file after each phase.
+Next: **P3b — `eval` domain** (the remaining half of P3). Introspect `google.adk.evaluation`
+(needs the `eval` extra — confirm what's installed; e.g. `AgentEvaluator`, `EvalCase`,
+`EvalSet`, response/trajectory evaluators, and the `adk eval` data formats `*.evalset.json` /
+`*.test.json`) BEFORE building. Reuse `run_core.build_runner`/`collect_events` to generate
+trajectories where useful, the `runtime.py` factories, and the `{ok,data,error}` envelope;
+mirror the async tool style. Mount under `namespace="eval"` (exposed `eval_*`). The eval extra
+may be heavy/absent in CI — degrade with an actionable `err` (like the `gcp`/`db` extras) and
+keep any heavy import lazy. Record API facts in `docs/adk-api-notes/runtime-eval.md` and commit
+it. Update this file after the phase.
