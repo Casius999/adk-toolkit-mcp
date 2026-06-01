@@ -24,6 +24,7 @@ from __future__ import annotations
 import ast
 import json
 import os
+import shutil
 import socket
 import subprocess
 import sys
@@ -111,6 +112,15 @@ def _scaffold_app(tmp_path: Path, app_name: str = "myapp") -> str:
     }
     (sidecar / "agents.json").write_text(json.dumps(model), encoding="utf-8")
     return str(tmp_path)
+
+
+def _ruff_exe() -> str | None:
+    """Localise l'exécutable ruff dans l'environnement courant (venv ou PATH)."""
+    venv_bin = Path(sys.executable).parent
+    for candidate in (venv_bin / "ruff", venv_bin / "ruff.exe"):
+        if candidate.exists():
+            return str(candidate)
+    return shutil.which("ruff")
 
 
 # --------------------------------------------------------------------------- #
@@ -245,6 +255,21 @@ def test_expose_generates_app_file_no_execute(tmp_path: Path) -> None:
     assert "from agent import root_agent" in src
     assert "a2a_app = to_a2a(root_agent, port=8001)" in src
     ast.parse(src)  # lève SyntaxError si le rendu est cassé
+
+    # Le fichier généré doit être isort-clean (un seul groupe tiers, trié, sans ligne vide entre
+    # ``agent`` et ``google.adk...``) — comme l'agent.py régénéré par ``consume``.
+    ruff = _ruff_exe()
+    if ruff is None:
+        pytest.skip("ruff introuvable dans l'environnement — assertion isort ignorée")
+    isort = subprocess.run(
+        [ruff, "check", "--select", "I", str(app_file)],
+        capture_output=True,
+        text=True,
+    )
+    assert isort.returncode == 0, (
+        f"ruff check --select I (isort) a échoué sur a2a_app.py.\n"
+        f"Stdout: {isort.stdout}\nStderr: {isort.stderr}\nSource :\n{src}"
+    )
 
 
 def test_expose_idempotent(tmp_path: Path) -> None:

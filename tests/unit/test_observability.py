@@ -123,6 +123,28 @@ def test_cloud_trace_returns_real_flag() -> None:
     assert "deploy_cloud_run" in result["data"]["apply_with"]
 
 
+def test_cloud_trace_marks_otel_flag_manual_only() -> None:
+    """Honnêteté : --otel_to_cloud est marqué 'manuel uniquement' (le toolkit ne l'applique pas).
+
+    Le toolkit n'émet que --trace_to_cloud (via deploy_*/dev_*). On ne doit donc PAS prétendre
+    appliquer --otel_to_cloud : le retour le qualifie explicitement de manuel/non-auto-appliqué, et
+    la guidance ne réclame que --trace_to_cloud comme flag appliqué par le toolkit.
+    """
+    result = OBS.cloud_trace(target="cloud_run")
+    assert result["ok"]
+    data = result["data"]
+    # Le flag appliqué par le toolkit reste --trace_to_cloud.
+    assert data["flag"] == "--trace_to_cloud"
+    # --otel_to_cloud est exposé mais explicitement marqué manuel-only / non auto-appliqué.
+    note = data["otel_flag_note"].lower()
+    assert "manuel" in note
+    assert "non appliqué automatiquement" in note
+    # La guidance ne prétend pas que le toolkit applique --otel_to_cloud.
+    guidance = data["guidance"].lower()
+    assert "--otel_to_cloud" in guidance
+    assert "manuel uniquement" in guidance
+
+
 def test_cloud_trace_all_targets() -> None:
     """Toutes les cibles supportées renvoient le flag (cloud_run/agent_engine/gke/web/api)."""
     for target in ("cloud_run", "agent_engine", "gke", "web", "api_server"):

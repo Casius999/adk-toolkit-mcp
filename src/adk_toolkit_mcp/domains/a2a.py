@@ -113,6 +113,11 @@ def _a2a_app_source(port: int) -> str:
     ``cwd=<app_dir>`` ⇒ ``uvicorn a2a_app:a2a_app`` résout ``agent`` directement). L'import de
     ``to_a2a`` nécessite l'extra ``a2a`` au runtime — c'est du **codegen-only** (le toolkit ne
     l'importe pas pour générer ce fichier).
+
+    Les deux imports (``agent`` et ``google.adk...``) sont des **tiers** du point de vue d'isort
+    (aucun n'est un module first-party connu de ruff) : ils forment donc UN seul groupe, trié
+    alphabétiquement et **sans ligne vide** de séparation — la sortie est ``ruff check --select I``
+    clean (comme l'``agent.py`` régénéré par ``consume``).
     """
     return (
         '"""Généré par adk-toolkit-mcp (a2a_expose). Sert le root_agent via le protocole A2A.\n'
@@ -123,9 +128,8 @@ def _a2a_app_source(port: int) -> str:
         "Nécessite l'extra a2a : uv add 'adk-toolkit-mcp[a2a]'.\n"
         '"""\n'
         "\n"
-        "from google.adk.a2a.utils.agent_to_a2a import to_a2a\n"
-        "\n"
         "from agent import root_agent\n"
+        "from google.adk.a2a.utils.agent_to_a2a import to_a2a\n"
         "\n"
         f"a2a_app = to_a2a(root_agent, port={port})\n"
     )

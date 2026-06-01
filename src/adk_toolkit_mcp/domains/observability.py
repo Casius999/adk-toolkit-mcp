@@ -12,7 +12,9 @@ domaine NE duplique PAS la logique des domaines ``deploy``/``dev`` :
    ``otlp`` importé paresseusement — paquet séparé) câblé sur le provider GLOBAL qu'ADK utilise.
 2. :func:`cloud_trace` — renvoie le vrai flag CLI ``--trace_to_cloud`` (confirmé en P4a sur
    ``deploy cloud_run``/``agent_engine``/``gke`` + ``web``/``api_server``) et **référence** l'outil
-   ``deploy``/``dev`` qui l'applique réellement (aucun flag émis ici).
+   ``deploy``/``dev`` qui l'applique réellement (aucun flag émis ici). ``--otel_to_cloud`` est
+   exposé pour information mais marqué **manuel uniquement** : aucun outil du toolkit ne l'applique
+   (on ne prétend pas appliquer un flag qu'on n'émet pas).
 3. :func:`third_party` — renvoie les variables d'env OTLP + un snippet de setup pour un backend
    tiers (phoenix/arize/weave/signoz/otlp).
 4. :func:`trace_view` — **délègue** au même registre de process que ``dev_web`` (l'UI Web d'ADK
@@ -148,11 +150,18 @@ def _otel_notes(exporter: str) -> list[str]:
 def cloud_trace(target: str) -> dict[str, Any]:
     """Renvoie le flag CLI activant Cloud Trace pour ``target`` + l'outil qui l'applique.
 
-    ``target`` ∈ {cloud_run, agent_engine, gke, web, api_server}. Le flag réel (confirmé en P4a)
-    est ``--trace_to_cloud``. **Cet outil n'exécute rien** : il référence l'outil ``deploy_*`` /
-    ``dev_*`` qui applique réellement le flag (le domaine ``deploy`` valide chaque flag émis
-    contre le vrai ``--help`` ; ``deploy_cloud_run`` expose le paramètre ``enable_cloud_trace`` qui
-    mappe sur ``--trace_to_cloud``). Évite toute duplication de la logique de déploiement.
+    ``target`` ∈ {cloud_run, agent_engine, gke, web, api_server}. Le flag réellement APPLIQUÉ par
+    les outils ``deploy_*`` / ``dev_*`` du toolkit (confirmé en P4a) est ``--trace_to_cloud``.
+    **Cet outil n'exécute rien** : il référence l'outil ``deploy_*`` / ``dev_*`` qui émet ce flag
+    (le domaine ``deploy`` valide chaque flag émis contre le vrai ``--help`` ; ``deploy_cloud_run``
+    expose le paramètre ``enable_cloud_trace`` qui mappe sur ``--trace_to_cloud``). Évite toute
+    duplication de la logique de déploiement.
+
+    Le retour distingue clairement les deux flags :
+    - ``flag`` = ``--trace_to_cloud`` : le flag que CE toolkit applique via ``apply_with``.
+    - ``otel_flag`` = ``--otel_to_cloud`` : flag ADK **manuel uniquement** — AUCUN outil du toolkit
+      ne l'applique automatiquement (il faut le passer soi-même à la CLI ``adk``). On ne prétend
+      donc pas que le toolkit l'émet.
     """
     if target not in _CLOUD_TRACE_TARGETS:
         return err(
@@ -163,12 +172,17 @@ def cloud_trace(target: str) -> dict[str, Any]:
             "target": target,
             "flag": _CLOUD_TRACE_FLAG,
             "otel_flag": "--otel_to_cloud",
+            "otel_flag_note": (
+                "manuel uniquement — non appliqué automatiquement par ce toolkit ; à passer "
+                "soi-même à la CLI 'adk' pour exporter aussi les données OTel vers Cloud Trace."
+            ),
             "apply_with": _CLOUD_TRACE_TARGETS[target],
             "guidance": (
                 f"Active Cloud Trace en passant {_CLOUD_TRACE_FLAG} à '{target}'. "
                 f"Utilise l'outil du toolkit '{_CLOUD_TRACE_TARGETS[target]}' qui l'émet et le "
-                "valide (ne réimplémente pas la commande ici). '--otel_to_cloud' écrit aussi "
-                "les données OTel vers Cloud Trace + Logging."
+                f"valide (ne réimplémente pas la commande ici). Le flag '{_CLOUD_TRACE_FLAG}' est "
+                "le SEUL appliqué par ce toolkit ; '--otel_to_cloud' existe côté ADK mais n'est "
+                "PAS auto-appliqué par le toolkit (manuel uniquement)."
             ),
         }
     )
