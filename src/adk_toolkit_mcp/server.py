@@ -7,6 +7,7 @@ from .domains.artifacts import artifacts_server
 from .domains.memory import memory_server
 from .domains.models import models_server
 from .domains.project import project_server
+from .domains.run import run_server
 from .domains.sessions import sessions_server
 from .domains.tools import tools_server
 from .prompts import register_prompts
@@ -35,6 +36,8 @@ def build_server() -> FastMCP:
     mcp.mount(memory_server, namespace="memory")
     # P2 domaine b : artifacts (runtime). Outils exposés comme `artifacts_<nom>`.
     mcp.mount(artifacts_server, namespace="artifacts")
+    # P3 domaine a : run (exécution d'agents). Outils exposés comme `run_<nom>`.
+    mcp.mount(run_server, namespace="run")
     return mcp
 
 
