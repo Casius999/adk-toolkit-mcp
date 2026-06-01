@@ -322,11 +322,14 @@ def _build_memory_service(backend: MemoryBackend) -> BaseMemoryService:
     if backend.kind == "vertex_rag":
         if not backend.rag_corpus:
             raise ValueError("Backend 'vertex_rag' : 'rag_corpus' est requis.")
+        # NB : l'ImportError de l'extra gcp est levée DANS le constructeur (import paresseux de
+        # vertexai), pas à l'import de la classe — on enveloppe donc aussi la construction.
         try:
             from google.adk.memory import VertexAiRagMemoryService
+
+            return VertexAiRagMemoryService(rag_corpus=backend.rag_corpus)
         except ImportError as exc:  # pragma: no cover - dépend de l'extra gcp
             raise ValueError(f"VertexAiRagMemoryService indisponible : {_GCP_EXTRA_HINT}") from exc
-        return VertexAiRagMemoryService(rag_corpus=backend.rag_corpus)
 
     if backend.kind == "vertex_memory_bank":
         if not (backend.project and backend.location and backend.agent_engine_id):
@@ -336,13 +339,14 @@ def _build_memory_service(backend: MemoryBackend) -> BaseMemoryService:
             )
         try:
             from google.adk.memory import VertexAiMemoryBankService
+
+            return VertexAiMemoryBankService(
+                project=backend.project,
+                location=backend.location,
+                agent_engine_id=backend.agent_engine_id,
+            )
         except ImportError as exc:  # pragma: no cover - dépend de l'extra gcp
             raise ValueError(f"VertexAiMemoryBankService indisponible : {_GCP_EXTRA_HINT}") from exc
-        return VertexAiMemoryBankService(
-            project=backend.project,
-            location=backend.location,
-            agent_engine_id=backend.agent_engine_id,
-        )
 
     raise ValueError(
         f"Genre de backend de mémoire inconnu : {backend.kind!r}. "
@@ -392,13 +396,12 @@ def _build_artifact_service(backend: ArtifactBackend) -> BaseArtifactService:
     if backend.kind == "gcs":
         if not backend.bucket:
             raise ValueError("Backend 'gcs' : 'bucket' est requis.")
+        # GcsArtifactService importe google.cloud.storage DANS __init__ : un ModuleNotFoundError
+        # (sous-classe d'ImportError) survient à la construction si l'extra gcp est absent — on
+        # enveloppe donc l'import ET la construction dans le même try.
         try:
             from google.adk.artifacts import GcsArtifactService
-        except ImportError as exc:  # pragma: no cover - dépend de l'extra gcp
-            raise ValueError(f"GcsArtifactService indisponible : {_GCP_EXTRA_HINT}") from exc
-        # GcsArtifactService importe google.cloud.storage dans __init__ : un ModuleNotFoundError
-        # (sous-classe d'ImportError) survient ici si l'extra gcp est absent.
-        try:
+
             return GcsArtifactService(bucket_name=backend.bucket)
         except ImportError as exc:  # pragma: no cover - dépend de l'extra gcp
             raise ValueError(f"GcsArtifactService indisponible : {_GCP_EXTRA_HINT}") from exc
