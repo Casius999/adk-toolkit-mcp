@@ -86,6 +86,55 @@ _AGENT_TYPES: frozenset[str] = frozenset(
     {"llm", "sequential", "parallel", "loop", "custom", "remote_a2a"}
 )
 
+# --------------------------------------------------------------------------- #
+# Callbacks (garde-fous) — domaine `safety`, P4c
+# --------------------------------------------------------------------------- #
+#: Points d'accroche (hooks) de callback supportés sur un ``LlmAgent`` (kwargs réels confirmés
+#: par introspection en 2.1.0 — cf. ``docs/adk-api-notes/safety-observability.md``). Le toolkit
+#: attache UNE fonction générée par hook via le vrai kwarg (ex. ``before_model_callback=...``).
+CallbackHook = Literal[
+    "before_model",
+    "after_model",
+    "before_tool",
+    "after_tool",
+    "before_agent",
+    "after_agent",
+]
+
+_CALLBACK_HOOKS: frozenset[str] = frozenset(
+    {"before_model", "after_model", "before_tool", "after_tool", "before_agent", "after_agent"}
+)
+
+#: Mapping hook -> nom de kwarg réel sur ``LlmAgent`` (ajoute le suffixe ``_callback``).
+_CALLBACK_KWARG: dict[str, str] = {h: f"{h}_callback" for h in _CALLBACK_HOOKS}
+
+#: Politiques de garde-fou supportées (concrètes + fonctionnelles). Chacune n'est valide que pour
+#: certains hooks (cf. :data:`_POLICY_HOOKS`). Voir ``_codegen._render_callback_def`` pour le rendu.
+#: - ``block_keywords`` (before_model) : refuse si le texte utilisateur contient un terme bloqué.
+#: - ``max_input_chars`` (before_model) : refuse si l'entrée dépasse N caractères.
+#: - ``block_tool`` (before_tool) : court-circuite l'outil si son nom est dans une denylist.
+PolicyKind = Literal["block_keywords", "max_input_chars", "block_tool"]
+
+_POLICY_KINDS: frozenset[str] = frozenset({"block_keywords", "max_input_chars", "block_tool"})
+
+#: Alias publics (sans underscore) ré-exportés pour la validation côté domaine ``safety``.
+CALLBACK_HOOKS: frozenset[str] = _CALLBACK_HOOKS
+POLICY_KINDS: frozenset[str] = _POLICY_KINDS
+
+#: Hooks compatibles avec chaque politique (validation : une politique ne peut s'attacher qu'à un
+#: hook dont la signature lui convient).
+_POLICY_HOOKS: dict[str, frozenset[str]] = {
+    "block_keywords": frozenset({"before_model"}),
+    "max_input_chars": frozenset({"before_model"}),
+    "block_tool": frozenset({"before_tool"}),
+}
+
+#: Message de refus par défaut rendu par un garde-fou ``before_model`` qui court-circuite le LLM.
+_DEFAULT_REFUSAL = "I can't help with that request."
+
+#: Préfixe des noms de fonctions de garde-fou générées (ex. ``_guard_before_model_0``).
+_GUARD_FN_PREFIX = "_guard"
+
 #: Un nom d'agent doit être un identifiant Python (sert de nom de variable de module).
 _IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
@@ -548,6 +597,55 @@ class GenerateContentConfigSpec:
 
 
 @dataclass(frozen=True)
+class CallbackSpec:
+    """Spécification immuable d'un garde-fou (callback) attaché à un agent ``LlmAgent`` (P4c).
+
+    ``hook`` ∈ :data:`_CALLBACK_HOOKS` désigne le kwarg réel (``before_model`` ->
+    ``before_model_callback=``, etc.). ``policy`` ∈ :data:`_POLICY_KINDS` désigne la politique
+    rendue en fonction Python importable. ``params`` est une liste **gelée** de paires
+    ``(clé, valeur)`` (chaînes) portant la configuration de la politique :
+
+    - ``block_keywords`` : ``keywords`` = liste séparée par ``,`` ; ``refusal`` (optionnel).
+    - ``max_input_chars`` : ``max_chars`` = entier (en chaîne) ; ``refusal`` (optionnel).
+    - ``block_tool`` : ``denylist`` = liste de noms d'outils séparée par ``,`` ; ``message`` (opt).
+
+    Le rendu produit une **vraie fonction fonctionnelle** (cf. ``_codegen._render_callback_def``),
+    attachée à l'agent via le vrai kwarg. Renvoyer non-``None`` court-circuite (LLM/outil).
+    """
+
+    hook: CallbackHook
+    policy: PolicyKind
+    params: tuple[tuple[str, str], ...] = ()
+
+    def param(self, key: str, default: str = "") -> str:
+        """Renvoie la valeur du paramètre ``key`` (ou ``default`` si absent)."""
+        for k, v in self.params:
+            if k == key:
+                return v
+        return default
+
+    def kwarg_name(self) -> str:
+        """Nom du kwarg réel sur ``LlmAgent`` (ex. ``before_model_callback``)."""
+        return _CALLBACK_KWARG[self.hook]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "hook": self.hook,
+            "policy": {"kind": self.policy, **{k: v for k, v in self.params}},
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> CallbackSpec:
+        policy_raw = data.get("policy") or {}
+        # Désérialisation tolérante : hook/policy sont annotés Literal pour mypy, mais la
+        # validité réelle est garantie en amont par ``validate_callback_spec`` (côté domaine).
+        hook: CallbackHook = data.get("hook", "before_model")
+        policy: PolicyKind = policy_raw.get("kind", "")
+        params = tuple((str(k), str(v)) for k, v in policy_raw.items() if k != "kind")
+        return cls(hook=hook, policy=policy, params=params)
+
+
+@dataclass(frozen=True)
 class AgentSpec:
     """Spécification immuable d'un agent dans le modèle de projet.
 
@@ -579,6 +677,9 @@ class AgentSpec:
     model_spec: LiteLlmSpec | None = None
     #: Config generate_content (P4). Rendu comme ``generate_content_config=...``.
     generate_content_config: GenerateContentConfigSpec | None = None
+    #: Garde-fous (P4c) : un :class:`CallbackSpec` par hook. Rendu comme une fonction générée
+    #: attachée via le vrai kwarg (``before_model_callback=...``). LlmAgent uniquement.
+    callbacks: tuple[CallbackSpec, ...] = ()
 
     def tool_specs(self) -> tuple[ToolSpec, ...]:
         """Normalise ``tools`` en ``ToolSpec`` (les chaînes héritées -> ``builtin``)."""
@@ -605,6 +706,8 @@ class AgentSpec:
                 base["model_spec"] = self.model_spec.to_dict()
             if self.generate_content_config is not None:
                 base["generate_content_config"] = self.generate_content_config.to_dict()
+            if self.callbacks:
+                base["callbacks"] = [c.to_dict() for c in self.callbacks]
         elif self.type in ("sequential", "parallel"):
             base["sub_agents"] = list(self.sub_agents)
         elif self.type == "loop":
@@ -631,6 +734,8 @@ class AgentSpec:
         generate_content_config = (
             GenerateContentConfigSpec.from_dict(raw_gcc) if isinstance(raw_gcc, dict) else None
         )
+        raw_cbs = data.get("callbacks") or []
+        callbacks = tuple(CallbackSpec.from_dict(c) for c in raw_cbs if isinstance(c, dict))
         return cls(
             name=str(data["name"]),
             type=atype,
@@ -644,6 +749,7 @@ class AgentSpec:
             max_iterations=int(data.get("max_iterations", 3)),
             model_spec=model_spec,
             generate_content_config=generate_content_config,
+            callbacks=callbacks,
         )
 
 

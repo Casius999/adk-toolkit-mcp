@@ -28,6 +28,8 @@ from .specs import (
     _BIGQUERY_IMPORT,
     _BUILTIN_CLASS,
     _CREWAI_IMPORT,
+    _DEFAULT_REFUSAL,
+    _GUARD_FN_PREFIX,
     _LANGCHAIN_IMPORT,
     _MCP_STDIO_PARAMS_IMPORT,
     _MCP_TOOLSET_IMPORT_MODULE,
@@ -39,9 +41,14 @@ from .specs import (
     CORE_BUILTINS,
     LINE_LENGTH,
     AuthSpec,
+    CallbackSpec,
     ToolRender,
     ToolSpec,
 )
+
+#: Imports requis par les corps de garde-fou ``before_model`` (refus = ``LlmResponse``/``Content``).
+_LLM_RESPONSE_IMPORT = "from google.adk.models import LlmResponse"
+_GENAI_TYPES_IMPORT = "from google.genai import types"
 
 
 # --------------------------------------------------------------------------- #
@@ -408,3 +415,175 @@ def _render_mcp_toolset(tool: ToolSpec) -> ToolRender:
     args += auth_args
     helper = _render_toolset_helper(tool.name, _Call("McpToolset", tuple(args)))
     return ToolRender(imports=(*conn_imports, *auth_imports), helpers=(helper,), ref=tool.name)
+
+
+# --------------------------------------------------------------------------- #
+# Rendu des callbacks (garde-fous) — domaine `safety`, P4c
+# --------------------------------------------------------------------------- #
+def _guard_fn_name(agent_name: str, hook: str) -> str:
+    """Nom stable de la fonction de garde-fou générée (unique par agent + hook).
+
+    Ex. ``_guard_before_model_my_agent``. Stable (déterministe) afin que la régénération soit
+    idempotente et que le kwarg de l'agent référence exactement cette fonction.
+    """
+    return f"{_GUARD_FN_PREFIX}_{hook}_{agent_name}"
+
+
+def _py_str_list(values: list[str]) -> str:
+    """Rend ``[ "a", "b" ]`` (littéral liste de chaînes) inline et ruff-stable."""
+    return "[" + ", ".join(_py_str(v) for v in values) + "]"
+
+
+def _split_csv(raw: str) -> list[str]:
+    """Découpe une valeur ``"a, b ,c"`` en ``["a", "b", "c"]`` (vides ignorés)."""
+    return [s.strip() for s in raw.split(",") if s.strip()]
+
+
+def _refusal_response_lines(refusal: str, indent: str) -> list[str]:
+    """Ligne ``return _refuse("<refusal>")`` (before_model) — via le helper partagé ``_refuse``.
+
+    On délègue la construction du ``LlmResponse`` au helper top-level :data:`_REFUSE_HELPER`
+    (émis une seule fois). Le corps du garde-fou ne porte donc qu'un appel à argument unique
+    (une chaîne) : stable pour ``ruff format`` quelle que soit la longueur du message (un long
+    littéral reste seul sur sa ligne, sans virgule finale — comportement exact de ruff).
+    """
+    call = _Call("_refuse", (_py_str(refusal),))
+    rendered = _render_call(call, col=len(indent) + len("return "), base_indent=len(indent))
+    return [f"{indent}return {rendered}"]
+
+
+def _block_keywords_body(spec: CallbackSpec) -> tuple[list[str], tuple[str, ...]]:
+    """Corps de ``before_model`` : refuse si un terme bloqué apparaît dans le texte utilisateur.
+
+    Lit ``llm_request.contents`` (list[Content]), concatène le texte des parts du DERNIER tour
+    utilisateur, compare en minuscules à la liste de mots bloqués ; si match -> renvoie un
+    ``LlmResponse`` de refus (court-circuite le LLM). Sinon ``return None`` (poursuite normale).
+    """
+    keywords = _split_csv(spec.param("keywords"))
+    refusal = spec.param("refusal") or _DEFAULT_REFUSAL
+    lines = [
+        f"    blocked = {_py_str_list(keywords)}",
+        "    text = _user_text(llm_request).lower()",
+        "    if any(term.lower() in text for term in blocked):",
+        *_refusal_response_lines(refusal, indent="        "),
+        "    return None",
+    ]
+    # Imports (LlmResponse/types) portés par le helper partagé ``_refuse`` -> aucun import ici.
+    return lines, ()
+
+
+def _max_input_chars_body(spec: CallbackSpec) -> tuple[list[str], tuple[str, ...]]:
+    """Corps de ``before_model`` : refuse si le texte utilisateur dépasse ``max_chars``."""
+    try:
+        max_chars = int(spec.param("max_chars", "0"))
+    except ValueError:  # pragma: no cover - validé en amont par le domaine safety
+        max_chars = 0
+    refusal = spec.param("refusal") or _DEFAULT_REFUSAL
+    lines = [
+        f"    max_chars = {max_chars}",
+        "    if len(_user_text(llm_request)) > max_chars:",
+        *_refusal_response_lines(refusal, indent="        "),
+        "    return None",
+    ]
+    # Imports (LlmResponse/types) portés par le helper partagé ``_refuse`` -> aucun import ici.
+    return lines, ()
+
+
+def _block_tool_body(spec: CallbackSpec) -> tuple[list[str], tuple[str, ...]]:
+    """Corps de ``before_tool`` : court-circuite l'outil si son nom est dans la denylist.
+
+    Renvoie un ``dict`` (utilisé comme résultat de l'outil), ce qui empêche son exécution.
+    """
+    denylist = _split_csv(spec.param("denylist"))
+    message = spec.param("message") or "Tool call blocked by safety policy."
+    lines = [
+        f"    denylist = {_py_str_list(denylist)}",
+        "    if tool.name in denylist:",
+        f"        return {{{_py_str('error')}: {_py_str(message)}}}",
+        "    return None",
+    ]
+    return lines, ()
+
+
+#: Corps de chaque politique -> (lignes de corps, imports requis).
+_POLICY_BODY = {
+    "block_keywords": _block_keywords_body,
+    "max_input_chars": _max_input_chars_body,
+    "block_tool": _block_tool_body,
+}
+
+#: Signature (paramètres positionnels) de chaque hook (cf. introspection 2.1.0).
+_HOOK_SIGNATURE: dict[str, str] = {
+    "before_model": "callback_context, llm_request",
+    "before_tool": "tool, args, tool_context",
+}
+
+#: Helper top-level partagé : extrait le texte du dernier tour utilisateur d'un ``LlmRequest``.
+#: Émis UNE seule fois si au moins un garde-fou ``before_model`` (keywords / max_chars) l'utilise.
+_USER_TEXT_HELPER = (
+    "def _user_text(llm_request) -> str:\n"
+    '    """Concatène le texte des parts du dernier tour utilisateur d\'un LlmRequest."""\n'
+    "    for content in reversed(llm_request.contents or []):\n"
+    '        if getattr(content, "role", None) == "user":\n'
+    '            return "".join(p.text for p in (content.parts or []) if p.text)\n'
+    '    return ""\n'
+)
+
+#: Helper top-level partagé : construit un ``LlmResponse`` de refus à partir d'un message texte.
+#: Émis UNE seule fois si au moins un garde-fou ``before_model`` court-circuite le LLM. Centralise
+#: la construction (un appel à argument unique côté garde-fou -> rendu ruff-stable, même pour un
+#: message long) et les imports ``LlmResponse``/``types``.
+_REFUSE_HELPER = (
+    "def _refuse(message: str) -> LlmResponse:\n"
+    '    """Construit une réponse de refus (court-circuite le LLM) portant ``message``."""\n'
+    "    return LlmResponse(\n"
+    '        content=types.Content(role="model", parts=[types.Part.from_text(text=message)])\n'
+    "    )\n"
+)
+
+#: Politiques qui requièrent le helper ``_user_text`` (garde-fous ``before_model``).
+_NEEDS_USER_TEXT: frozenset[str] = frozenset({"block_keywords", "max_input_chars"})
+
+#: Politiques qui court-circuitent le LLM via ``_refuse`` (garde-fous ``before_model``).
+_NEEDS_REFUSE: frozenset[str] = frozenset({"block_keywords", "max_input_chars"})
+
+
+def render_callback(spec: CallbackSpec, agent_name: str) -> ToolRender:
+    """Rend un garde-fou -> :class:`ToolRender` (imports, def helper, ``ref`` = nom de la fonction).
+
+    La ``ref`` est le nom de la fonction générée (à placer comme valeur du kwarg réel de l'agent,
+    ex. ``before_model_callback=_guard_before_model_<agent>``). Le helper est un ``def`` top-level
+    **fonctionnel** (corps réel selon la politique). Les imports nécessaires (``LlmResponse`` /
+    ``types``) sont remontés à la section d'imports du module par le renderer.
+    """
+    fn_name = _guard_fn_name(agent_name, spec.hook)
+    params = _HOOK_SIGNATURE[spec.hook]
+    body_lines, imports = _POLICY_BODY[spec.policy](spec)
+    doc = f'    """Garde-fou {spec.policy} ({spec.hook}) généré par adk-toolkit-mcp."""'
+    body = "\n".join(body_lines)
+    helper = f"def {fn_name}({params}):\n{doc}\n{body}\n"
+    return ToolRender(imports=imports, helpers=(helper,), ref=fn_name)
+
+
+def callback_needs_user_text(spec: CallbackSpec) -> bool:
+    """Vrai si la politique du callback requiert le helper top-level ``_user_text``."""
+    return spec.policy in _NEEDS_USER_TEXT
+
+
+def callback_needs_refuse(spec: CallbackSpec) -> bool:
+    """Vrai si la politique du callback court-circuite le LLM via le helper ``_refuse``."""
+    return spec.policy in _NEEDS_REFUSE
+
+
+def refuse_helper_render() -> ToolRender:
+    """``ToolRender`` du helper partagé ``_refuse`` (def + imports ``LlmResponse``/``types``)."""
+    return ToolRender(
+        imports=(_LLM_RESPONSE_IMPORT, _GENAI_TYPES_IMPORT),
+        helpers=(_REFUSE_HELPER,),
+        ref="_refuse",
+    )
+
+
+def user_text_helper_render() -> ToolRender:
+    """``ToolRender`` du helper partagé ``_user_text`` (def, sans import)."""
+    return ToolRender(imports=(), helpers=(_USER_TEXT_HELPER,), ref="_user_text")

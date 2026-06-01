@@ -18,7 +18,17 @@ import re
 from typing import Any
 
 from ..workspace import Workspace
-from ._codegen import _Call, _py_str, _render_call, render_tool_ref
+from ._codegen import (
+    _Call,
+    _py_str,
+    _render_call,
+    callback_needs_refuse,
+    callback_needs_user_text,
+    refuse_helper_render,
+    render_callback,
+    render_tool_ref,
+    user_text_helper_render,
+)
 from .specs import (
     _CLASS_FOR_TYPE,
     _IMPORT_ORDER,
@@ -241,6 +251,12 @@ def _render_llm_with_imports(spec: AgentSpec) -> tuple[str, tuple[str, ...]]:
         gcc_rendered, gcc_imports = _render_generate_content_config(spec.generate_content_config)
         extra_imports.extend(gcc_imports)
         pairs.append(("generate_content_config", gcc_rendered))
+    # Garde-fous (P4c) : chaque callback est une fonction générée top-level ; on attache son nom
+    # via le vrai kwarg (``before_model_callback=_guard_before_model_<agent>``). Les imports des
+    # corps (LlmResponse/types) sont collectés séparément (cf. ``_collect_model_imports``).
+    for cb in spec.callbacks:
+        ref = render_callback(cb, spec.name).ref
+        pairs.append((cb.kwarg_name(), ref))
 
     block = f"{spec.name} = LlmAgent(\n{_render_kwargs(pairs)})\n"
     return block, tuple(extra_imports)
@@ -391,6 +407,32 @@ def _collect_tool_renders(ordered: list[AgentSpec]) -> list[ToolRender]:
     return renders
 
 
+def _collect_callback_renders(ordered: list[AgentSpec]) -> list[ToolRender]:
+    """Rend tous les garde-fous (callbacks) des agents en une liste de ``ToolRender``.
+
+    Les fonctions de garde-fou sont des ``def`` top-level émis AVANT les agents (l'agent les
+    référence par nom via son kwarg). Si au moins une politique requiert le helper partagé
+    ``_user_text``, celui-ci est inséré en tête (une seule fois).
+    """
+    renders: list[ToolRender] = []
+    needs_user_text = False
+    needs_refuse = False
+    for spec in ordered:
+        for cb in spec.callbacks:
+            renders.append(render_callback(cb, spec.name))
+            needs_user_text = needs_user_text or callback_needs_user_text(cb)
+            needs_refuse = needs_refuse or callback_needs_refuse(cb)
+    # Helpers partagés émis UNE seule fois, en tête (ordre : _user_text puis _refuse). Les
+    # garde-fous ``before_model`` les appellent par nom ; ``_refuse`` porte les imports
+    # ``LlmResponse``/``types`` (remontés à la section d'imports du module).
+    prelude: list[ToolRender] = []
+    if needs_user_text:
+        prelude.append(user_text_helper_render())
+    if needs_refuse:
+        prelude.append(refuse_helper_render())
+    return prelude + renders
+
+
 def _collect_model_imports(ordered: list[AgentSpec]) -> list[str]:
     """Collecte les imports supplémentaires liés au rendu du modèle (LiteLlm, types, os).
 
@@ -504,6 +546,10 @@ def render_agent_module(model: ProjectModel) -> str:
     tool_renders = _collect_tool_renders(ordered)
     tool_helpers = [helper for tr in tool_renders for helper in tr.helpers]
 
+    # Rendu des garde-fous (callbacks, P4c) : defs top-level émis avant les agents + leurs imports.
+    callback_renders = _collect_callback_renders(ordered)
+    callback_helpers = [helper for cr in callback_renders for helper in cr.helpers]
+
     # Imports supplémentaires du rendu modèle (LiteLlm, types, os).
     model_imports = _collect_model_imports(ordered)
 
@@ -515,7 +561,11 @@ def render_agent_module(model: ProjectModel) -> str:
     # ``from X import a, b`` sont triés via :func:`_render_import_line`. Les imports stdlib (ex.
     # ``import os``) forment une section séparée placée **avant** le third-party (isort).
     agent_import_stmt = _agent_import_line(model).rstrip("\n")
-    all_tool_and_model_imports = [imp for tr in tool_renders for imp in tr.imports] + model_imports
+    all_tool_and_model_imports = (
+        [imp for tr in tool_renders for imp in tr.imports]
+        + [imp for cr in callback_renders for imp in cr.imports]
+        + model_imports
+    )
     if agent_import_stmt:
         all_tool_and_model_imports.append(agent_import_stmt)
     # RemoteA2aAgent (P4b) vit dans un sous-module dédié : son import est ajouté ici puis trié
@@ -543,12 +593,13 @@ def render_agent_module(model: ProjectModel) -> str:
 
     import_block = ("\n".join(import_lines) + "\n\n") if import_lines else ""
 
-    # Blocs top-level : d'abord les helpers d'outils (defs/toolsets), puis les agents.
-    # Chaque agent émet 1 bloc (llm/workflow/loop) ou 2 (custom : classe + instance).
+    # Blocs top-level : helpers d'outils, PUIS garde-fous (callbacks), PUIS les agents (qui
+    # référencent les fonctions de garde-fou par nom). Chaque agent émet 1 bloc (llm/workflow/
+    # loop) ou 2 (custom : classe + instance).
     agent_blocks: list[str] = []
     for spec in ordered:
         agent_blocks.extend(_render_agent_blocks(spec))
-    all_blocks: list[str] = tool_helpers + agent_blocks
+    all_blocks: list[str] = tool_helpers + callback_helpers + agent_blocks
 
     # PEP 8 / ruff-format spacing rules (E302, E303, E305):
     #   - Exactly 2 blank lines before a top-level class/def block.

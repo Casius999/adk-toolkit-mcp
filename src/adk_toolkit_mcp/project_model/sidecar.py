@@ -25,12 +25,16 @@ from .specs import (
     _ALLOWED_PARAM_TYPES,
     _AUTH_CAPABLE_KINDS,
     _AUTH_SCHEMES,
+    _CALLBACK_HOOKS,
     _MCP_TRANSPORTS,
+    _POLICY_HOOKS,
+    _POLICY_KINDS,
     _TOOL_KINDS,
     ARG_BUILTINS,
     BUILTIN_TOOLS,
     SIDECAR_PATH,
     AgentSpec,
+    CallbackSpec,
     ProjectModel,
     ToolSpec,
     is_identifier,
@@ -226,6 +230,72 @@ def validate_tool_spec(tool: ToolSpec, model: ProjectModel, owner: str) -> str |
         return None
 
     return None  # pragma: no cover
+
+
+def validate_callback_spec(callback: CallbackSpec) -> str | None:
+    """Renvoie un message d'erreur si le garde-fou (callback) est invalide, sinon None.
+
+    Vérifie : hook connu, politique connue, politique compatible avec le hook, et champs requis
+    par la politique (``keywords`` / ``max_chars`` (entier > 0) / ``denylist``).
+    """
+    if callback.hook not in _CALLBACK_HOOKS:
+        return (
+            f"Hook de callback inconnu : {callback.hook!r}. "
+            f"Connus : {', '.join(sorted(_CALLBACK_HOOKS))}."
+        )
+    if callback.policy not in _POLICY_KINDS:
+        return (
+            f"Politique de garde-fou inconnue : {callback.policy!r}. "
+            f"Connues : {', '.join(sorted(_POLICY_KINDS))}."
+        )
+    allowed = _POLICY_HOOKS[callback.policy]
+    if callback.hook not in allowed:
+        return (
+            f"La politique {callback.policy!r} n'est pas compatible avec le hook "
+            f"{callback.hook!r}. Hooks valides : {', '.join(sorted(allowed))}."
+        )
+    if callback.policy == "block_keywords" and not _has_csv(callback.param("keywords")):
+        return "block_keywords : 'keywords' est requis (liste séparée par des virgules)."
+    if callback.policy == "block_tool" and not _has_csv(callback.param("denylist")):
+        return "block_tool : 'denylist' est requis (noms d'outils séparés par des virgules)."
+    if callback.policy == "max_input_chars":
+        raw = callback.param("max_chars")
+        if not _is_positive_int(raw):
+            return f"max_input_chars : 'max_chars' doit être un entier > 0 (reçu {raw!r})."
+    return None
+
+
+def _has_csv(raw: str) -> bool:
+    """Vrai si ``raw`` contient au moins un élément non vide (liste CSV)."""
+    return any(s.strip() for s in raw.split(","))
+
+
+def _is_positive_int(raw: str) -> bool:
+    """Vrai si ``raw`` est un entier strictement positif."""
+    try:
+        return int(raw) > 0
+    except (ValueError, TypeError):
+        return False
+
+
+def add_or_replace_callback(spec: AgentSpec, callback: CallbackSpec) -> AgentSpec:
+    """Attache ``callback`` à ``spec`` (un seul callback par hook : remplace, sinon ajoute).
+
+    Renvoie un nouvel ``AgentSpec`` immuable. Un hook ne peut porter qu'UNE fonction générée
+    (le toolkit attache une seule fonction par kwarg) : un second callback sur le même hook
+    remplace le premier (position préservée).
+    """
+    found = False
+    new_callbacks: list[CallbackSpec] = []
+    for existing in spec.callbacks:
+        if existing.hook == callback.hook:
+            new_callbacks.append(callback)
+            found = True
+        else:
+            new_callbacks.append(existing)
+    if not found:
+        new_callbacks.append(callback)
+    return replace(spec, callbacks=tuple(new_callbacks))
 
 
 def _validate_mcp(tool: ToolSpec) -> str | None:
