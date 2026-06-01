@@ -212,7 +212,9 @@ def test_render_sequential_and_parallel() -> None:
         ),
     )
     src = render_agent_module(model)
-    assert "from google.adk.agents import LlmAgent, SequentialAgent, ParallelAgent" in src
+    # Les noms importés sont triés (isort ``I001``), pas dans l'ordre canonique ADK :
+    # ``LlmAgent, ParallelAgent, SequentialAgent`` (alphabétique).
+    assert "from google.adk.agents import LlmAgent, ParallelAgent, SequentialAgent" in src
     assert "pipe = SequentialAgent(" in src
     assert "sub_agents=[a, b]" in src
     assert "fan = ParallelAgent(" in src
@@ -986,8 +988,39 @@ def _ruff_exe() -> str | None:
     return shutil.which("ruff")
 
 
+def _assert_ruff_isort_clean(src: str, tmp_path: Path, label: str) -> None:
+    """Vérifie que ``ruff check --select I`` (isort) passe (exit 0) sur *src*.
+
+    Le ``agent.py`` généré ne doit pas seulement être *format*-clean : ses lignes d'import
+    doivent aussi être *isort*-clean (noms triés à l'intérieur de chaque ``from X import ...``,
+    ordre des modules). Avant le correctif, la ligne ``from google.adk.agents import LlmAgent,
+    BaseAgent`` (ordre canonique ADK) déclenchait ``I001``.
+    """
+    gen_file = tmp_path / f"{label}_isort.py"
+    gen_file.write_text(src, encoding="utf-8")
+
+    ruff = _ruff_exe()
+    if ruff is None:
+        pytest.skip("ruff introuvable dans l'environnement — test isort ignoré")
+
+    result = subprocess.run(
+        [ruff, "check", "--select", "I", str(gen_file)],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, (
+        f"ruff check --select I (isort) a échoué pour le cas '{label}'.\n"
+        f"Stdout: {result.stdout}\nStderr: {result.stderr}\n"
+        f"Source générée :\n{src}"
+    )
+
+
 def _assert_ruff_format_stable(src: str, tmp_path: Path, label: str) -> None:
-    """Écrit *src* dans un fichier temporaire et vérifie que ``ruff format --check`` passe."""
+    """Vérifie que la sortie générée est **déjà formatée ET isort-clean**.
+
+    Lance ``ruff format --check`` (idempotence du formatage) *et* ``ruff check --select I``
+    (tri des imports) sur *src* — les deux doivent passer (exit 0).
+    """
     gen_file = tmp_path / f"{label}.py"
     gen_file.write_text(src, encoding="utf-8")
 
@@ -1006,6 +1039,9 @@ def _assert_ruff_format_stable(src: str, tmp_path: Path, label: str) -> None:
         f"Source générée :\n{src}"
     )
 
+    # Le fichier généré doit aussi être isort-clean (pas seulement format-clean).
+    _assert_ruff_isort_clean(src, tmp_path, label)
+
 
 def test_render_format_stable_custom_llm_workflow(tmp_path: Path) -> None:
     """Le module généré avec un custom + llm + workflow est stable pour ruff format."""
@@ -1020,6 +1056,46 @@ def test_render_format_stable_custom_llm_workflow(tmp_path: Path) -> None:
     )
     src = render_agent_module(model)
     _assert_ruff_format_stable(src, tmp_path, "custom_llm_workflow")
+
+
+def test_render_agent_import_line_names_sorted_for_isort() -> None:
+    """La ligne d'import des classes d'agents trie ses noms (custom + llm -> BaseAgent, LlmAgent).
+
+    Régression : ``_needed_agent_imports`` renvoie l'ordre canonique ADK
+    (``LlmAgent, ..., BaseAgent``) ; l'émission doit néanmoins trier les noms pour satisfaire
+    isort (``BaseAgent, LlmAgent``).
+    """
+    model = ProjectModel(
+        app_name="demo",
+        root="router",
+        agents=(
+            AgentSpec(name="writer", type="llm", instruction="Write"),
+            AgentSpec(name="router", type="custom", description="Custom router"),
+        ),
+    )
+    src = render_agent_module(model)
+    assert "from google.adk.agents import BaseAgent, LlmAgent\n" in src
+    # L'ordre canonique non trié ne doit PAS apparaître.
+    assert "import LlmAgent, BaseAgent" not in src
+
+
+def test_render_isort_clean_custom_plus_llm(tmp_path: Path) -> None:
+    """Cas dédié : un agent ``custom`` + un ``llm`` (combo ``LlmAgent`` + ``BaseAgent``).
+
+    Avant le correctif, l'ordre canonique non trié ``import LlmAgent, BaseAgent`` déclenchait
+    ``I001``. Après correctif, la sortie est triée (``BaseAgent, LlmAgent``). On vérifie
+    explicitement que ``ruff check --select I`` est clean (exit 0) sur la sortie générée.
+    """
+    model = ProjectModel(
+        app_name="demo",
+        root="router",
+        agents=(
+            AgentSpec(name="writer", type="llm", instruction="Write"),
+            AgentSpec(name="router", type="custom", description="Custom router"),
+        ),
+    )
+    src = render_agent_module(model)
+    _assert_ruff_isort_clean(src, tmp_path, "custom_plus_llm")
 
 
 def test_render_format_stable_llm_only(tmp_path: Path) -> None:

@@ -391,11 +391,19 @@ def _dedup_preserve(items: list[str]) -> list[str]:
 
 
 def _agent_import_line(model: ProjectModel) -> str:
-    """Ligne d'import des classes d'agents (vide si aucune classe agent utilisée)."""
+    """Ligne d'import des classes d'agents (vide si aucune classe agent utilisée).
+
+    Les **noms importés sont triés** comme l'exige la règle isort de ruff (``I001``) : tri
+    ``sorted()`` standard (sensible à la casse / ordinal — vérifié contre ``ruff check
+    --select I``), identique au tri appliqué aux imports d'outils/modèle par
+    :func:`_render_import_line`. ``_needed_agent_imports`` conserve l'ordre canonique ADK pour
+    la sémantique interne ; seule l'**émission** est triée pour que le ``agent.py`` généré soit
+    isort-clean (et pas seulement format-clean).
+    """
     imports = _needed_agent_imports(model)
     if not imports:
         return ""
-    return f"from google.adk.agents import {', '.join(imports)}\n"
+    return _render_import_line("google.adk.agents", sorted(imports)) + "\n"
 
 
 def _merge_tool_imports(import_stmts: list[str]) -> list[str]:
@@ -469,11 +477,17 @@ def render_agent_module(model: ProjectModel) -> str:
     # Imports supplémentaires du rendu modèle (LiteLlm, types, os).
     model_imports = _collect_model_imports(ordered)
 
-    # Section d'imports. La ligne des classes d'agents garde l'**ordre canonique** ADK
-    # (LlmAgent, Sequential, Parallel, Loop, BaseAgent) — pas un tri alphabétique. Les imports
-    # d'outils + modèle sont fusionnés par module (noms dédupliqués + triés). Les imports stdlib
-    # (ex. ``import os``) sont extraits et placés **avant** les imports third-party (ruff isort).
+    # Section d'imports — entièrement **isort-clean** (ruff ``I001``), pas seulement
+    # format-clean. La ligne des classes d'agents (``from google.adk.agents import ...``) est
+    # fusionnée avec les imports d'outils + modèle puis triée **par module** comme tout le reste
+    # (isort range tout le third-party en un seul bloc alphabétique : ``crewai_tools`` <
+    # ``google.adk.*`` < ``langchain_community`` < ``mcp`` …). Les noms à l'intérieur de chaque
+    # ``from X import a, b`` sont triés via :func:`_render_import_line`. Les imports stdlib (ex.
+    # ``import os``) forment une section séparée placée **avant** le third-party (isort).
+    agent_import_stmt = _agent_import_line(model).rstrip("\n")
     all_tool_and_model_imports = [imp for tr in tool_renders for imp in tr.imports] + model_imports
+    if agent_import_stmt:
+        all_tool_and_model_imports.append(agent_import_stmt)
     merged = _merge_tool_imports(all_tool_and_model_imports)
 
     # Sépare stdlib plain-imports (ex. ``import os``) des ``from <module> import ...`` third-party.
@@ -485,15 +499,12 @@ def render_agent_module(model: ProjectModel) -> str:
         else:
             thirdparty_imports.append(stmt)
 
-    # Ordre final : stdlib seul si présent, puis agents ADK (from google.adk.agents),
-    # puis autres third-party. Un saut de ligne entre les groupes (isort).
+    # Ordre final : section stdlib (triée) si présente, un saut de ligne, puis le third-party
+    # déjà trié par module par :func:`_merge_tool_imports` (qui inclut la ligne des agents).
     import_lines: list[str] = []
     if stdlib_imports:
-        import_lines.extend(stdlib_imports)
+        import_lines.extend(sorted(stdlib_imports))
         import_lines.append("")  # blank line between stdlib and third-party
-    agent_import_stmt = _agent_import_line(model).rstrip("\n")
-    if agent_import_stmt:
-        import_lines.append(agent_import_stmt)
     import_lines.extend(thirdparty_imports)
 
     import_block = ("\n".join(import_lines) + "\n\n") if import_lines else ""
