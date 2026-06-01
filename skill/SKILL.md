@@ -19,7 +19,7 @@ description: >-
 # adk-toolkit — Google ADK mastery via adk-toolkit-mcp
 
 This skill confers complete, accurate mastery of **Google ADK 2.1.0** as exposed by the
-**adk-toolkit-mcp** MCP server (81 tools across 17 domains). The server is a **code-first sidecar**:
+**adk-toolkit-mcp** MCP server (81 tools across 15 domains). The server is a **code-first sidecar**:
 you author agents by calling MCP tools that maintain a sidecar (`.adk_toolkit/agents.json` +
 `runtime.json`) and **regenerate `agent.py` wholesale** from it. Never hand-edit generated `agent.py`
 — call a tool and it is re-rendered. Generated code is held to `ast.parse` + `ruff format` + isort.
@@ -63,15 +63,17 @@ disclosure); this body is just the map. **`references/13-tool-catalog.md` is the
 | Known pitfalls + fixes (deprecations, missing flags/imports/extras, DB async URL, regen) | `references/12-troubleshooting.md` | — |
 | **Complete task → exact MCP tool(s) map (all 81 tools, by domain)** | `references/13-tool-catalog.md` | **all** |
 
-## The 17 domains at a glance
+## The 15 domains at a glance
 
 `project` (scaffold/inspect) · `agents` (compose) · `tools` (attach tools) · `models` (model/config) ·
 `sessions` · `memory` · `artifacts` (runtime state) · `run` (execute) · `eval` (evaluate) ·
 `deploy` · `dev` (CLI servers) · `a2a` · `mcp_bridge` (interop) · `safety` · `observability` (ops).
 
-Exposed tool names are always `<domain>_<bare>` (e.g. `agents_create_llm`, `tools_add_mcp_toolset`,
-`run_agent`, `eval_run`, `deploy_cloud_run`). The MCP server is `adk-toolkit` (run via
-`uv run adk-toolkit-mcp`). Two resources: `adk://version`, `adk://models`.
+These are the 15 tool-exposing sub-servers; `project_model` and `runtime` are internal support
+modules (not exposed as domains). Exposed tool names are always `<domain>_<bare>` (e.g.
+`agents_create_llm`, `tools_add_mcp_toolset`, `run_agent`, `eval_run`, `deploy_cloud_run`). The
+MCP server is `adk-toolkit` (run via `uv run adk-toolkit-mcp`). Two resources: `adk://version`,
+`adk://models`.
 
 ## Golden workflow (the path that never forgets a step)
 

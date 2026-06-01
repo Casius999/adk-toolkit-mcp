@@ -1,7 +1,9 @@
 # adk-toolkit-mcp
 
-Exhaustive MCP server wrapping **Google ADK** (`google-adk` 2.1.0): 15 sub-servers, **81 tools**
-across 14 exposed domains, covering the full agent development lifecycle — scaffold, compose,
+Exhaustive MCP server wrapping **Google ADK** (`google-adk` 2.1.0): **81 tools** across
+**15 tool-exposing sub-servers** (project, agents, tools, models, sessions, memory, artifacts,
+run, eval, deploy, dev, a2a, mcp_bridge, safety, observability) + 2 internal support modules
+(project_model, runtime), covering the full agent development lifecycle — scaffold, compose,
 run, evaluate, deploy, observe. Built code-first: the sidecar `.adk_toolkit/agents.json` is the
 source of truth; `agent.py` is fully regenerated on every change.
 

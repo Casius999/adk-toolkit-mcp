@@ -492,7 +492,7 @@ LLM-judge / eval-extra-absent return a clean `err` (no hang). P3a still green (r
     tokens found.
 - **`README.md`** rewritten (English): full install section with extras table, run, MCP client
   JSON, Code Mode (honest caveat on `execute`), companion skill, quickstart (scaffold → agent →
-  run), domains table (14 domains + counts), workflow prompts table, links to docs.
+  run), domains table (15 domains + counts), workflow prompts table, links to docs.
 - **`docs/ARCHITECTURE.md`** (new): directory tree, sub-server mount pattern, code-first sidecar
   model, `project_model` package table, `runtime.py` singleton cache, `run_core.py` function table,
   `adk_cli.py` CLI + process registry, envelope, Code Mode, lazy deps, key invariants.
@@ -509,7 +509,30 @@ LLM-judge / eval-extra-absent return a clean `err` (no hang). P3a still green (r
   (unchanged from P6a baseline). ruff lint + format clean (64 files); mypy clean (34 src files).
   No `pyproject`/`uv.lock` change (docs only).
 
+## P6c polish (2026-06-01)
+
+- **Count standardization:** Everywhere the server has **15 tool-exposing sub-servers + 2 internal
+  support modules** (project_model, runtime). Fixed all headline copy:
+  - `README.md` line 4: "14 exposed domains" → "15 tool-exposing sub-servers + 2 internal support modules"
+  - `skill/SKILL.md` line ~22: "17 domains" → "15 domains"; line ~66 heading "17 domains" → "15 domains"
+    (+ added clarifying note about project_model/runtime not being domains)
+  - `skill/references/13-tool-catalog.md` line 3: "17 domains" → "15 domains"; count-check footer
+    updated to "15 domains" with explicit note on internal modules
+  - `PROGRESS.md` historical P6b note: "14 domains + counts" → "15 domains + counts"
+  - Installed skill re-copied to `~/.claude/skills/adk-toolkit/` — all 15 files byte-identical.
+- **`eval_run` summary field:** The `eval_run` success envelope now returns a `summary` string
+  derived from already-computed data: `"PASSED (N/T cases passed) — metric=score, ..."` or
+  `"FAILED (N/T cases passed) — metric=score, ..."`. `passed` boolean unchanged.
+  Tests in `test_eval.py` extended: `test_eval_run_passes_offline_response_match` asserts
+  `"PASSED"` + `"1/1"` in summary; `test_eval_run_fails_offline_on_wrong_expected` asserts
+  `"FAILED"` in summary.
+- **Quality gates (post-polish):** 669 passed, 6 skipped, 95.42% coverage (gate 80%), 28
+  UserWarning (0 DeprecationWarning). ruff check + format clean (64 files); mypy clean (34 src
+  files). No `pyproject`/`uv.lock` change.
+
 ## Resume instructions
+**P6c COMPLETE** (count standardization: 15 domains everywhere; eval_run summary field; skill
+re-copied byte-identical; test suite green at 669/6).
 **P6b COMPLETE** (stale-doc fixes in `eval.md`/`project.md`; expanded `README.md`; new
 `docs/ARCHITECTURE.md`, `docs/TOOL_CATALOG.md`, `docs/CONTRIBUTING.md`; all 81 tool names
 cross-checked in all new docs; test suite green at 669/6).

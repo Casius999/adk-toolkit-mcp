@@ -1,6 +1,6 @@
 # 13 — Tool catalog: "I want to do X" → exact MCP tool
 
-The authoritative bridge from intent to the exact adk-toolkit-mcp tool. **All 81 tools across 17
+The authoritative bridge from intent to the exact adk-toolkit-mcp tool. **All 81 tools across 15
 domains**, grouped by domain, with exact exposed names and key arguments. Every tool returns
 `{ok, data, error}`. When unsure which tool implements a step, this is the file to open.
 
@@ -171,5 +171,5 @@ All take `(path, app_name, …)`; async.
 ## <a name="count"></a>Count check
 5 (project) + 10 (agents) + 13 (tools) + 3 (models) + 8 (sessions) + 3 (memory) + 6 (artifacts) +
 5 (run) + 4 (eval) + 6 (deploy) + 6 (dev) + 3 (a2a) + 2 (mcp_bridge) + 3 (safety) + 4 (observability)
-= **81 tools** across 17 domains. (15 domains expose tools; `project_model`/`runtime` are internal
-support modules, not exposed.)
+= **81 tools** across **15 domains**. (`project_model` and `runtime` are internal support modules,
+not tool-exposing domains.)
