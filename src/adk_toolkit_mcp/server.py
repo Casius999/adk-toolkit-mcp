@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+
 from fastmcp import FastMCP
 
 from .domains.a2a import a2a_server
@@ -22,9 +24,59 @@ from .resources import register_resources
 
 SERVER_NAME = "adk-toolkit-mcp"
 
+#: Valeurs d'env reconnues comme « vrai » pour activer le Code Mode (insensible à la casse).
+_TRUTHY: frozenset[str] = frozenset({"1", "true", "yes", "on"})
 
-def build_server() -> FastMCP:
-    """Construit le serveur MCP racine. Sous-serveurs montés en P1→P4. Code Mode en P6."""
+#: Variable d'env activant le Code Mode au lancement (``main()``).
+_CODE_MODE_ENV = "ADK_TOOLKIT_CODE_MODE"
+
+
+def code_mode_enabled() -> bool:
+    """Vrai si la variable d'env ``ADK_TOOLKIT_CODE_MODE`` demande le Code Mode.
+
+    Reconnaît ``1``/``true``/``yes``/``on`` (insensible à la casse). Toute autre valeur
+    (ou l'absence de variable) → ``False`` (mode outils-directs par défaut).
+    """
+    return (os.getenv(_CODE_MODE_ENV) or "").strip().lower() in _TRUTHY
+
+
+def _apply_code_mode(mcp: FastMCP) -> None:
+    """Effondre le catalogue d'outils en une petite surface discovery + execute (Code Mode).
+
+    Applique le VRAI transform FastMCP 3.3.1
+    (:class:`fastmcp.experimental.transforms.code_mode.CodeMode`) via
+    :meth:`FastMCP.add_transform`. La surface exposée passe alors des 81 outils nommés à
+    seulement ``search`` / ``get_schema`` / ``tags`` / ``execute`` (gros gain de tokens pour
+    un gros catalogue). Les outils de découverte lisent ``tool.tags`` — d'où l'intérêt
+    d'avoir tagué chaque outil par domaine (TASK 1) : ``GetTags`` liste les 15 domaines, puis
+    ``search(tags=[...])`` filtre par domaine.
+
+    NB (honnêteté, cf. ``docs/adk-api-notes/fastmcp-codemode.md``) : les outils de découverte
+    (``search``/``get_schema``/``tags``) fonctionnent SANS dépendance supplémentaire ; seul
+    l'outil ``execute`` (sandbox ``MontySandboxProvider`` par défaut) nécessite le paquet
+    optionnel ``pydantic-monty`` (extra ``fastmcp[code-mode]``), importé paresseusement à
+    l'appel. Le transform est donc « câblé » ici, mais l'exécution de code requiert l'extra.
+    L'import est local pour ne rien coûter au mode outils-directs (par défaut).
+    """
+    from fastmcp.experimental.transforms.code_mode import CodeMode, GetSchemas, GetTags, Search
+
+    # GetTags est ajouté à la liste par défaut (Search + GetSchemas) car on tague par domaine :
+    # le modèle peut parcourir les domaines, puis search(tags=[...]), puis get_schema, puis execute.
+    mcp.add_transform(CodeMode(discovery_tools=[Search(), GetSchemas(), GetTags()]))
+
+
+def build_server(code_mode: bool = False) -> FastMCP:
+    """Construit le serveur MCP racine (15 sous-serveurs, 81 outils).
+
+    Par défaut (``code_mode=False``), tous les outils sont exposés par leur nom
+    ``<domaine>_<bare>`` (UX outils-directs ; les tests read-through les appellent par nom).
+
+    Si ``code_mode=True``, on applique le transform Code Mode de FastMCP 3.3.1 APRÈS avoir
+    monté tous les sous-serveurs : le catalogue est effondré en une surface discovery+execute
+    (``search``/``get_schema``/``tags``/``execute``) — économie de tokens pour les 81 outils.
+    Voir :func:`_apply_code_mode` et ``docs/adk-api-notes/fastmcp-codemode.md`` (l'outil
+    ``execute`` requiert l'extra ``fastmcp[code-mode]`` ; la découverte fonctionne sans).
+    """
     mcp = FastMCP(SERVER_NAME)
     register_resources(mcp)
     register_prompts(mcp)
@@ -59,11 +111,15 @@ def build_server() -> FastMCP:
     mcp.mount(safety_server, namespace="safety")
     # P4 domaine c : observability (OpenTelemetry/Cloud Trace). Exposés `observability_<nom>`.
     mcp.mount(observability_server, namespace="observability")
+    # P6 : Code Mode opt-in — APRÈS tous les mounts (le transform agit sur le catalogue complet).
+    if code_mode:
+        _apply_code_mode(mcp)
     return mcp
 
 
 def main() -> None:
-    build_server().run()
+    """Point d'entrée CLI : lance le serveur (Code Mode si ``ADK_TOOLKIT_CODE_MODE`` est vrai)."""
+    build_server(code_mode=code_mode_enabled()).run()
 
 
 if __name__ == "__main__":
