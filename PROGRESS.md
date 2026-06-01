@@ -21,7 +21,8 @@
 | **P3 Runtime/Eval** | run (P3a) ✅ · eval (P3b) ✅ | ✅ DONE |
 | **P4 Ops** | deploy (P4a) ✅ · dev (P4a) ✅ · a2a (P4b) ✅ · mcp_bridge (P4b) ✅ · safety (P4c) ✅ · observability (P4c) ✅ | ✅ **DONE** |
 | **P5 Skill** | `adk-toolkit` skill (SKILL.md + 14 refs) + install + test | ✅ **DONE** |
-| **P6 Finish** | Code Mode, prompts, docs, repo publish (confirm GitHub) | ⬜ **(next)** |
+| **P6a Code Mode + prompts** | domain tags · opt-in FastMCP Code Mode · 5 workflow prompts | ✅ **DONE** |
+| **P6 Finish (rest)** | docs (`ARCHITECTURE.md`/`TOOL_CATALOG.md`/`CONTRIBUTING.md`), repo publish (confirm GitHub) | ⬜ **(next)** |
 
 ## Exposed tools so far (81)
 - `project_*`: create, inspect, set_env, add_extra, agent_config
@@ -394,6 +395,56 @@ The 6 skips are unchanged (gcp×2 + real-api_server boot + 3 a2a-gated). No orph
   `references/*.md` cited by SKILL.md exists, and the 14 canonical refs are present.
 - **No `pyproject`/`uv.lock` change** (docs + a stdlib-only test). README already pointed at `skill/`.
 
+## P6a Code Mode + prompts facts (see `docs/adk-api-notes/fastmcp-codemode.md`)
+- **Real Code Mode EXISTS in fastmcp 3.3.1** as a catalog transform:
+  `fastmcp.experimental.transforms.code_mode.CodeMode` (a `CatalogTransform`/`Transform` subclass,
+  NOT re-exported at the top level). Applied via `mcp.add_transform(CodeMode(...))` AFTER all mounts;
+  it REPLACES the whole catalog with discovery + `execute` meta-tools. Proven: 81 tools → 4
+  (`search`/`get_schema`/`tags`/`execute`) via in-memory `Client.list_tools()`. `@FastMCP.tool` and
+  `@FastMCP.prompt` both accept `tags: set[str]`.
+- **HONEST caveat (documented in api-notes + README):** the `execute` meta-tool's default sandbox
+  `MontySandboxProvider` lazily `import`s `pydantic-monty` (the `fastmcp[code-mode]` extra), which is
+  NOT installed here → calling `execute` raises a clear `ImportError`. The DISCOVERY tools
+  (`search`/`get_schema`/`tags`/`list_tools`) work WITHOUT monty (verified via Client). The
+  token-efficiency win (cheap catalog) is fully functional without the extra; we wire real Code Mode
+  and gate it, and do NOT add `pydantic-monty` to the locked deps. NOT faked.
+- **TASK 1 — domain tags:** all 81 `@<domain>_server.tool` decorators carry `tags={"<domain>"}`
+  (mechanical inject: bare `@x.tool` → `@x.tool(tags={"d"})`; `@x.tool(name="list")` →
+  `@x.tool(tags={"d"}, name="list")`). Exposed tool NAMES unchanged (tags are metadata); surfaced to
+  MCP clients via `_meta.fastmcp.tags`. Server-side `mcp.list_tools()` `Tool.tags` carries the tag;
+  the client's `mcp.types.Tool` does NOT expose `.tags` (use `_meta`). The 5 prompts carry
+  `tags={"workflow"}`.
+- **TASK 2 — opt-in Code Mode:** `build_server(code_mode: bool = False)`. DEFAULT = direct tools
+  (all 81 by name → read-through tests unchanged). `code_mode=True` (or env `ADK_TOOLKIT_CODE_MODE` ∈
+  {1,true,yes,on}, parsed by `code_mode_enabled()`) applies `CodeMode(discovery_tools=[Search(),
+  GetSchemas(), GetTags()])` — `GetTags` added BECAUSE we tag by domain (browse 15 domains →
+  `search(tags=[...])` → `get_schema` → `execute`). `main()` reads the env flag. Token-surface
+  reduction proven: 81 → 4 (≥90% fewer top-level tools).
+- **TASK 3 — 5 workflow prompts** (`prompts.py`, real `@mcp.prompt`, each returns a templated string):
+  `scaffold_multi_agent(goal)` (project_create → agents_create_llm → agents_create_sequential/
+  parallel/loop → agents_compose/set_root → models_set/configure_litellm → run_agent),
+  `add_guardrail(agent, concern)` (callback per-agent via `safety_add_callback` vs global plugin via
+  `safety_add_plugin` decision + `safety_settings`), `write_evalset(agent)` (eval_create_set →
+  eval_set_criteria → eval_run → eval_report, offline-metric guidance), `deploy_checklist(target)`
+  (deploy_preflight → deploy_containerize → deploy_agent_engine/cloud_run/gke with REAL 2.1.0 flags +
+  creds reminders → deploy_status), `debug_agent(symptom)` (run_agent/run_stream →
+  run_inspect_events; agents_list/get, tools_list; known pitfalls). **Cross-check (load-bearing):**
+  37 distinct `<domain>_*` tokens cited across the prompts, ALL real tools (the only false-positive
+  was the param `eval_set_file` — reworded out so the regex stays clean, mirroring the P5 approach).
+- **Read via the REAL client API:** `Client.list_prompts()` (→ `mcp.types.Prompt` with `.name`/
+  `.description`/`.arguments`) and `Client.get_prompt(name, {args})` (→ `result.messages[0].content`
+  is a `TextContent` with `.text`). Confirmed by introspection before writing tests.
+- **Tests:** `tests/unit/test_server.py` (rewritten: 81-count + sample names + no double-prefix; every
+  tool's domain tag via server-side `.tags`; tag surfaced via client `_meta`; code_mode surface
+  collapse + `tags` discovery reachable; `code_mode_enabled` env parsing parametrized) and NEW
+  `tests/unit/test_prompts.py` (5 registered + declared args; render non-empty/actionable; arg
+  interpolation; cross-check every cited token is a real tool; key pivot tools cited; workflow tag).
+- **Quality:** 669 passed, 6 skipped (was 641/6 after P5; +28 P6a tests), coverage 95.41% (gate 80%),
+  under `-W error::DeprecationWarning` (28 benign UserWarning, zero DeprecationWarning). ruff + mypy
+  clean (34 src files / 64 formatted). **`uv.lock`/`pyproject` UNCHANGED** (Code Mode + tags + prompts
+  are stdlib/fastmcp-only; `pydantic-monty` deliberately NOT added). `prompts.py` 100% cov, `server.py`
+  96%. The 6 skips are unchanged (gcp×2 + real-api_server + 3 a2a-gated).
+
 ## (historical) P4b test/quality snapshot
 **572 passed, 6 skipped, coverage 95.67%** (after P4b). ruff + mypy clean (30 source files); full
 suite green under `-W error::DeprecationWarning` (28 warnings, all benign `UserWarning` from
@@ -425,12 +476,20 @@ OFFLINE (no key) via a REAL `AgentEvaluator`; a wrong expected answer correctly 
 LLM-judge / eval-extra-absent return a clean `err` (no hang). P3a still green (run_core/run 100%).
 
 ## Resume instructions
+**P6a COMPLETE** (domain tags on all 81 tools; opt-in FastMCP Code Mode in `build_server(code_mode=)` +
+`ADK_TOOLKIT_CODE_MODE` env; 5 workflow prompts in `prompts.py` with a load-bearing tool-name
+cross-check; `docs/adk-api-notes/fastmcp-codemode.md`; rewritten `test_server.py` + new `test_prompts.py`).
 **P5 COMPLETE** (the `adk-toolkit` skill: SKILL.md + 14 refs, installed to `~/.claude/skills/adk-toolkit/`,
 4-test stdlib-only `test_skill.py`, all 81 tools cross-checked). P4 also COMPLETE (deploy+dev P4a ✅ ·
 a2a+mcp_bridge P4b ✅ · safety+observability P4c ✅).
-Next: **P6 — Finish** (Code Mode / `fastmcp` transforms, MCP prompts, docs `ARCHITECTURE.md` /
-`TOOL_CATALOG.md` / `CONTRIBUTING.md`, then repo publish — **confirm GitHub push with the user** before
-adding any remote; local-only until then).
+Next: **P6 — Finish (rest)** (docs `ARCHITECTURE.md` / `TOOL_CATALOG.md` / `CONTRIBUTING.md`, then repo
+publish — **confirm GitHub push with the user** before adding any remote; local-only until then).
+- P6a notes: Code Mode is REAL in fastmcp 3.3.1 (`fastmcp.experimental.transforms.code_mode.CodeMode`,
+  applied via `mcp.add_transform(...)` AFTER mounts). DEFAULT stays direct-tools (81 by name) — do NOT
+  flip the default. The `execute` sandbox needs the optional `fastmcp[code-mode]`/`pydantic-monty` extra
+  (NOT installed, NOT locked); discovery tools work without it. If P6 ADDS/renames a tool: keep its
+  `tags={"<domain>"}` decorator, and if it's cited in a prompt re-run the `test_prompts.py` cross-check.
+  Prompts are read via `Client.list_prompts()`/`get_prompt(name, {args})` (`messages[0].content.text`).
 - Established patterns to keep: lazy optional imports, `{ok,data,error}` envelope, bare tool names
   mounted via `namespace=`, sidecar/Workspace for generated files, actionable `err` for an absent
   extra (`gcp`/`db`/`eval`/`a2a`), generated code held to ast.parse + ruff format + isort.
