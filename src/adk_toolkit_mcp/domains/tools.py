@@ -13,14 +13,22 @@ intégralement** ``agent.py`` (+ ``__init__.py``). Tout est renvoyé dans l'enve
 
 Passe **3a** : outils **sans dépendance** (aucune extra ``google-adk`` requise) :
 ``function``, ``long_running``, ``builtin`` (dont ``vertex_ai_search``), ``agent_tool``,
-``openapi``. Le codegen réel et la sémantique vivent dans
-:mod:`adk_toolkit_mcp.project_model` (pur, testable). Voir ``docs/adk-api-notes/tools.md`` pour
-les signatures ADK confirmées (builtins = instances, OpenAPIToolset direct dans ``tools=[...]``,
-fonction auto-wrappée en ``FunctionTool`` par ADK).
+``openapi``.
+
+Passe **3b** : toolsets à **dépendance optionnelle** (extras ``google-adk[...]``) — **codegen-only**
+(le toolkit n'importe jamais ces extras ; il émet du code que l'utilisateur exécute dans son propre
+venv) : ``add_bigquery``, ``add_spanner``, ``add_mcp_toolset``, ``add_apihub``, ``add_langchain``,
+``add_crewai``, plus ``set_auth`` (attache une sous-spec d'auth à un toolset compatible).
+
+Le codegen réel et la sémantique vivent dans :mod:`adk_toolkit_mcp.project_model` (pur, testable).
+Voir ``docs/adk-api-notes/tools.md`` pour les signatures ADK confirmées (builtins = instances,
+toolsets directs dans ``tools=[...]``, fonction auto-wrappée en ``FunctionTool`` par ADK, chemins
+d'import + classes d'auth confirmés par introspection).
 """
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -29,6 +37,7 @@ from fastmcp import FastMCP
 from ..envelope import err, ok
 from ..project_model import (
     BUILTIN_TOOLS,
+    AuthSpec,
     ProjectModel,
     ToolSpec,
     add_or_replace_tool,
@@ -142,6 +151,16 @@ def _parse_params(params: list[dict[str, Any]]) -> tuple[tuple[str, str, str | N
         default = item.get("default")
         out.append((name, ptype, None if default is None else str(default)))
     return tuple(out)
+
+
+def _replace_tool_fields(tool: ToolSpec, **changes: Any) -> ToolSpec:
+    """Renvoie une copie **immuable** de ``tool`` avec les champs ``changes`` remplacés.
+
+    Fin wrapper de :func:`dataclasses.replace` (``ToolSpec`` est ``frozen``) — préserve l'identité
+    (``ref_key`` inchangé tant qu'on ne touche ni ``name``/``kind``), donc ``add_or_replace_tool``
+    remplace bien l'outil en place (pas de doublon).
+    """
+    return replace(tool, **changes)
 
 
 # --------------------------------------------------------------------------- #
@@ -268,6 +287,237 @@ def add_openapi(
 
 
 # --------------------------------------------------------------------------- #
+# Outils MCP — passe 3b (toolsets à dépendance optionnelle, codegen-only)
+# --------------------------------------------------------------------------- #
+def _toolset_name(name: str | None, agent_name: str, suffix: str) -> str:
+    """Nom de variable du toolset : ``name`` fourni, sinon ``<agent_name>_<suffix>``."""
+    return name if name is not None else f"{agent_name}_{suffix}"
+
+
+@tools_server.tool
+def add_bigquery(
+    path: str,
+    app_name: str,
+    agent_name: str,
+    name: str | None = None,
+    args: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    """Attache un ``BigQueryToolset`` (extra ``google-adk[bigquery]``) à ``agent_name``.
+
+    Génère ``<name> = BigQueryToolset(<args>)`` au niveau module et place ``<name>``
+    directement dans ``tools=[...]``. ``args`` sont des **expressions source** (pas des
+    littéraux chaîne) : ex. ``{"bigquery_tool_config": "my_cfg"}`` référence une variable que
+    vous définissez par ailleurs. ``name`` défaut = ``<agent_name>_bigquery``. **Codegen-only** :
+    le toolkit n'importe pas l'extra (cf. ``docs/adk-api-notes/tools.md``).
+    """
+    toolset_name = _toolset_name(name, agent_name, "bigquery")
+    arg_pairs = tuple((str(k), str(v)) for k, v in (args or {}).items())
+    tool = ToolSpec(kind="bigquery", name=toolset_name, args=arg_pairs)
+    return _attach(path, app_name, agent_name, tool)
+
+
+@tools_server.tool
+def add_spanner(
+    path: str,
+    app_name: str,
+    agent_name: str,
+    name: str | None = None,
+    args: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    """Attache un ``SpannerToolset`` (extra ``google-adk[spanner]``) à ``agent_name``.
+
+    Comme :func:`add_bigquery` mais pour Spanner : ``<name> = SpannerToolset(<args>)``.
+    ``args`` = expressions source (ex. ``{"credentials_config": "my_creds"}``). ``name`` défaut
+    = ``<agent_name>_spanner``. **Codegen-only**.
+    """
+    toolset_name = _toolset_name(name, agent_name, "spanner")
+    arg_pairs = tuple((str(k), str(v)) for k, v in (args or {}).items())
+    tool = ToolSpec(kind="spanner", name=toolset_name, args=arg_pairs)
+    return _attach(path, app_name, agent_name, tool)
+
+
+@tools_server.tool
+def add_mcp_toolset(
+    path: str,
+    app_name: str,
+    agent_name: str,
+    transport: str,
+    command: str | None = None,
+    args: list[str] | None = None,
+    url: str | None = None,
+    headers: dict[str, str] | None = None,
+    tool_filter: list[str] | None = None,
+    name: str | None = None,
+) -> dict[str, Any]:
+    """Attache un ``McpToolset`` (extra ``google-adk[mcp]``) à ``agent_name``.
+
+    ``transport`` ∈ {``stdio``, ``sse``, ``http``} :
+
+    - ``stdio`` : ``command`` requis (+ ``args`` optionnels) -> ``StdioConnectionParams(
+      server_params=StdioServerParameters(command=..., args=[...]))`` ;
+    - ``sse`` / ``http`` : ``url`` requis (+ ``headers`` optionnels) -> ``SseConnectionParams`` /
+      ``StreamableHTTPConnectionParams(url=..., headers={...})``.
+
+    ``tool_filter`` (optionnel) restreint les outils exposés. ``name`` défaut =
+    ``<agent_name>_mcp``. Le toolset entre directement dans ``tools=[...]``. **Codegen-only**.
+    """
+    toolset_name = _toolset_name(name, agent_name, "mcp")
+    tool = ToolSpec(
+        kind="mcp_toolset",
+        name=toolset_name,
+        transport=transport,
+        command=command or "",
+        mcp_args=tuple(args or ()),
+        url=url or "",
+        headers=tuple((str(k), str(v)) for k, v in (headers or {}).items()),
+        tool_filter=tuple(tool_filter or ()),
+    )
+    return _attach(path, app_name, agent_name, tool)
+
+
+@tools_server.tool
+def add_apihub(
+    path: str,
+    app_name: str,
+    agent_name: str,
+    apihub_resource_name: str,
+    name: str | None = None,
+) -> dict[str, Any]:
+    """Attache un ``APIHubToolset`` à ``agent_name`` (API Hub de Google Cloud).
+
+    Génère ``<name> = APIHubToolset(apihub_resource_name="...")`` et le place dans
+    ``tools=[...]``. ``apihub_resource_name`` est la ressource API Hub (ex.
+    ``projects/<p>/locations/<l>/apis/<a>``). ``name`` défaut = ``<agent_name>_apihub``.
+    Auth attachable via :func:`set_auth`. **Codegen-only**.
+    """
+    toolset_name = _toolset_name(name, agent_name, "apihub")
+    tool = ToolSpec(kind="apihub", name=toolset_name, apihub_resource_name=apihub_resource_name)
+    return _attach(path, app_name, agent_name, tool)
+
+
+@tools_server.tool
+def add_langchain(
+    path: str,
+    app_name: str,
+    agent_name: str,
+    import_line: str,
+    tool_expr: str,
+    name: str | None = None,
+) -> dict[str, Any]:
+    """Attache un outil LangChain enveloppé via ``LangchainTool`` (extra ``google-adk[community]``).
+
+    Le toolkit ne connaît pas votre outil LangChain : vous fournissez ``import_line`` (rendu
+    **verbatim**, ex. ``from langchain_community.tools import WikipediaQueryRun``) et ``tool_expr``
+    (l'expression de construction, ex. ``WikipediaQueryRun(api_wrapper=wrapper)``). Rendu :
+    ``LangchainTool(tool=<tool_expr>)`` dans ``tools=[...]``. ``name`` est accepté mais
+    actuellement non rendu (le wrapper LangChain dérive son nom). **Codegen-only**.
+    """
+    tool = ToolSpec(
+        kind="langchain",
+        import_line=import_line,
+        tool_expr=tool_expr,
+        name=name or "",
+    )
+    return _attach(path, app_name, agent_name, tool)
+
+
+@tools_server.tool
+def add_crewai(
+    path: str,
+    app_name: str,
+    agent_name: str,
+    import_line: str,
+    tool_expr: str,
+    name: str,
+    description: str,
+) -> dict[str, Any]:
+    """Attache un outil CrewAI enveloppé via ``CrewaiTool`` (extra ``google-adk[community]``).
+
+    Comme :func:`add_langchain` mais pour CrewAI. ``CrewaiTool`` **exige** un ``name``
+    (keyword-only, confirmé) ; ``description`` requise ici pour un rendu explicite.
+    Rendu : ``CrewaiTool(tool=<tool_expr>, name="...", description="...")``. **Codegen-only**.
+    """
+    tool = ToolSpec(
+        kind="crewai",
+        import_line=import_line,
+        tool_expr=tool_expr,
+        name=name,
+        description=description,
+    )
+    return _attach(path, app_name, agent_name, tool)
+
+
+# --------------------------------------------------------------------------- #
+# Outil MCP — auth (set_auth) : attache une sous-spec auth à un toolset existant
+# --------------------------------------------------------------------------- #
+@tools_server.tool
+def set_auth(
+    path: str,
+    app_name: str,
+    agent_name: str,
+    tool_name: str,
+    scheme: str,
+    credential: dict[str, str],
+) -> dict[str, Any]:
+    """Attache une **auth** (``scheme`` + ``credential``) à un toolset déjà présent sur l'agent.
+
+    ``tool_name`` désigne la **variable de toolset** (le ``name`` passé à ``add_openapi`` /
+    ``add_apihub`` / ``add_mcp_toolset``). Seuls ces genres acceptent l'auth (confirmé :
+    ``OpenAPIToolset``/``APIHubToolset``/``McpToolset`` ont ``auth_scheme``/``auth_credential`` ;
+    ``BigQueryToolset``/``SpannerToolset`` non -> refus).
+
+    ``scheme`` ∈ {``apikey``, ``oauth2``, ``service_account``, ``bearer``}. ``credential`` est un
+    dict de champs (ex. ``{"api_key": "..."}``, ``{"token": "..."}``, ``{"client_id": "...",
+    "client_secret": "..."}``). Rendu : ``auth_credential=AuthCredential(...)`` sur le toolset
+    (+ imports ``google.adk.auth``). Sémantique idempotente (remplace par nom). **Codegen-only**.
+    """
+    if not is_identifier(app_name):
+        return err(_APP_NAME_ERR)
+    if not is_identifier(agent_name):
+        return err(f"agent_name invalide : {agent_name!r}. Attendu un identifiant Python.")
+
+    model = _load(path, app_name)
+    if isinstance(model, dict):  # err()
+        return model
+
+    agent = model.get(agent_name)
+    if agent is None:
+        return err(f"Agent introuvable : {agent_name!r}. Créez-le d'abord (domaine agents).")
+
+    # Cherche le toolset cible (par sa variable ``name``) parmi les outils de l'agent.
+    target = next(
+        (
+            t
+            for t in agent.tool_specs()
+            if t.name == tool_name
+            and t.kind in ("openapi", "apihub", "mcp_toolset", "bigquery", "spanner")
+        ),
+        None,
+    )
+    if target is None:
+        return err(
+            f"Toolset introuvable sur {agent_name!r} : {tool_name!r}. "
+            "set_auth cible un toolset existant (openapi/apihub/mcp_toolset) par son 'name'."
+        )
+
+    cred_pairs = tuple((str(k), str(v)) for k, v in credential.items())
+    updated_tool = _replace_tool_fields(target, auth=AuthSpec(scheme=scheme, credential=cred_pairs))
+
+    # Re-valide (rejette auth sur bigquery/spanner, schéma inconnu, champ requis manquant…).
+    tool_error = validate_tool_spec(updated_tool, model, agent_name)
+    if tool_error is not None:
+        return err(tool_error)
+
+    updated_agent = add_or_replace_tool(agent, updated_tool)
+    model = add_or_update_agent(model, updated_agent)
+    result = _commit(path, app_name, model)
+    if result["ok"]:
+        result["data"]["agent"] = agent_name
+        result["data"]["tools"] = [t.ref_key() for t in updated_agent.tool_specs()]
+    return result
+
+
+# --------------------------------------------------------------------------- #
 # Outil MCP — lecture
 # --------------------------------------------------------------------------- #
 @tools_server.tool(name="list")
@@ -312,6 +562,20 @@ def _tool_summary(tool: ToolSpec) -> dict[str, Any]:
             summary["args"] = dict(tool.args)
     elif tool.kind == "agent_tool":
         summary["target_agent"] = tool.target_agent
-    elif tool.kind == "openapi":
+    elif tool.kind in ("openapi", "bigquery", "spanner"):
         summary["name"] = tool.name
+        if tool.args:
+            summary["args"] = dict(tool.args)
+    elif tool.kind == "mcp_toolset":
+        summary["name"] = tool.name
+        summary["transport"] = tool.transport
+    elif tool.kind == "apihub":
+        summary["name"] = tool.name
+        summary["apihub_resource_name"] = tool.apihub_resource_name
+    elif tool.kind in ("langchain", "crewai"):
+        summary["tool_expr"] = tool.tool_expr
+        if tool.name:
+            summary["name"] = tool.name
+    if tool.auth is not None:
+        summary["auth"] = {"scheme": tool.auth.scheme}
     return summary
