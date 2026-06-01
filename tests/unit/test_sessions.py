@@ -12,6 +12,8 @@ Couverture clé :
 - PERSISTANCE FONCTIONNELLE avec un backend ``database`` sur un fichier SQLite : l'état écrit
   par un appel d'outil est relu par un appel ultérieur (preuve via DatabaseSessionService).
 - Read-through ``fastmcp.Client`` : service_set → create → state_set → state_get.
+- Sécurité : ``service_set`` ne doit PAS exposer les credentials (user:password) dans la
+  réponse MCP ; ``_redact_db_url`` masque le userinfo tout en conservant le schéma/hôte/db.
 
 Note ADK (cf. docs/adk-api-notes/sessions.md) : l'état ``temp:`` n'est PAS persisté par
 ``get_session``. ``state_set`` lit donc l'état sur la session mutée (où ``temp`` est visible) ;
@@ -27,6 +29,7 @@ import pytest
 from fastmcp import Client
 
 from adk_toolkit_mcp.domains import sessions as S
+from adk_toolkit_mcp.domains.sessions import _redact_db_url
 from adk_toolkit_mcp.runtime import reset_service_cache
 from adk_toolkit_mcp.server import build_server
 
@@ -72,7 +75,8 @@ async def test_service_set_database_persists_url(tmp_path: Path) -> None:
     result = S.service_set(path=str(tmp_path), app_name="myapp", kind="database", db_url=url)
     assert result["ok"] is True
     assert result["data"]["kind"] == "database"
-    assert result["data"]["db_url"] == url
+    # The returned db_url is redacted (no credentials); the raw URL is preserved in runtime.json.
+    assert result["data"]["db_url"] == url  # SQLite has no credentials → returned unchanged
 
 
 async def test_service_set_rejects_unknown_kind(tmp_path: Path) -> None:
@@ -525,3 +529,96 @@ async def test_client_read_through_full_flow(tmp_path: Path) -> None:
         assert got.data["ok"] is True
         assert got.data["data"]["found"] is True
         assert got.data["data"]["value"] == "v"
+
+
+# --------------------------------------------------------------------------- #
+# _redact_db_url unit tests
+# --------------------------------------------------------------------------- #
+def test_redact_db_url_masks_password() -> None:
+    """postgresql+asyncpg://user:secret@host/db → credentials replaced by ***."""
+    url = "postgresql+asyncpg://user:s3cret@host:5432/db"
+    redacted = _redact_db_url(url)
+    assert "s3cret" not in redacted
+    assert "***" in redacted
+    # Scheme, host, port and database name are preserved.
+    assert redacted.startswith("postgresql+asyncpg://")
+    assert "host:5432" in redacted
+    assert "/db" in redacted
+
+
+def test_redact_db_url_masks_user_and_password() -> None:
+    """Both username and password are hidden behind the single *** token."""
+    url = "postgresql+asyncpg://admin:p@ssw0rd@db.example.com/mydb"
+    redacted = _redact_db_url(url)
+    assert "admin" not in redacted
+    assert "p@ssw0rd" not in redacted
+    assert "***@db.example.com" in redacted
+    assert "/mydb" in redacted
+
+
+def test_redact_db_url_sqlite_no_credentials_unchanged() -> None:
+    """sqlite+aiosqlite:///path/to.db has no credentials → returned as-is."""
+    url = "sqlite+aiosqlite:///path/to/my.db"
+    assert _redact_db_url(url) == url
+
+
+def test_redact_db_url_sqlite_relative_unchanged() -> None:
+    """sqlite+aiosqlite:///relative.db (no host) → returned as-is."""
+    url = "sqlite+aiosqlite:///relative.db"
+    assert _redact_db_url(url) == url
+
+
+# --------------------------------------------------------------------------- #
+# service_set credential-redaction integration tests
+# --------------------------------------------------------------------------- #
+async def test_service_set_database_does_not_expose_password(tmp_path: Path) -> None:
+    """service_set with kind='database' and a URL containing credentials must NOT
+    return the plain password in the MCP response payload (security rule)."""
+    secret = "s3cret"
+    url = f"postgresql+asyncpg://user:{secret}@host:5432/db"
+    result = S.service_set(path=str(tmp_path), app_name="myapp", kind="database", db_url=url)
+    assert result["ok"] is True
+    returned_url: str = result["data"]["db_url"]
+    # Password must not appear in the returned db_url.
+    assert secret not in returned_url, (
+        f"Credential leaked in service_set response: {returned_url!r}"
+    )
+    # The redacted marker must be present.
+    assert "***" in returned_url
+
+
+async def test_service_set_database_redacted_url_preserves_structure(tmp_path: Path) -> None:
+    """The redacted URL keeps scheme, host, port and database name — just credentials masked."""
+    url = "postgresql+asyncpg://user:s3cret@host:5432/mydb"
+    result = S.service_set(path=str(tmp_path), app_name="myapp", kind="database", db_url=url)
+    assert result["ok"] is True
+    returned_url: str = result["data"]["db_url"]
+    assert returned_url.startswith("postgresql+asyncpg://")
+    assert "host:5432" in returned_url
+    assert "/mydb" in returned_url
+    assert "***@host:5432" in returned_url
+
+
+async def test_service_set_database_runtime_json_stores_real_url(tmp_path: Path) -> None:
+    """runtime.json must persist the RAW (unredacted) URL so the backend can actually connect."""
+    import json
+
+    secret = "s3cret"
+    url = f"postgresql+asyncpg://user:{secret}@host:5432/db"
+    result = S.service_set(path=str(tmp_path), app_name="myapp", kind="database", db_url=url)
+    assert result["ok"] is True
+    config_path = Path(result["data"]["config_path"])
+    raw = json.loads(config_path.read_text(encoding="utf-8"))
+    # The file must store the real URL (needed to connect later).
+    assert raw["session"]["db_url"] == url, (
+        "runtime.json must store the unredacted URL for actual DB connections"
+    )
+
+
+async def test_service_set_sqlite_credential_free_url_returned_intact(tmp_path: Path) -> None:
+    """SQLite URLs have no credentials — the returned db_url is the original string."""
+    url = _db_url(tmp_path)
+    result = S.service_set(path=str(tmp_path), app_name="myapp", kind="database", db_url=url)
+    assert result["ok"] is True
+    # No credentials in a SQLite URL → returned unchanged.
+    assert result["data"]["db_url"] == url

@@ -28,6 +28,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
+from urllib.parse import urlsplit, urlunsplit
 
 from fastmcp import FastMCP
 
@@ -55,6 +56,35 @@ _SCOPES: frozenset[str] = frozenset({"session", "app", "user", "temp"})
 # --------------------------------------------------------------------------- #
 # Helpers internes (non exposés)
 # --------------------------------------------------------------------------- #
+def _redact_db_url(url: str) -> str:
+    """Masque les credentials dans une URL de base de données pour les logs/réponses MCP.
+
+    Parse l'URL avec ``urllib.parse.urlsplit`` ; si un ``userinfo`` (user[:pass]@) est présent,
+    le remplace par ``***``. Le schéma, l'hôte, le port et le chemin (nom de la base) sont
+    conservés tels quels. Les URLs sans credentials (ex. SQLite) sont renvoyées intactes.
+
+    Exemples ::
+
+        >>> _redact_db_url("postgresql+asyncpg://user:s3cret@host:5432/db")
+        'postgresql+asyncpg://***@host:5432/db'
+        >>> _redact_db_url("sqlite+aiosqlite:///path/to.db")
+        'sqlite+aiosqlite:///path/to.db'
+    """
+    parsed = urlsplit(url)
+    if not parsed.username:
+        # Pas de credentials → URL inchangée (SQLite, URLs relatives, etc.)
+        return url
+    # Reconstruit netloc en remplaçant userinfo par ***
+    host_part = parsed.hostname or ""
+    if parsed.port:
+        host_part = f"{host_part}:{parsed.port}"
+    redacted_netloc = f"***@{host_part}"
+    redacted = urlunsplit(
+        (parsed.scheme, redacted_netloc, parsed.path, parsed.query, parsed.fragment)
+    )
+    return redacted
+
+
 def _app_ws(path: str, app_name: str) -> Workspace:
     """Workspace pointant sur le dossier de l'app (``<path>/<app_name>``)."""
     return Workspace(Path(path) / app_name)
@@ -170,7 +200,7 @@ def service_set(
         {
             "app_name": app_name,
             "kind": backend.kind,
-            "db_url": backend.db_url,
+            "db_url": _redact_db_url(backend.db_url) if backend.db_url else backend.db_url,
             "project": backend.project,
             "location": backend.location,
             "config_path": str(ws.path(".adk_toolkit/runtime.json")),
