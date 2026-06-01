@@ -3,6 +3,8 @@ from __future__ import annotations
 from fastmcp import FastMCP
 
 from .domains.agents import agents_server
+from .domains.artifacts import artifacts_server
+from .domains.memory import memory_server
 from .domains.models import models_server
 from .domains.project import project_server
 from .domains.sessions import sessions_server
@@ -29,6 +31,10 @@ def build_server() -> FastMCP:
     mcp.mount(models_server, namespace="models")
     # P2 domaine a : sessions (runtime). Outils exposés comme `sessions_<nom>`.
     mcp.mount(sessions_server, namespace="sessions")
+    # P2 domaine b : memory (runtime). Outils exposés comme `memory_<nom>`.
+    mcp.mount(memory_server, namespace="memory")
+    # P2 domaine b : artifacts (runtime). Outils exposés comme `artifacts_<nom>`.
+    mcp.mount(artifacts_server, namespace="artifacts")
     return mcp
 
 
