@@ -22,6 +22,7 @@ from ._codegen import _Call, _py_str, _render_call, render_tool_ref
 from .specs import (
     _CLASS_FOR_TYPE,
     _IMPORT_ORDER,
+    _REMOTE_A2A_IMPORT,
     LINE_LENGTH,
     AgentSpec,
     GenerateContentConfigSpec,
@@ -271,6 +272,23 @@ def _render_loop(spec: AgentSpec) -> str:
     return f"{spec.name} = LoopAgent(\n{_render_kwargs(pairs)})\n"
 
 
+def _render_remote_a2a(spec: AgentSpec) -> str:
+    """Rend un ``RemoteA2aAgent`` (name + agent_card + description?).
+
+    ``agent_card`` est l'URL (ou chemin JSON) de l'agent-card distant. Le proxy n'a pas
+    d'enfants ; il entre directement dans ``tools=[...]``/``sub_agents=[...]`` d'autres agents
+    comme n'importe quelle variable d'agent. L'import vit dans un sous-module dédié — cf.
+    :data:`~adk_toolkit_mcp.project_model.specs._REMOTE_A2A_IMPORT`.
+    """
+    pairs: list[tuple[str, str]] = [
+        ("name", _py_str(spec.name)),
+        ("agent_card", _py_str(spec.agent_card)),
+    ]
+    if spec.description:
+        pairs.append(("description", _py_str(spec.description)))
+    return f"{spec.name} = RemoteA2aAgent(\n{_render_kwargs(pairs)})\n"
+
+
 def _custom_class_name(name: str) -> str:
     """Nom de classe PascalCase pour un agent custom (``my_agent`` -> ``MyAgentAgent``)."""
     pascal = "".join(part.capitalize() for part in name.split("_") if part)
@@ -316,6 +334,8 @@ def _render_agent_blocks(spec: AgentSpec) -> list[str]:
         return [_render_workflow(spec, _CLASS_FOR_TYPE[spec.type])]
     if spec.type == "loop":
         return [_render_loop(spec)]
+    if spec.type == "remote_a2a":
+        return [_render_remote_a2a(spec)]
     if spec.type == "custom":
         class_block, instance_block = _render_custom(spec)
         return [class_block, instance_block]
@@ -337,14 +357,24 @@ def _render_agent(spec: AgentSpec) -> str:
 
 
 def _needed_agent_imports(model: ProjectModel) -> list[str]:
-    """Classes d'agents ADK réellement utilisées, dans l'ordre canonique."""
+    """Classes d'agents ADK importées **depuis ``google.adk.agents``**, dans l'ordre canonique.
+
+    ``remote_a2a`` est EXCLU : ``RemoteA2aAgent`` vit dans un sous-module distinct
+    (:data:`~adk_toolkit_mcp.project_model.specs._REMOTE_A2A_IMPORT`) et son import est ajouté
+    séparément par :func:`render_agent_module`.
+    """
     used: set[str] = set()
     for a in model.agents:
         if a.type == "custom":
             used.add("BaseAgent")
-        else:
+        elif a.type != "remote_a2a":
             used.add(_CLASS_FOR_TYPE[a.type])
     return [name for name in _IMPORT_ORDER if name in used]
+
+
+def _uses_remote_a2a(model: ProjectModel) -> bool:
+    """Vrai si au moins un agent du modèle est de type ``remote_a2a`` (proxy A2A)."""
+    return any(a.type == "remote_a2a" for a in model.agents)
 
 
 def _collect_tool_renders(ordered: list[AgentSpec]) -> list[ToolRender]:
@@ -488,6 +518,10 @@ def render_agent_module(model: ProjectModel) -> str:
     all_tool_and_model_imports = [imp for tr in tool_renders for imp in tr.imports] + model_imports
     if agent_import_stmt:
         all_tool_and_model_imports.append(agent_import_stmt)
+    # RemoteA2aAgent (P4b) vit dans un sous-module dédié : son import est ajouté ici puis trié
+    # par module avec tout le reste par ``_merge_tool_imports`` (isort-clean).
+    if _uses_remote_a2a(model):
+        all_tool_and_model_imports.append(_REMOTE_A2A_IMPORT)
     merged = _merge_tool_imports(all_tool_and_model_imports)
 
     # Sépare stdlib plain-imports (ex. ``import os``) des ``from <module> import ...`` third-party.

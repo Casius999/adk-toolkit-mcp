@@ -77,10 +77,14 @@ SIDECAR_FILE = "agents.json"
 #: Chemin relatif complet du sidecar (depuis le dossier de l'app).
 SIDECAR_PATH = f"{SIDECAR_DIR}/{SIDECAR_FILE}"
 
-#: Types d'agents supportés.
-AgentType = Literal["llm", "sequential", "parallel", "loop", "custom"]
+#: Types d'agents supportés. ``remote_a2a`` (P4b) = un proxy ``RemoteA2aAgent`` consommant un
+#: agent distant via son agent-card (URL ou chemin JSON) ; il n'a pas d'enfants mais peut être
+#: membre de ``sub_agents`` d'un autre agent.
+AgentType = Literal["llm", "sequential", "parallel", "loop", "custom", "remote_a2a"]
 
-_AGENT_TYPES: frozenset[str] = frozenset({"llm", "sequential", "parallel", "loop", "custom"})
+_AGENT_TYPES: frozenset[str] = frozenset(
+    {"llm", "sequential", "parallel", "loop", "custom", "remote_a2a"}
+)
 
 #: Un nom d'agent doit être un identifiant Python (sert de nom de variable de module).
 _IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
@@ -219,10 +223,13 @@ _CLASS_FOR_TYPE: dict[str, str] = {
     "sequential": "SequentialAgent",
     "parallel": "ParallelAgent",
     "loop": "LoopAgent",
+    "remote_a2a": "RemoteA2aAgent",
     # `custom` produit une sous-classe de BaseAgent.
 }
 
-#: Ordre canonique d'import (sous-ensemble effectivement utilisé est conservé).
+#: Ordre canonique d'import (sous-ensemble effectivement utilisé est conservé). Les classes
+#: importées depuis ``google.adk.agents`` UNIQUEMENT (RemoteA2aAgent vit dans un autre module —
+#: cf. :data:`_REMOTE_A2A_IMPORT` — et n'apparaît donc PAS ici).
 _IMPORT_ORDER: tuple[str, ...] = (
     "LlmAgent",
     "SequentialAgent",
@@ -230,6 +237,12 @@ _IMPORT_ORDER: tuple[str, ...] = (
     "LoopAgent",
     "BaseAgent",
 )
+
+#: Import (chemin réel confirmé en 2.1.0 par introspection) de ``RemoteA2aAgent``. ⚠️ Cette
+#: classe N'EST PAS dans ``google.adk.agents`` (ni dans son ``__all__``, ni en lazy getattr) :
+#: le seul chemin valide est ce sous-module — qui requiert l'extra ``a2a`` au runtime utilisateur.
+#: Codegen-only : le toolkit ne l'importe jamais lui-même.
+_REMOTE_A2A_IMPORT = "from google.adk.agents.remote_a2a_agent import RemoteA2aAgent"
 
 
 # --------------------------------------------------------------------------- #
@@ -554,6 +567,9 @@ class AgentSpec:
     instruction: str = ""
     description: str = ""
     output_key: str | None = None
+    #: URL (ou chemin JSON local) de l'agent-card distant, pour le type ``remote_a2a`` uniquement.
+    #: Rendu comme ``RemoteA2aAgent(name=..., agent_card="<url>")``. Ignoré pour les autres types.
+    agent_card: str = ""
     #: Outils attachés. ``ToolSpec`` (codegen riche) ; la forme ``str`` héritée (P1) reste
     #: tolérée et rendue comme une référence bare (nom déjà importé). Voir ``render_tool_ref``.
     tools: tuple[ToolSpec | str, ...] = ()
@@ -594,6 +610,8 @@ class AgentSpec:
         elif self.type == "loop":
             base["sub_agents"] = list(self.sub_agents)
             base["max_iterations"] = self.max_iterations
+        elif self.type == "remote_a2a":
+            base["agent_card"] = self.agent_card
         # `custom` : seulement name/type/description.
         return base
 
@@ -620,6 +638,7 @@ class AgentSpec:
             instruction=str(data.get("instruction", "")),
             description=str(data.get("description", "")),
             output_key=data.get("output_key"),
+            agent_card=str(data.get("agent_card", "")),
             tools=tools,
             sub_agents=tuple(data.get("sub_agents", []) or []),
             max_iterations=int(data.get("max_iterations", 3)),

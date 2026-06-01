@@ -248,6 +248,124 @@ def test_render_custom_emits_baseagent_subclass_and_instance() -> None:
     assert 'my_custom = MyCustomAgent(name="my_custom", description="D")' in src
 
 
+# --------------------------------------------------------------------------- #
+# remote_a2a (P4b) — proxy RemoteA2aAgent
+# --------------------------------------------------------------------------- #
+def test_render_remote_a2a_emits_call_and_submodule_import() -> None:
+    """``remote_a2a`` rend ``RemoteA2aAgent(name=..., agent_card="...")`` + l'import sous-module.
+
+    ⚠️ En 2.1.0, ``RemoteA2aAgent`` N'EST PAS dans ``google.adk.agents`` : l'import DOIT être
+    ``from google.adk.agents.remote_a2a_agent import RemoteA2aAgent`` (cf. a2a-mcp-bridge.md).
+    """
+    model = ProjectModel(
+        app_name="demo",
+        root="remote_helper",
+        agents=(
+            AgentSpec(
+                name="remote_helper",
+                type="remote_a2a",
+                agent_card="http://localhost:8001/.well-known/agent-card.json",
+                description="Remote helper.",
+            ),
+        ),
+    )
+    src = render_agent_module(model)
+    assert "from google.adk.agents.remote_a2a_agent import RemoteA2aAgent" in src
+    # PAS d'import erroné depuis google.adk.agents (RemoteA2aAgent n'y est pas).
+    assert "from google.adk.agents import RemoteA2aAgent" not in src
+    assert "remote_helper = RemoteA2aAgent(" in src
+    assert 'name="remote_helper"' in src
+    assert 'agent_card="http://localhost:8001/.well-known/agent-card.json"' in src
+    assert 'description="Remote helper."' in src
+    assert "root_agent = remote_helper" in src
+
+
+def test_render_remote_a2a_composes_as_sub_agent_topo_order() -> None:
+    """Un ``remote_a2a`` peut être ``sub_agent`` d'un autre agent ; défini AVANT le parent."""
+    model = ProjectModel(
+        app_name="demo",
+        root="router",
+        agents=(
+            # Déclaré APRÈS le parent dans le modèle pour prouver le tri topologique.
+            AgentSpec(
+                name="router", type="llm", instruction="Route.", sub_agents=("remote_helper",)
+            ),
+            AgentSpec(
+                name="remote_helper",
+                type="remote_a2a",
+                agent_card="http://localhost:8001/a2a",
+            ),
+        ),
+    )
+    src = render_agent_module(model)
+    # Deux classes d'agents importées chacune depuis leur module (isort trie par module).
+    assert "from google.adk.agents import LlmAgent" in src
+    assert "from google.adk.agents.remote_a2a_agent import RemoteA2aAgent" in src
+    # La définition du proxy précède celle du parent (dépendance avant dépendant).
+    assert src.index("remote_helper = RemoteA2aAgent(") < src.index("router = LlmAgent(")
+    assert "sub_agents=[remote_helper]" in src
+
+
+def test_render_remote_a2a_no_description_omits_kwarg() -> None:
+    """Sans description, le kwarg ``description=`` est omis (uniquement name + agent_card)."""
+    model = ProjectModel(
+        app_name="demo",
+        root="r",
+        agents=(AgentSpec(name="r", type="remote_a2a", agent_card="http://h/a2a"),),
+    )
+    src = render_agent_module(model)
+    assert "r = RemoteA2aAgent(" in src
+    assert "description=" not in src
+
+
+def test_remote_a2a_spec_roundtrip_serializes_agent_card() -> None:
+    """Le champ ``agent_card`` survit à un aller-retour to_dict/from_dict (forme sidecar)."""
+    spec = AgentSpec(
+        name="remote_helper",
+        type="remote_a2a",
+        agent_card="http://localhost:8001/.well-known/agent-card.json",
+        description="D",
+    )
+    d = spec.to_dict()
+    assert d["type"] == "remote_a2a"
+    assert d["agent_card"] == "http://localhost:8001/.well-known/agent-card.json"
+    back = AgentSpec.from_dict(d)
+    assert back.type == "remote_a2a"
+    assert back.agent_card == spec.agent_card
+    assert back.description == "D"
+
+
+def test_validate_remote_a2a_requires_agent_card() -> None:
+    """``remote_a2a`` sans agent_card est rejeté (message actionnable)."""
+    bad = AgentSpec(name="r", type="remote_a2a", agent_card="")
+    error = validate_spec(bad)
+    assert error is not None
+    assert "agent_card" in error
+    good = AgentSpec(name="r", type="remote_a2a", agent_card="http://h/a2a")
+    assert validate_spec(good) is None
+
+
+def test_render_remote_a2a_format_and_isort_stable(tmp_path: Path) -> None:
+    """Le module généré avec un remote_a2a + un llm parent est format- ET isort-clean."""
+    model = ProjectModel(
+        app_name="demo",
+        root="router",
+        agents=(
+            AgentSpec(
+                name="remote_helper",
+                type="remote_a2a",
+                agent_card="http://localhost:8001/.well-known/agent-card.json",
+                description="Remote helper.",
+            ),
+            AgentSpec(
+                name="router", type="llm", instruction="Route.", sub_agents=("remote_helper",)
+            ),
+        ),
+    )
+    src = render_agent_module(model)
+    _assert_ruff_format_stable(src, tmp_path, "remote_a2a")
+
+
 def test_render_empty_model_has_no_root() -> None:
     src = render_agent_module(ProjectModel(app_name="demo"))
     assert "root_agent =" not in src.replace("# root_agent", "")

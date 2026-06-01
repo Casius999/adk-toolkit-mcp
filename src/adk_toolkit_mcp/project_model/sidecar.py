@@ -51,6 +51,11 @@ def validate_spec(spec: AgentSpec) -> str | None:
         return f"Type d'agent inconnu : {spec.type!r}. Connus : {', '.join(sorted(_AGENT_TYPES))}."
     if spec.type == "loop" and spec.max_iterations <= 0:
         return f"max_iterations doit être > 0 (reçu {spec.max_iterations})."
+    if spec.type == "remote_a2a" and not spec.agent_card.strip():
+        return (
+            "remote_a2a : 'agent_card' est requis (URL ou chemin JSON de l'agent-card distant, "
+            "ex. 'http://host:8001/.well-known/agent-card.json')."
+        )
     for sub in spec.sub_agents:
         if not is_identifier(sub):
             return f"sub_agent invalide : {sub!r}. Attendu un identifiant Python."
