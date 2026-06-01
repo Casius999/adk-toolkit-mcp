@@ -18,12 +18,12 @@
 | **P0 Foundation** | repo, packaging, envelope, deps, workspace, versions, resources, server, CI, Docker | ✅ DONE |
 | **P1 Author** | project, agents, tools (3a+3b), models | ✅ DONE |
 | **P2 State** | sessions (P2a), memory + artifacts (P2b) | ✅ DONE |
-| **P3 Runtime/Eval** | run (P3a) ✅ · eval (P3b) ⬜ **(next)** | 🟡 IN PROGRESS |
-| **P4 Ops** | deploy, a2a, observability, safety, mcp_bridge, dev | ⬜ |
+| **P3 Runtime/Eval** | run (P3a) ✅ · eval (P3b) ✅ | ✅ DONE |
+| **P4 Ops** | deploy, a2a, observability, safety, mcp_bridge, dev | ⬜ **(next)** |
 | **P5 Skill** | `adk-toolkit` skill (SKILL.md + 14 refs) | ⬜ |
 | **P6 Finish** | Code Mode, prompts, docs, repo publish (confirm GitHub) | ⬜ |
 
-## Exposed tools so far (53)
+## Exposed tools so far (57)
 - `project_*`: create, inspect, set_env, add_extra, agent_config
 - `agents_*`: create_llm, create_sequential, create_parallel, create_loop, create_custom, compose, as_tool, set_root, list, get
 - `tools_*`: add_function, add_long_running, add_builtin, add_agent_tool, add_openapi, add_bigquery, add_spanner, add_mcp_toolset, add_apihub, add_langchain, add_crewai, set_auth, list
@@ -32,6 +32,7 @@
 - `memory_*`: service_set, add_session, search
 - `artifacts_*`: service_set, save, load, list, delete, versions
 - `run_*`: agent, stream, live, config_build, inspect_events
+- `eval_*`: create_set, set_criteria, run, report
 - Resources: `adk://version`, `adk://models`
 
 ## P2a runtime/sessions facts (see `docs/adk-api-notes/sessions.md`)
@@ -124,6 +125,70 @@
   `ctx.report_progress(i, message=...)` + `ctx.info(...)` per event (proven via a Client
   `progress_handler`). `run.py` is the first domain to use `Context`.
 
+## P3b eval facts (see `docs/adk-api-notes/eval.md`)
+- `domains/eval.py` (≈400 lines): `eval_create_set`, `eval_set_criteria`, `eval_run`,
+  `eval_report`. Files live under `<app_dir>/eval/` (`<name>.evalset.json`, `test_config.json`,
+  `reports/<id>.json`). All `google.adk.evaluation` imports are LAZY (extra may be absent →
+  actionable `err`). Operates on a project `(path, app_name)`.
+- **Schema:** `*.evalset.json` is a serialized **`EvalSet`** (`google.adk.evaluation.eval_set`):
+  `EvalSet(*eval_set_id, name?, eval_cases: list[EvalCase])`; `EvalCase(*eval_id,
+  conversation: list[Invocation])`; `Invocation(*user_content: Content, final_response?: Content,
+  intermediate_data?: IntermediateData)`; `IntermediateData(tool_uses: list[FunctionCall],
+  ...)`. `create_set` builds these from the real models and serialises
+  `model_dump_json(indent=2, exclude_none=True)` — the test asserts
+  `EvalSet.model_validate_json(file)` round-trips (schema conformance PROVEN, not guessed). The
+  older `*.test.json` format (`query`/`reference`/`expected_tool_use`) is still auto-detected by
+  ADK (`_load_eval_set_from_file` tries `EvalSet` first, falls back on `ValidationError`); the
+  toolkit emits the NEW schema only.
+- **`test_config.json`** = a serialized `EvalConfig` `{"criteria": {"tool_trajectory_avg_score":
+  float, "response_match_score": float}}` (flat floats; auto-wrapped to `BaseCriterion`). ADK
+  reads it from the SAME folder as the eval file (`find_config_for_test_file`). `set_criteria`
+  writes the flat form; thresholds validated to `[0,1]`.
+- **`AgentEvaluator.evaluate` / `evaluate_eval_set` are `async` and ASSERT-based** (return None
+  on pass; raise `AssertionError` with per-metric detail on fail). `evaluate(path_or_dir)` walks
+  a dir for `*.test.json` OR takes a single file path directly. `criteria` (flat dict) is
+  DEPRECATED (a `logger.warning`, NOT a `DeprecationWarning`) in favour of `eval_config=`.
+  `_get_agent_for_eval(module_name)` uses `importlib.import_module` on a **DOTTED module path**
+  (not a file): needs a member `agent` OR a name ending `.agent`, then `root_agent`. `eval_run`
+  inserts `path` on `sys.path`, evicts `sys.modules[<app>...]` (pick up edits), and imports
+  **`<app_name>.agent`** (a scaffolded app is a package: `__init__.py`+`agent.py`).
+- **Metrics OFFLINE:** `tool_trajectory_avg_score` (`TrajectoryEvaluator`, PURE structural
+  compare of `tool_uses`, no model/no rouge) and `response_match_score`
+  (`final_response_match_v1.RougeEvaluator`, **ROUGE-1**, needs `rouge_score` but **no model**).
+  LLM-judge metrics (`response_evaluation_score`, `*_v1/_v2`, safety, hallucinations) need a
+  judge model + creds → NOT offline; the toolkit's offline path uses only the first two.
+- **Rich report:** to capture per-metric SCORES (the assert API only yields pass/fail), `eval_run`
+  reuses ADK's own internals `AgentEvaluator._get_agent_for_eval` + `_get_eval_results_by_eval_id`
+  (the core of `evaluate`) → `dict[eval_id -> list[EvalCaseResult]]`; each
+  `EvalCaseResult.final_eval_status` (`EvalStatus.PASSED/FAILED/NOT_EVALUATED`) +
+  `overall_eval_metric_results[*].(metric_name, score, threshold, eval_status)`. Verdict = all
+  cases PASSED. Report persisted to `eval/reports/<ts>-<eval_set_id>.json`; `eval_report` reads
+  it by `(path, app_name, report_id)` — a TOOL not a `adk://eval/{id}` resource (a report has
+  THREE addressing coords; a FastMCP 3.3.1 template carries only one opaque id).
+- **FUNCTIONAL offline result (load-bearing, no API key):** a `FakeLlm`-backed agent whose answer
+  == the case's `expected_response` PASSES `response_match_score` (ROUGE score 1.0); a
+  `ScriptedLlm`+`add_numbers` agent PASSES `tool_trajectory_avg_score`=1.0 AND
+  `response_match_score`=1.0; a deliberately wrong expected answer correctly FAILS (`ok=True,
+  passed=False`) — the pipeline genuinely evaluates, no faked pass. An eval *failure* is a NORMAL
+  result (`ok=True, passed=False`); real errors (missing eval set, import, model creds, LLM-judge,
+  extra absent) → clean `err` (no hang).
+- **`-W error::DeprecationWarning` gotcha:** ADK's eval internally builds `Runner(plugins=...)`,
+  emitting a `DeprecationWarning` from `google.adk.runners`. Under `-W error` that warning is
+  RAISED inside ADK and ABORTS the eval inference (caught there, recorded as "Inference failed").
+  No public API avoids the internal call → `eval_run` wraps the ADK call in
+  `warnings.catch_warnings()` + a NARROW `filterwarnings("ignore", message="The `plugins`
+  argument is deprecated.*", category=DeprecationWarning, module="google.adk.runners")`. Scoped to
+  that block only; OUR code stays strict. CLI `-W` would otherwise override an ini `filterwarnings`
+  (so the suppression MUST be in-code, not pyproject).
+- **Extra `eval` REQUIRED for offline metrics** (`rouge-score`/`pandas`/`tabulate`/`nltk`/
+  `scikit-learn`/`jinja2`/`gepa`/`google-cloud-aiplatform[evaluation]`). Added
+  `adk-toolkit-mcp[eval]` to the `dev` extra so CI installs it. `uv.lock` already had these
+  resolved (user-facing `eval`/`all` locked in P0) → only a 2-line `uv.lock` metadata edge
+  (`dev → eval`), no new package versions. Heavy imports stay lazy; `ModuleNotFoundError` for an
+  eval dep → actionable `err`. NB: installing `eval` pulls `vertexai`/`google.cloud.storage`
+  (via aiplatform) + `litellm`, so 2 gcp-absent tests now SKIP and the litellm probe runs (was
+  1 skip → now 2). No regression.
+
 ## Key ADK 2.1.0 facts learned (see `docs/adk-api-notes/`)
 - `google-adk` 2.1.0, `fastmcp` 3.3.1, Python 3.12 local (CI matrix 3.11/3.12).
 - `FastMCP.mount(prefix=)` is DEPRECATED → use `namespace=`.
@@ -135,24 +200,29 @@
 - langchain/crewai re-exported under `google.adk.integrations.*` (the `google.adk.tools.*` paths warn-deprecate).
 
 ## Test/quality state
-439 passed, 1 skipped (litellm probe), coverage 96.96%. ruff + mypy clean; full suite green
-under `-W error::DeprecationWarning`. P3a files: `run_core.py` 221 lines (100% cov),
-`domains/run.py` 354 lines (100% cov); `tests/unit/test_run_core.py` + `test_run.py` +
-shared `tests/unit/fake_llm.py` (FakeLlm/ScriptedLlm fixture). NO `uv.lock`/`pyproject` change
-in P3a (Runner/RunConfig/BaseLlm/Content are all core google-adk). FUNCTIONAL result: a
-FakeLlm-backed `LlmAgent` runs a FULL agent loop OFFLINE (no key) — final text proven, and
-tool-call loop proven (function_call → ADK-executed function_response → final text), both via
-the core helpers AND via the mounted `run_agent` tool (file-imported agent). `run_stream`
-progress relayed to a `fastmcp.Client`; `run_live` returns an actionable `err` without a
-key/live-model (no hang).
+472 passed, 2 skipped, coverage 96.66%. ruff + mypy clean; full suite green under
+`-W error::DeprecationWarning`. P3b files: `domains/eval.py` ≈400 lines (98% cov);
+`tests/unit/test_eval.py` (33 tests) reusing `tests/unit/fake_llm.py`. `pyproject` `dev` extra
+now references `adk-toolkit-mcp[eval]`; `uv.lock` 2-line metadata edge only (eval packages were
+already locked). The 2 skips are gcp-absent conditional tests (now skipped because the eval extra
+pulls `vertexai`/`google.cloud.storage` via aiplatform); the litellm probe now RUNS (litellm is
+an eval-extra transitive dep) — was 1 skip in P3a, now 2, no regression. FUNCTIONAL result: a
+FakeLlm/ScriptedLlm agent PASSES `tool_trajectory_avg_score`=1.0 + `response_match_score` (ROUGE)
+OFFLINE (no key) via a REAL `AgentEvaluator`; a wrong expected answer correctly FAILS
+(`ok=True, passed=False`); per-metric scores captured into a persisted report; missing-creds /
+LLM-judge / eval-extra-absent return a clean `err` (no hang). P3a still green (run_core/run 100%).
 
 ## Resume instructions
-Next: **P3b — `eval` domain** (the remaining half of P3). Introspect `google.adk.evaluation`
-(needs the `eval` extra — confirm what's installed; e.g. `AgentEvaluator`, `EvalCase`,
-`EvalSet`, response/trajectory evaluators, and the `adk eval` data formats `*.evalset.json` /
-`*.test.json`) BEFORE building. Reuse `run_core.build_runner`/`collect_events` to generate
-trajectories where useful, the `runtime.py` factories, and the `{ok,data,error}` envelope;
-mirror the async tool style. Mount under `namespace="eval"` (exposed `eval_*`). The eval extra
-may be heavy/absent in CI — degrade with an actionable `err` (like the `gcp`/`db` extras) and
-keep any heavy import lazy. Record API facts in `docs/adk-api-notes/runtime-eval.md` and commit
-it. Update this file after the phase.
+Next: **P4 — Ops domains** (deploy, a2a, observability, safety, mcp_bridge, dev). These mostly
+*write* config/code or wrap optional ADK features behind extras (`a2a`, `gcp`, `mcp`) — follow
+the established pattern: lazy optional imports, `{ok,data,error}` envelope, bare tool names
+mounted via `namespace=`, sidecar/Workspace for any generated files, actionable `err` for an
+absent extra (mirror `gcp`/`db`/`eval`). Introspect each ADK surface BEFORE building and record
+facts in `docs/adk-api-notes/<domain>.md`; commit per-domain. `a2a` (Agent-to-Agent) likely
+needs the `a2a` extra; `observability` may wrap OpenTelemetry (already a core google-adk dep);
+`safety` overlaps with `models` SafetySetting (P1) — check for reuse; `mcp_bridge` wraps
+`McpToolset` (P1 `tools_add_mcp_toolset` already exists — avoid duplication, expose the
+*serving* side if distinct); `dev` = local dev-loop helpers (e.g. `adk web`/`adk run`/`adk
+api_server` wrappers — confirm what's scriptable). Keep the full suite green under
+`-W error::DeprecationWarning` and coverage ≥80%. After P4: P5 (skill) then P6 (Code Mode,
+prompts, docs, repo publish — confirm GitHub push with the user).
