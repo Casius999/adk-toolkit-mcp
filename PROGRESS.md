@@ -22,7 +22,8 @@
 | **P4 Ops** | deploy (P4a) ✅ · dev (P4a) ✅ · a2a (P4b) ✅ · mcp_bridge (P4b) ✅ · safety (P4c) ✅ · observability (P4c) ✅ | ✅ **DONE** |
 | **P5 Skill** | `adk-toolkit` skill (SKILL.md + 14 refs) + install + test | ✅ **DONE** |
 | **P6a Code Mode + prompts** | domain tags · opt-in FastMCP Code Mode · 5 workflow prompts | ✅ **DONE** |
-| **P6 Finish (rest)** | docs (`ARCHITECTURE.md`/`TOOL_CATALOG.md`/`CONTRIBUTING.md`), repo publish (confirm GitHub) | ⬜ **(next)** |
+| **P6b Docs** | stale-doc fixes · `README.md` expanded · `docs/ARCHITECTURE.md` · `docs/TOOL_CATALOG.md` · `docs/CONTRIBUTING.md` | ✅ **DONE** |
+| **P6 Finish (rest)** | repo publish (confirm GitHub) | ⬜ **(next)** |
 
 ## Exposed tools so far (81)
 - `project_*`: create, inspect, set_env, add_extra, agent_config
@@ -475,15 +476,51 @@ OFFLINE (no key) via a REAL `AgentEvaluator`; a wrong expected answer correctly 
 (`ok=True, passed=False`); per-metric scores captured into a persisted report; missing-creds /
 LLM-judge / eval-extra-absent return a clean `err` (no hang). P3a still green (run_core/run 100%).
 
+## P6b docs facts (2026-06-01)
+
+- **Stale doc fixes:**
+  - `docs/adk-api-notes/project.md` lines ~103-105: stale claim that `project_create` mounted
+    under `namespace="project"` produces `project_project_create`. Fixed to: bare function `create`
+    mounted under `namespace="project"` → single-prefix `project_create`. Also references
+    `conventions.md` for the full table.
+  - `docs/adk-api-notes/eval.md` lines ~126-132: stale claim that "the toolkit catches
+    `AssertionError` → `ok({passed: False, ...})`". The shipped `eval_run` does NOT use the public
+    assert path — it calls `_get_eval_results_by_eval_id` + `final_eval_status` directly. Fixed to
+    accurately describe the public ADK API as assert-based while stating the toolkit uses the
+    internal core for per-metric scores (and forwarding to the "Per-metric scores" section).
+  - All other `adk-api-notes/*.md` files checked — no other contradictory claims or double-prefix
+    tokens found.
+- **`README.md`** rewritten (English): full install section with extras table, run, MCP client
+  JSON, Code Mode (honest caveat on `execute`), companion skill, quickstart (scaffold → agent →
+  run), domains table (14 domains + counts), workflow prompts table, links to docs.
+- **`docs/ARCHITECTURE.md`** (new): directory tree, sub-server mount pattern, code-first sidecar
+  model, `project_model` package table, `runtime.py` singleton cache, `run_core.py` function table,
+  `adk_cli.py` CLI + process registry, envelope, Code Mode, lazy deps, key invariants.
+- **`docs/TOOL_CATALOG.md`** (new): all 81 tools, grouped by 14 domains, each with purpose and
+  key params. Count check: 5+10+13+3+8+3+6+5+4+6+6+3+2+3+4 = 81. Resources + 5 prompts also
+  documented. Load-bearing cross-check: script confirmed all 81 real tool names cited, 0 missing,
+  0 extra.
+- **`docs/CONTRIBUTING.md`** (new): dev setup, run quality suite, naming convention with correct/
+  wrong examples, tags requirement, envelope pattern, generated-code quality bar (ast+ruff+isort),
+  lazy-dep pattern, file/function size limits, coverage requirement, step-by-step "add a new
+  domain" recipe (introspect → create domain file → mount → TDD → update skill → run gates →
+  commit), key files table.
+- **Quality gates:** 669 passed, 6 skipped, 28 UserWarning (0 DeprecationWarning), coverage 95%
+  (unchanged from P6a baseline). ruff lint + format clean (64 files); mypy clean (34 src files).
+  No `pyproject`/`uv.lock` change (docs only).
+
 ## Resume instructions
+**P6b COMPLETE** (stale-doc fixes in `eval.md`/`project.md`; expanded `README.md`; new
+`docs/ARCHITECTURE.md`, `docs/TOOL_CATALOG.md`, `docs/CONTRIBUTING.md`; all 81 tool names
+cross-checked in all new docs; test suite green at 669/6).
 **P6a COMPLETE** (domain tags on all 81 tools; opt-in FastMCP Code Mode in `build_server(code_mode=)` +
 `ADK_TOOLKIT_CODE_MODE` env; 5 workflow prompts in `prompts.py` with a load-bearing tool-name
 cross-check; `docs/adk-api-notes/fastmcp-codemode.md`; rewritten `test_server.py` + new `test_prompts.py`).
 **P5 COMPLETE** (the `adk-toolkit` skill: SKILL.md + 14 refs, installed to `~/.claude/skills/adk-toolkit/`,
 4-test stdlib-only `test_skill.py`, all 81 tools cross-checked). P4 also COMPLETE (deploy+dev P4a ✅ ·
 a2a+mcp_bridge P4b ✅ · safety+observability P4c ✅).
-Next: **P6 — Finish (rest)** (docs `ARCHITECTURE.md` / `TOOL_CATALOG.md` / `CONTRIBUTING.md`, then repo
-publish — **confirm GitHub push with the user** before adding any remote; local-only until then).
+Next: **P6 — repo publish** — confirm GitHub push with the user before adding any remote;
+local-only until then.
 - P6a notes: Code Mode is REAL in fastmcp 3.3.1 (`fastmcp.experimental.transforms.code_mode.CodeMode`,
   applied via `mcp.add_transform(...)` AFTER mounts). DEFAULT stays direct-tools (81 by name) — do NOT
   flip the default. The `execute` sandbox needs the optional `fastmcp[code-mode]`/`pydantic-monty` extra
