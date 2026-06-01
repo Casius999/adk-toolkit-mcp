@@ -445,8 +445,7 @@ def _status_gke(cluster: str | None) -> dict[str, Any]:
                 "target": "gke",
                 "available": False,
                 "guidance": (
-                    "kubectl introuvable. Configure-le : "
-                    "gcloud container clusters get-credentials."
+                    "kubectl introuvable. Configure-le : gcloud container clusters get-credentials."
                 ),
             }
         )

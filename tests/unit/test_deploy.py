@@ -294,6 +294,88 @@ def test_status_unknown_target_returns_err() -> None:
     assert result["ok"] is False
 
 
+def test_status_agent_engine_guidance() -> None:
+    """agent_engine n'a pas de CLI de statut → available False + guidance (toujours ok)."""
+    result = D.status(target="agent_engine")
+    assert result["ok"] is True
+    assert result["data"]["available"] is False
+    assert "Vertex" in result["data"]["guidance"] or result["data"]["guidance"]
+
+
+def test_status_cloud_run_executes_gcloud_when_present(monkeypatch: pytest.MonkeyPatch) -> None:
+    """gcloud présent + args complets → _run_tool est invoqué, rc/sortie remontés."""
+    monkeypatch.setattr(D.shutil, "which", lambda *_a, **_k: "/usr/bin/gcloud")
+    monkeypatch.setattr(
+        D, "_run_tool", lambda argv: {"rc": 0, "stdout": "https://svc.run.app", "stderr": ""}
+    )
+    result = D.status(target="cloud_run", project="p", region="r", service_name="s")
+    assert result["ok"] is True
+    assert result["data"]["available"] is True
+    assert result["data"]["rc"] == 0
+    assert "run.app" in result["data"]["stdout"]
+
+
+def test_status_cloud_run_present_but_incomplete_args(monkeypatch: pytest.MonkeyPatch) -> None:
+    """gcloud présent mais args manquants → guidance demandant project/region/service_name."""
+    monkeypatch.setattr(D.shutil, "which", lambda *_a, **_k: "/usr/bin/gcloud")
+    result = D.status(target="cloud_run", project="p")
+    assert result["ok"] is True
+    assert result["data"]["available"] is True
+    assert "service_name" in result["data"]["guidance"]
+
+
+def test_status_gke_executes_kubectl_when_present(monkeypatch: pytest.MonkeyPatch) -> None:
+    """kubectl présent → _run_tool invoqué pour lister les services."""
+    monkeypatch.setattr(D.shutil, "which", lambda *_a, **_k: "/usr/bin/kubectl")
+    monkeypatch.setattr(
+        D, "_run_tool", lambda argv: {"rc": 0, "stdout": "svc ClusterIP", "stderr": ""}
+    )
+    result = D.status(target="gke", cluster="c")
+    assert result["ok"] is True
+    assert result["data"]["available"] is True
+    assert result["data"]["cluster"] == "c"
+    assert "svc" in result["data"]["stdout"]
+
+
+def test_run_tool_captures_invocation_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    """_run_tool capture une OSError (outil absent malgré which) en données, sans lever."""
+    import subprocess as _sp
+
+    def _boom(*_a, **_k):  # type: ignore[no-untyped-def]
+        raise OSError("not found")
+
+    monkeypatch.setattr(_sp, "run", _boom)
+    result = D._run_tool(["gcloud", "version"])
+    assert result["rc"] == -1
+    assert "échec" in result["stderr"] or "not found" in result["stderr"]
+
+
+def test_execute_true_unknown_flag_blocks_before_running(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Si available_flags ne contient pas un flag émis, _finalize renvoie err AVANT d'exécuter."""
+    # available_flags renvoie un set qui n'inclut PAS --app_name → cloud_run doit échouer.
+    monkeypatch.setattr(D.adk_cli, "available_flags", lambda _sub: {"--project", "--region"})
+    called: list[object] = []
+    monkeypatch.setattr(D.adk_cli, "run_adk", lambda *a, **k: called.append(a) or {"rc": 0})
+    path = _scaffold(tmp_path)
+    result = D.cloud_run(path=path, app_name="myapp", project="p", region="r", execute=True)
+    assert result["ok"] is False
+    assert "--app_name" in result["error"]
+    assert called == [], "un flag inconnu ne doit jamais déclencher run_adk"
+
+
+def test_finalize_skips_validation_when_help_unavailable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """available_flags vide (introspection KO) → on n'invalide rien (plan rendu quand même)."""
+    monkeypatch.setattr(D.adk_cli, "available_flags", lambda _sub: set())
+    path = _scaffold(tmp_path)
+    result = D.cloud_run(path=path, app_name="myapp", project="p", region="r")
+    assert result["ok"] is True
+    assert result["data"]["argv"][:2] == ["deploy", "cloud_run"]
+
+
 # --------------------------------------------------------------------------- #
 # execute=False ne lance JAMAIS un vrai déploiement
 # --------------------------------------------------------------------------- #

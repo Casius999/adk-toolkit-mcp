@@ -67,6 +67,21 @@ def test_adk_executable_fallback_when_no_script(monkeypatch: pytest.MonkeyPatch)
     assert exe == [sys.executable, "-m", "google.adk.cli"]
 
 
+def test_adk_executable_uses_path_when_no_venv_script(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pas de script venv mais ``adk`` sur le PATH → on utilise le chemin du PATH."""
+    monkeypatch.setattr(adk_cli, "_venv_script", lambda *_a, **_k: None)
+    monkeypatch.setattr(adk_cli.shutil, "which", lambda *_a, **_k: "/usr/local/bin/adk")
+    assert adk_cli.adk_executable() == ["/usr/local/bin/adk"]
+
+
+def test_venv_script_returns_none_when_absent(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """``_venv_script`` renvoie None quand aucun candidat n'existe à côté de l'exécutable."""
+    monkeypatch.setattr(adk_cli.sys, "executable", str(tmp_path / "python.exe"))
+    assert adk_cli._venv_script("adk") is None
+
+
 def test_run_adk_help_real() -> None:
     """``run_adk(['--help'])`` s'exécute (rc 0, stdout non vide) sans shell."""
     result = adk_cli.run_adk(["--help"], timeout=120)
@@ -200,6 +215,31 @@ def test_start_process_duplicate_key_rejected(tmp_path: Path) -> None:
     adk_cli.start_process("test:dup", _SLEEP_ARGS, cwd=str(tmp_path), log_path=log_path)
     with pytest.raises(adk_cli.ProcessAlreadyRunning):
         adk_cli.start_process("test:dup", _SLEEP_ARGS, cwd=str(tmp_path), log_path=log_path)
+
+
+def test_start_process_replaces_dead_key(tmp_path: Path) -> None:
+    """Une clé associée à un process MORT est remplacée (pas de ProcessAlreadyRunning)."""
+    log_path = str(tmp_path / "dead.log")
+    adk_cli.start_process("test:dead", _PRINT_ARGS, cwd=str(tmp_path), log_path=log_path)
+    # On attend que le premier process (print rapide) soit terminé.
+    assert _wait_until(lambda: adk_cli.process_status("test:dead")["running"] is False)
+    # Re-démarrer sous la même clé doit réussir (le mort est remplacé).
+    info = adk_cli.start_process("test:dead", _SLEEP_ARGS, cwd=str(tmp_path), log_path=log_path)
+    assert info["running"] is True
+    adk_cli.stop_process("test:dead")
+
+
+def test_read_tail_negative_returns_all(tmp_path: Path) -> None:
+    """``_read_tail`` avec tail négatif renvoie toutes les lignes ; tail=0 renvoie []."""
+    log = tmp_path / "lines.log"
+    log.write_text("a\nb\nc\n", encoding="utf-8")
+    assert adk_cli._read_tail(str(log), -1) == ["a", "b", "c"]
+    assert adk_cli._read_tail(str(log), 0) == []
+    assert adk_cli._read_tail(str(log), 2) == ["b", "c"]
+
+
+def test_read_tail_absent_file(tmp_path: Path) -> None:
+    assert adk_cli._read_tail(str(tmp_path / "nope.log"), 5) == []
 
 
 def test_make_key_is_stable() -> None:
