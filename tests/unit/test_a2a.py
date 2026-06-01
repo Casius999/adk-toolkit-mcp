@@ -175,6 +175,27 @@ def test_consume_rejects_bad_app_name(tmp_path: Path) -> None:
     assert "app_name" in result["error"]
 
 
+def test_consume_corrupted_sidecar_returns_err(tmp_path: Path) -> None:
+    """Un sidecar JSON corrompu → err propre (pas d'exception qui remonte)."""
+    path = _scaffold_app(tmp_path)
+    (tmp_path / "myapp" / ".adk_toolkit" / "agents.json").write_text("{not json", encoding="utf-8")
+    result = A2A.consume(path=path, app_name="myapp", name="r", agent_card_url="http://h/a2a")
+    assert result["ok"] is False
+
+
+def test_consume_into_fresh_app_without_sidecar(tmp_path: Path) -> None:
+    """consume sur une app SANS sidecar préexistant : crée le modèle + le proxy (pas d'erreur)."""
+    app_dir = tmp_path / "fresh"
+    app_dir.mkdir()
+    result = A2A.consume(
+        path=str(tmp_path), app_name="fresh", name="remote_helper", agent_card_url="http://h/a2a"
+    )
+    assert result["ok"] is True, result
+    assert result["data"]["agents"] == ["remote_helper"]
+    agent_txt = (app_dir / "agent.py").read_text(encoding="utf-8")
+    assert "remote_helper = RemoteA2aAgent(" in agent_txt
+
+
 @pytest.mark.skipif(
     not _A2A_PRESENT,
     reason="extra 'a2a' absent : la preuve d'instanciation réelle de RemoteA2aAgent est SKIP.",
@@ -246,6 +267,18 @@ def test_expose_missing_agent_py_returns_err(tmp_path: Path) -> None:
     """Sans agent.py scaffoldé → err actionnable (pas de génération)."""
     (tmp_path / "empty").mkdir()
     result = A2A.expose(path=str(tmp_path), app_name="empty", port=8001)
+    assert result["ok"] is False
+
+
+def test_expose_rejects_bad_app_name(tmp_path: Path) -> None:
+    result = A2A.expose(path=str(tmp_path), app_name="bad name", port=8001)
+    assert result["ok"] is False
+    assert "app_name" in result["error"]
+
+
+def test_expose_missing_app_dir_returns_err(tmp_path: Path) -> None:
+    """Dossier d'app inexistant → err actionnable (jamais de génération hors-cible)."""
+    result = A2A.expose(path=str(tmp_path), app_name="ghostapp", port=8001)
     assert result["ok"] is False
 
 
