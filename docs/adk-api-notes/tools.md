@@ -134,3 +134,165 @@ we render it explicitly for clarity/stability.
 - `agent_tool` enforces: target must be an agent in the model; topo-order ensures the target agent is
   defined before the agent that wraps it; the target is **not** also added as a `sub_agent`
   (respects ADK's single-parent rule — an `AgentTool`-wrapped agent is a tool, not a child).
+
+---
+
+# Pass 3b — optional-dependency toolsets + auth
+
+Captured by introspection on 2026-06-01, google-adk **2.1.0**. **Runtime-confirmed** means the
+class/signature was obtained from the *installed* package (after a temporary `uv pip install`);
+**docs-only/source** means read from the package source file (import chain blocked by a missing or
+conflicting transitive dep) but still authoritative for the constructor shape.
+
+## How extras were probed (and the env restored)
+
+The base `google-adk` install already vendors **mcp** (the `mcp` extra's deps: `McpToolset`,
+connection params, and `mcp.StdioServerParameters` all import cleanly) and the **auth** classes.
+The cloud/community toolsets need extra wheels. Probed by temporary imperative installs that do
+**not** touch `pyproject.toml`/`uv.lock`:
+
+- `google-cloud-bigquery` + `google-cloud-dataplex` → `BigQueryToolset` runtime-confirmed.
+- `google-cloud-spanner` → `SpannerToolset` runtime-confirmed.
+- `langchain-core` → `LangchainTool` runtime-confirmed.
+- `crewai-tools` → install **downgraded opentelemetry** and broke ADK's own import chain
+  (`ImportError: cannot import name 'GEN_AI_INPUT_MESSAGES'`). `CrewaiTool` signature therefore
+  taken from **source** (`google/adk/integrations/crewai/crewai_tool.py`), not a live import.
+
+Afterwards `uv sync --extra dev` restored the venv to the locked state (extras removed, ADK 2.1.0
+imports cleanly, full suite green). `git hash-object uv.lock` is unchanged
+(`ab272f4e7269ff00f5baa5df4ec82fbc72a7aa3e`) before and after.
+
+## Confirmed import paths
+
+```python
+# MCP toolset + connection params (RUNTIME-CONFIRMED — base install, no extra needed here)
+from google.adk.tools.mcp_tool import (
+    McpToolset, StdioConnectionParams, StreamableHTTPConnectionParams, SseConnectionParams,
+)
+from mcp import StdioServerParameters
+
+# BigQuery (RUNTIME-CONFIRMED with google-cloud-bigquery + google-cloud-dataplex)
+from google.adk.tools.bigquery import BigQueryToolset            # + BigQueryCredentialsConfig
+
+# Spanner (RUNTIME-CONFIRMED with google-cloud-spanner)
+from google.adk.tools.spanner import SpannerToolset              # + SpannerCredentialsConfig
+
+# API Hub (RUNTIME-CONFIRMED — base install; also re-exported at package root)
+from google.adk.tools.apihub_tool import APIHubToolset
+
+# Langchain / CrewAI (the task-specified paths; both RE-EXPORT from google.adk.integrations.*
+# and emit a DeprecationWarning — see note below)
+from google.adk.tools.langchain_tool import LangchainTool        # RUNTIME-CONFIRMED (langchain-core)
+from google.adk.tools.crewai_tool import CrewaiTool              # source-confirmed (crewai import broke)
+
+# Auth (RUNTIME-CONFIRMED — base install)
+from google.adk.auth import AuthScheme, AuthCredential, AuthCredentialTypes  # AuthConfig also present
+```
+
+> **DeprecationWarning (langchain/crewai):** `google.adk.tools.langchain_tool` and
+> `google.adk.tools.crewai_tool` are thin shims that `warnings.warn(..., DeprecationWarning)` and
+> re-export from `google.adk.integrations.langchain` / `google.adk.integrations.crewai`. We emit the
+> **task-specified** `google.adk.tools.*` paths (they still work and are what users expect from the
+> task), but a future pass may switch to `google.adk.integrations.*` to avoid the warning. This is
+> harmless for the toolkit: the generated `agent.py` is never imported by our tests (CI lacks the
+> extras), and end users run it in their own venv with `-W` of their choosing.
+
+## Confirmed constructor signatures
+
+```python
+# RUNTIME-CONFIRMED
+McpToolset.__init__(self, *, connection_params, tool_filter=None, tool_name_prefix=None,
+                    errlog=<stderr>, auth_scheme=None, auth_credential=None,
+                    require_confirmation=False, header_provider=None, ...)   # all kw-only
+
+StdioConnectionParams(server_params: StdioServerParameters, timeout: float = ...)   # pydantic
+StreamableHTTPConnectionParams(url: str, headers: dict[str, Any] | None = None, timeout=..., ...)
+SseConnectionParams(url: str, headers: dict[str, Any] | None = None, timeout=..., ...)
+StdioServerParameters(command: str, args: list[str] = [], env=None, cwd=None, ...)   # from `mcp`
+
+BigQueryToolset.__init__(self, *, tool_filter=None, credentials_config=None,
+                         bigquery_tool_config=None)                          # all kw-only
+SpannerToolset.__init__(self, *, tool_filter=None, credentials_config=None,
+                        spanner_tool_settings=None)                          # all kw-only
+
+APIHubToolset.__init__(self, *, apihub_resource_name: str, access_token=None,
+                       service_account_json=None, name='', description='',
+                       lazy_load_spec=False, auth_scheme=None, auth_credential=None,
+                       apihub_client=None, tool_filter=None)                 # all kw-only
+
+LangchainTool.__init__(self, tool, name: Optional[str] = None,
+                       description: Optional[str] = None)                    # tool positional
+
+# SOURCE-CONFIRMED (live import blocked by opentelemetry conflict from crewai-tools)
+CrewaiTool.__init__(self, tool, *, name: str, description: str = '')         # name kw-only REQUIRED
+```
+
+Key signature facts that shaped the renderer:
+
+- **`McpToolset` and `APIHubToolset` natively accept `auth_scheme=` / `auth_credential=` kwargs.**
+  `BigQueryToolset` / `SpannerToolset` do **not** take auth kwargs directly — they take a
+  `credentials_config` object. So "attach auth" only renders `auth_scheme=`/`auth_credential=` on
+  the toolset kinds that accept them (mcp/apihub/openapi); for bigquery/spanner an `auth` sub-spec
+  is rejected by validation (use their credentials args instead).
+- All four GCP/MCP toolsets are `BaseToolset`s → they go **directly** into `tools=[...]` (same as
+  `OpenAPIToolset` in 3a; no `.get_tools()`).
+- `LangchainTool` / `CrewaiTool` subclass `FunctionTool` → they go directly into `tools=[...]` too.
+  `CrewaiTool` **requires** a `name` (keyword-only); `LangchainTool`'s name/description are optional.
+
+## Auth class shapes (RUNTIME-CONFIRMED, base install)
+
+```python
+AuthScheme = Union[APIKey, HTTPBase, OAuth2, OpenIdConnect, HTTPBearer, OpenIdConnectWithConfig,
+                   CustomAuthScheme]   # a typing.Union, NOT a constructible class
+
+class AuthCredentialTypes(Enum):       # the `auth_type` discriminator
+    API_KEY='apiKey'; HTTP='http'; OAUTH2='oauth2'; OPEN_ID_CONNECT='openIdConnect';
+    SERVICE_ACCOUNT='serviceAccount'
+
+AuthCredential(auth_type: AuthCredentialTypes, *, resource_ref=None, api_key=None,
+               http: HttpAuth|None=None, service_account: ServiceAccount|None=None,
+               oauth2: OAuth2Auth|None=None)
+HttpAuth(scheme: str, credentials: HttpCredentials, additional_headers=None)
+HttpCredentials(username=None, password=None, token=None)     # `token` carries a bearer token
+OAuth2Auth(client_id=None, client_secret=None, access_token=None, refresh_token=None, ...)
+ServiceAccount(service_account_credential=None, scopes=None, use_default_credential=None, ...)
+```
+
+### Auth rendering decisions (`scheme` ∈ {apikey, oauth2, service_account, bearer})
+
+`set_auth(... scheme, credential)` attaches an `auth` sub-spec to a toolset `ToolSpec`. We render an
+**`AuthCredential(...)`** expression as `auth_credential=` (the part with secrets) and import the
+needed names from `google.adk.auth`. We deliberately do **not** synthesize an `auth_scheme=`
+(the ADK `AuthScheme` is a `Union` of FastAPI OpenAPI models — there is no single stable
+constructor, and most toolsets already infer the scheme from the credential / spec). The four
+schemes map to:
+
+| `scheme`          | `auth_type`                          | rendered `AuthCredential` kwargs (from the `credential` dict)             | extra imports |
+|-------------------|--------------------------------------|---------------------------------------------------------------------------|---------------|
+| `apikey`          | `AuthCredentialTypes.API_KEY`        | `api_key="<credential['api_key']>"`                                       | `AuthCredential, AuthCredentialTypes` |
+| `bearer`          | `AuthCredentialTypes.HTTP`           | `http=HttpAuth(scheme="bearer", credentials=HttpCredentials(token="<token>"))` | `+ HttpAuth, HttpCredentials` (from `google.adk.auth.auth_credential`) |
+| `oauth2`          | `AuthCredentialTypes.OAUTH2`         | `oauth2=OAuth2Auth(client_id=..., client_secret=..., [access_token=...])` | `+ OAuth2Auth` |
+| `service_account` | `AuthCredentialTypes.SERVICE_ACCOUNT`| `service_account=ServiceAccount(use_default_credential=True \| scopes=[...])` | `+ ServiceAccount` |
+
+- `HttpAuth`/`HttpCredentials`/`OAuth2Auth`/`ServiceAccount` live in
+  `google.adk.auth.auth_credential` (confirmed); `AuthCredential`/`AuthCredentialTypes` re-export at
+  `google.adk.auth`.
+- Only toolset kinds that accept the kwarg carry auth: **`openapi`, `apihub`, `mcp_toolset`**.
+  `bigquery`/`spanner` reject an `auth` sub-spec at validation (they use `credentials_config`).
+
+## Rendering decisions for `render_tool_ref` (3b additions)
+
+| kind          | imports                                                        | helper (top-level block)                                                            | `ref` in `tools=[...]` |
+|---------------|----------------------------------------------------------------|-------------------------------------------------------------------------------------|------------------------|
+| `bigquery`    | `from google.adk.tools.bigquery import BigQueryToolset`        | `<id> = BigQueryToolset(<args>)`                                                     | `<id>`                 |
+| `spanner`     | `from google.adk.tools.spanner import SpannerToolset`          | `<id> = SpannerToolset(<args>)`                                                      | `<id>`                 |
+| `mcp_toolset` | `McpToolset` + connection-params class + (stdio) `StdioServerParameters` | `<id> = McpToolset(connection_params=..., tool_filter=[...][, auth_*])`  | `<id>`                 |
+| `apihub`      | `from google.adk.tools.apihub_tool import APIHubToolset`       | `<id> = APIHubToolset(apihub_resource_name="...", [auth_*])`                         | `<id>`                 |
+| `langchain`   | the user `import_line` (verbatim) + `LangchainTool`            | (none)                                                                               | `LangchainTool(tool=<expr>)` |
+| `crewai`      | the user `import_line` (verbatim) + `CrewaiTool`               | (none)                                                                               | `CrewaiTool(tool=<expr>, name="...", description="...")` |
+
+- `mcp_toolset` transports: `stdio` → `StdioConnectionParams(server_params=StdioServerParameters(command="...", args=[...]))`;
+  `sse` → `SseConnectionParams(url="...", headers={...})`; `http` → `StreamableHTTPConnectionParams(url="...", headers={...})`.
+- `langchain`/`crewai` take a **user-provided `import_line`** (e.g. `from langchain_community.tools import WikipediaQueryRun`)
+  rendered verbatim before the agents, plus a `tool_expr` (e.g. `WikipediaQueryRun(...)`) — the
+  toolkit cannot know which third-party tool the user wants, so it accepts the construction expression.
