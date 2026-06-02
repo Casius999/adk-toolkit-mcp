@@ -1,9 +1,9 @@
 """Root server tests: direct-tools mode (default) vs Code Mode (P6a), and per-domain tags.
 
-- ``build_server()`` (default) exposes the 88 tools by their ``<domain>_<bare>`` name (no
+- ``build_server()`` (default) exposes the 93 tools by their ``<domain>_<bare>`` name (no
   regression) and each tool carries its domain tag.
 - ``build_server(code_mode=True)`` applies the REAL FastMCP 3.3.1 transform and collapses the
-  surface into discovery tools + ``execute`` — demonstrating the token reduction (88 → a handful).
+  surface into discovery tools + ``execute`` — demonstrating the token reduction (93 → a handful).
 - ``code_mode_enabled()`` reads the ``ADK_TOOLKIT_CODE_MODE`` env variable.
 
 The server-side lists (``mcp.list_tools()``) return ``fastmcp.tools.Tool`` objects that carry
@@ -21,9 +21,9 @@ from fastmcp import Client, FastMCP
 from adk_toolkit_mcp.server import build_server, code_mode_enabled, main
 
 #: Exact number of tools exposed in direct-tools mode (non-regression contract).
-_EXPECTED_TOOL_COUNT = 88
+_EXPECTED_TOOL_COUNT = 93
 
-#: The 16 mounted domains (namespace prefix -> expected tag).
+#: The 17 mounted domains (namespace prefix -> expected tag).
 _DOMAINS = (
     "project",
     "agents",
@@ -41,6 +41,7 @@ _DOMAINS = (
     "safety",
     "observability",
     "workflow",
+    "skills",
 )
 
 #: Sample of tool names that MUST exist in direct-tools mode (one per key domain).
@@ -63,6 +64,8 @@ _SAMPLE_NAMES = {
     "observability_enable_otel",
     "workflow_create",
     "workflow_add_node",
+    "skills_create",
+    "skills_attach",
 }
 
 
@@ -89,10 +92,10 @@ def test_main_is_callable() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# Direct-tools mode (default): 88 tools, stable names, per-domain tags
+# Direct-tools mode (default): 93 tools, stable names, per-domain tags
 # --------------------------------------------------------------------------- #
-async def test_default_mode_exposes_all_88_tools_by_name() -> None:
-    """Default: 88 tools exposed by name (no regression) + a sample present."""
+async def test_default_mode_exposes_all_93_tools_by_name() -> None:
+    """Default: 93 tools exposed by name (no regression) + a sample present."""
     async with Client(build_server()) as client:
         names = {t.name for t in await client.list_tools()}
     assert len(names) == _EXPECTED_TOOL_COUNT
@@ -124,7 +127,7 @@ async def test_domain_tags_surface_to_client_via_meta() -> None:
 # Code Mode (opt-in): collapsed + reachable surface
 # --------------------------------------------------------------------------- #
 async def test_code_mode_collapses_surface_to_discovery_and_execute() -> None:
-    """code_mode=True: the surface goes from 88 tools to a handful of discovery + execute."""
+    """code_mode=True: the surface goes from 93 tools to a handful of discovery + execute."""
     async with Client(build_server(code_mode=True)) as client:
         names = {t.name for t in await client.list_tools()}
     # Sharp surface reduction (big token saving) — demonstrated quantitatively.
@@ -132,13 +135,13 @@ async def test_code_mode_collapses_surface_to_discovery_and_execute() -> None:
     # Execution tool still present + at least one discovery tool.
     assert "execute" in names
     assert {"search", "get_schema"} <= names
-    # The 88 direct names are NO LONGER exposed at the top level.
+    # The 93 direct names are NO LONGER exposed at the top level.
     assert "run_agent" not in names
     assert "project_create" not in names
 
 
 async def test_code_mode_reduces_tool_surface_vs_default() -> None:
-    """Demonstrates the reduction: Code Mode surface << direct-tools surface (88)."""
+    """Demonstrates the reduction: Code Mode surface << direct-tools surface (93)."""
     async with Client(build_server()) as direct_client:
         direct = {t.name for t in await direct_client.list_tools()}
     async with Client(build_server(code_mode=True)) as cm_client:

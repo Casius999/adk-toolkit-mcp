@@ -18,6 +18,7 @@ from .domains.project import project_server
 from .domains.run import run_server
 from .domains.safety import safety_server
 from .domains.sessions import sessions_server
+from .domains.skills import skills_server
 from .domains.tools import tools_server
 from .domains.workflow import workflow_server
 from .prompts import register_prompts
@@ -46,10 +47,10 @@ def _apply_code_mode(mcp: FastMCP) -> None:
 
     Applies the REAL FastMCP 3.3.1 transform
     (:class:`fastmcp.experimental.transforms.code_mode.CodeMode`) via
-    :meth:`FastMCP.add_transform`. The exposed surface then goes from the 88 named tools to just
+    :meth:`FastMCP.add_transform`. The exposed surface then goes from the 93 named tools to just
     ``search`` / ``get_schema`` / ``tags`` / ``execute`` (a big token saving for a large
     catalog). The discovery tools read ``tool.tags`` — hence the value of having tagged each tool
-    by domain (TASK 1): ``GetTags`` lists the 15 domains, then ``search(tags=[...])`` filters by
+    by domain (TASK 1): ``GetTags`` lists the 17 domains, then ``search(tags=[...])`` filters by
     domain.
 
     NB (honesty, cf. ``docs/adk-api-notes/fastmcp-codemode.md``): the discovery tools
@@ -67,14 +68,14 @@ def _apply_code_mode(mcp: FastMCP) -> None:
 
 
 def build_server(code_mode: bool = False) -> FastMCP:
-    """Build the root MCP server (16 sub-servers, 88 tools).
+    """Build the root MCP server (17 sub-servers, 93 tools).
 
     By default (``code_mode=False``), all tools are exposed by their ``<domain>_<bare>`` name
     (direct-tools UX; the read-through tests call them by name).
 
     If ``code_mode=True``, we apply the FastMCP 3.3.1 Code Mode transform AFTER mounting all the
     sub-servers: the catalog is collapsed into a discovery+execute surface
-    (``search``/``get_schema``/``tags``/``execute``) — token saving for the 88 tools. See
+    (``search``/``get_schema``/``tags``/``execute``) — token saving for the 93 tools. See
     :func:`_apply_code_mode` and ``docs/adk-api-notes/fastmcp-codemode.md`` (the ``execute`` tool
     requires the ``fastmcp[code-mode]`` extra; discovery works without it).
     """
@@ -115,6 +116,9 @@ def build_server(code_mode: bool = False) -> FastMCP:
     # P5: workflow (google.adk.workflow graph engine: conditional/cyclical orchestration).
     # Tools exposed as `workflow_<name>`.
     mcp.mount(workflow_server, namespace="workflow")
+    # P7: skills (google.adk.skills Agent Skill Registry: create/list/load/attach/registry_info).
+    # Tools exposed as `skills_<name>`.
+    mcp.mount(skills_server, namespace="skills")
     # P6: opt-in Code Mode — AFTER all mounts (the transform acts on the complete catalog).
     if code_mode:
         _apply_code_mode(mcp)
