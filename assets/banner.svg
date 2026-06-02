@@ -1,0 +1,63 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 360" role="img" aria-label="adk-toolkit-mcp — exhaustive MCP server for Google ADK">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0b1020"/>
+      <stop offset="0.55" stop-color="#121a33"/>
+      <stop offset="1" stop-color="#1a1140"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#7c9cff"/>
+      <stop offset="0.5" stop-color="#a78bfa"/>
+      <stop offset="1" stop-color="#5eead4"/>
+    </linearGradient>
+    <linearGradient id="rule" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#7c9cff" stop-opacity="0.9"/>
+      <stop offset="1" stop-color="#5eead4" stop-opacity="0.2"/>
+    </linearGradient>
+    <style>
+      .t  { font-family: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; }
+      .mono { font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace; }
+    </style>
+  </defs>
+
+  <rect width="1280" height="360" fill="url(#bg)"/>
+
+  <!-- subtle grid -->
+  <g stroke="#ffffff" stroke-opacity="0.04">
+    <path d="M0 90 H1280 M0 180 H1280 M0 270 H1280"/>
+    <path d="M320 0 V360 M640 0 V360 M960 0 V360"/>
+  </g>
+  <!-- accent glow node graph (nods to the workflow graph engine) -->
+  <g opacity="0.5" stroke="url(#accent)" stroke-width="2" fill="none">
+    <circle cx="1060" cy="96" r="16" fill="#7c9cff" fill-opacity="0.15"/>
+    <circle cx="1150" cy="170" r="16" fill="#a78bfa" fill-opacity="0.15"/>
+    <circle cx="1040" cy="250" r="16" fill="#5eead4" fill-opacity="0.15"/>
+    <circle cx="1170" cy="280" r="13" fill="#5eead4" fill-opacity="0.12"/>
+    <path d="M1076 96 L1134 170 M1150 186 L1052 234 M1056 256 L1157 276 M1062 104 L1030 240"/>
+  </g>
+
+  <text x="80" y="120" class="mono" font-size="26" fill="#5eead4" letter-spacing="2">Google ADK  ×  Model Context Protocol</text>
+  <text x="78" y="205" class="t" font-size="74" font-weight="800" fill="url(#accent)">adk-toolkit-mcp</text>
+  <rect x="82" y="226" width="520" height="3" fill="url(#rule)"/>
+  <text x="80" y="270" class="t" font-size="27" font-weight="500" fill="#e6ebff">The exhaustive MCP server for Google ADK — author, run, eval &amp; deploy agents, code-first.</text>
+
+  <!-- chips -->
+  <g class="t" font-size="20" font-weight="700">
+    <g>
+      <rect x="80" y="298" width="150" height="40" rx="20" fill="#7c9cff" fill-opacity="0.16" stroke="#7c9cff" stroke-opacity="0.5"/>
+      <text x="155" y="324" text-anchor="middle" fill="#cdd9ff">94 tools</text>
+    </g>
+    <g>
+      <rect x="244" y="298" width="170" height="40" rx="20" fill="#a78bfa" fill-opacity="0.16" stroke="#a78bfa" stroke-opacity="0.5"/>
+      <text x="329" y="324" text-anchor="middle" fill="#e3d8ff">17 domains</text>
+    </g>
+    <g>
+      <rect x="428" y="298" width="168" height="40" rx="20" fill="#5eead4" fill-opacity="0.14" stroke="#5eead4" stroke-opacity="0.5"/>
+      <text x="512" y="324" text-anchor="middle" fill="#c7fff3">code-first</text>
+    </g>
+    <g>
+      <rect x="610" y="298" width="170" height="40" rx="20" fill="#34d399" fill-opacity="0.14" stroke="#34d399" stroke-opacity="0.5"/>
+      <text x="695" y="324" text-anchor="middle" fill="#c9ffe6">live-tested</text>
+    </g>
+  </g>
+</svg>
