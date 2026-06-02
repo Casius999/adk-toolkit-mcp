@@ -47,7 +47,7 @@ def _apply_code_mode(mcp: FastMCP) -> None:
 
     Applies the REAL FastMCP 3.3.1 transform
     (:class:`fastmcp.experimental.transforms.code_mode.CodeMode`) via
-    :meth:`FastMCP.add_transform`. The exposed surface then goes from the 93 named tools to just
+    :meth:`FastMCP.add_transform`. The exposed surface then goes from the 94 named tools to just
     ``search`` / ``get_schema`` / ``tags`` / ``execute`` (a big token saving for a large
     catalog). The discovery tools read ``tool.tags`` — hence the value of having tagged each tool
     by domain (TASK 1): ``GetTags`` lists the 17 domains, then ``search(tags=[...])`` filters by
@@ -68,14 +68,14 @@ def _apply_code_mode(mcp: FastMCP) -> None:
 
 
 def build_server(code_mode: bool = False) -> FastMCP:
-    """Build the root MCP server (17 sub-servers, 93 tools).
+    """Build the root MCP server (17 sub-servers, 94 tools).
 
     By default (``code_mode=False``), all tools are exposed by their ``<domain>_<bare>`` name
     (direct-tools UX; the read-through tests call them by name).
 
     If ``code_mode=True``, we apply the FastMCP 3.3.1 Code Mode transform AFTER mounting all the
     sub-servers: the catalog is collapsed into a discovery+execute surface
-    (``search``/``get_schema``/``tags``/``execute``) — token saving for the 93 tools. See
+    (``search``/``get_schema``/``tags``/``execute``) — token saving for the 94 tools. See
     :func:`_apply_code_mode` and ``docs/adk-api-notes/fastmcp-codemode.md`` (the ``execute`` tool
     requires the ``fastmcp[code-mode]`` extra; discovery works without it).
     """

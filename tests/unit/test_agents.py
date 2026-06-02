@@ -28,6 +28,7 @@ from adk_toolkit_mcp.domains.agents import (
     create_sequential,
     get,
     list_agents,
+    set_planner,
     set_root,
 )
 from adk_toolkit_mcp.project_model import SIDECAR_PATH
@@ -374,3 +375,158 @@ async def test_agents_mounted_names_and_functional(tmp_path: Path) -> None:
     info = _probe(str(tmp_path), "client_app")
     assert info["root_type"] == "LlmAgent"
     assert info["root_name"] == "root"
+
+
+# --------------------------------------------------------------------------- #
+# set_planner — domain behavior + FUNCTIONAL proof (real planner instance)
+# --------------------------------------------------------------------------- #
+def _probe_planner(project_path: str, app_name: str) -> dict[str, object]:
+    """Import ``<app_name>.agent`` in a subprocess and return root_agent.planner info.
+
+    Reports the planner's class name + module (to assert it is the REAL ADK planner type) and,
+    for a BuiltInPlanner, the resolved ``thinking_config.thinking_budget``.
+    """
+    code = (
+        "import json,sys;"
+        f"sys.path.insert(0, r'{project_path}');"
+        f"import {app_name}.agent as m;"
+        "ra=m.root_agent;"
+        "pl=getattr(ra,'planner',None);"
+        "tc=getattr(pl,'thinking_config',None);"
+        "print(json.dumps({"
+        "'root_type':type(ra).__name__,"
+        "'planner_type':type(pl).__name__ if pl is not None else None,"
+        "'planner_module':type(pl).__module__ if pl is not None else None,"
+        "'thinking_budget':getattr(tc,'thinking_budget',None)}))"
+    )
+    out = subprocess.run(
+        [sys.executable, "-W", "ignore::DeprecationWarning", "-c", code],
+        capture_output=True,
+        text=True,
+        cwd=project_path,
+    )
+    assert out.returncode == 0, out.stderr
+    return json.loads(out.stdout.strip().splitlines()[-1])
+
+
+def test_set_planner_built_in_writes_render_and_sidecar(tmp_path: Path) -> None:
+    create_llm(str(tmp_path), "demo", "main", instruction="Think")
+    res = set_planner(str(tmp_path), "demo", "main", "built_in", thinking_budget=1024)
+    assert res["ok"] is True, res["error"]
+    txt = (tmp_path / "demo" / "agent.py").read_text(encoding="utf-8")
+    assert "from google.adk.planners import BuiltInPlanner" in txt
+    assert (
+        "planner=BuiltInPlanner(thinking_config=types.ThinkingConfig(thinking_budget=1024))" in txt
+    )
+    # Persisted on the spec.
+    spec = get(str(tmp_path), "demo", "main")
+    assert spec["data"]["planner"] == {"kind": "built_in", "thinking_budget": 1024}
+
+
+def test_set_planner_plan_react(tmp_path: Path) -> None:
+    create_llm(str(tmp_path), "demo", "main")
+    res = set_planner(str(tmp_path), "demo", "main", "plan_react")
+    assert res["ok"] is True, res["error"]
+    txt = (tmp_path / "demo" / "agent.py").read_text(encoding="utf-8")
+    assert "from google.adk.planners import PlanReActPlanner" in txt
+    assert "planner=PlanReActPlanner()" in txt
+    assert get(str(tmp_path), "demo", "main")["data"]["planner"] == {"kind": "plan_react"}
+
+
+def test_set_planner_rejects_unknown_kind(tmp_path: Path) -> None:
+    create_llm(str(tmp_path), "demo", "main")
+    res = set_planner(str(tmp_path), "demo", "main", "bogus")
+    assert res["ok"] is False
+    assert "planner kind" in res["error"].lower()
+
+
+def test_set_planner_rejects_missing_agent(tmp_path: Path) -> None:
+    res = set_planner(str(tmp_path), "demo", "ghost", "built_in")
+    assert res["ok"] is False
+    assert "not found" in res["error"]
+
+
+def test_set_planner_rejects_non_llm_agent(tmp_path: Path) -> None:
+    create_llm(str(tmp_path), "demo", "a")
+    create_sequential(str(tmp_path), "demo", "pipe", ["a"])
+    res = set_planner(str(tmp_path), "demo", "pipe", "built_in")
+    assert res["ok"] is False
+    assert "llm" in res["error"].lower()
+
+
+def test_set_planner_rejects_nonpositive_budget(tmp_path: Path) -> None:
+    create_llm(str(tmp_path), "demo", "main")
+    res = set_planner(str(tmp_path), "demo", "main", "built_in", thinking_budget=0)
+    assert res["ok"] is False
+
+
+def test_set_planner_rejects_bad_app_name(tmp_path: Path) -> None:
+    assert set_planner(str(tmp_path), "1bad", "main", "built_in")["ok"] is False
+
+
+def test_set_planner_preserves_other_fields(tmp_path: Path) -> None:
+    """Attaching a planner must not drop the agent's instruction/output_key."""
+    create_llm(str(tmp_path), "demo", "main", instruction="Be precise", output_key="result")
+    assert set_planner(str(tmp_path), "demo", "main", "built_in", thinking_budget=64)["ok"]
+    spec = get(str(tmp_path), "demo", "main")["data"]
+    assert spec["instruction"] == "Be precise"
+    assert spec["output_key"] == "result"
+    assert spec["planner"] == {"kind": "built_in", "thinking_budget": 64}
+
+
+def test_functional_built_in_planner_instantiates(tmp_path: Path) -> None:
+    """The generated module yields a real BuiltInPlanner with the right thinking budget."""
+    create_llm(str(tmp_path), "pl_app", "main", instruction="Think.")
+    set_planner(str(tmp_path), "pl_app", "main", "built_in", thinking_budget=2048)
+    set_root(str(tmp_path), "pl_app", "main")
+    info = _probe_planner(str(tmp_path), "pl_app")
+    assert info["root_type"] == "LlmAgent"
+    assert info["planner_type"] == "BuiltInPlanner"
+    assert info["planner_module"] == "google.adk.planners.built_in_planner"
+    assert info["thinking_budget"] == 2048
+
+
+def test_functional_plan_react_planner_instantiates(tmp_path: Path) -> None:
+    """The generated module yields a real PlanReActPlanner."""
+    create_llm(str(tmp_path), "pl_app2", "main", instruction="Think.")
+    set_planner(str(tmp_path), "pl_app2", "main", "plan_react")
+    set_root(str(tmp_path), "pl_app2", "main")
+    info = _probe_planner(str(tmp_path), "pl_app2")
+    assert info["planner_type"] == "PlanReActPlanner"
+    assert info["planner_module"] == "google.adk.planners.plan_re_act_planner"
+
+
+@pytest.mark.asyncio
+async def test_agents_set_planner_mounted(tmp_path: Path) -> None:
+    """``agents_set_planner`` is exposed (single prefix) and works via the client."""
+    mcp = build_server()
+    async with Client(mcp) as client:
+        tool_names = [t.name for t in await client.list_tools()]
+        assert "agents_set_planner" in tool_names
+        assert not any(n.startswith("agents_agents_") for n in tool_names)
+
+        await client.call_tool(
+            "agents_create_llm",
+            {"path": str(tmp_path), "app_name": "m_app", "name": "main", "instruction": "Hi"},
+        )
+        res = await client.call_tool(
+            "agents_set_planner",
+            {
+                "path": str(tmp_path),
+                "app_name": "m_app",
+                "agent_name": "main",
+                "kind": "built_in",
+                "thinking_budget": 128,
+            },
+        )
+        assert res.data["ok"] is True, res.data["error"]
+        rooted = await client.call_tool(
+            "agents_set_root",
+            {"path": str(tmp_path), "app_name": "m_app", "name": "main"},
+        )
+        assert rooted.data["ok"] is True
+
+    # Functional: the generated module instantiates the real BuiltInPlanner.
+    info = _probe_planner(str(tmp_path), "m_app")
+    assert info["planner_type"] == "BuiltInPlanner"
+    assert info["thinking_budget"] == 128

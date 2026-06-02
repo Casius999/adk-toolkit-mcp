@@ -17,14 +17,17 @@ deprecation of the workflow agents in 2.1.0).
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any, cast
 
 from fastmcp import FastMCP
 
 from ..envelope import err, ok
 from ..project_model import (
+    PLANNER_KINDS,
     AgentSpec,
+    PlannerSpec,
     ProjectModel,
     add_or_update_agent,
     is_identifier,
@@ -33,6 +36,9 @@ from ..project_model import (
     save_model,
     validate_spec,
 )
+
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    from ..project_model import PlannerKind
 from ..project_model import (
     set_root as _model_set_root,
 )
@@ -264,6 +270,55 @@ def set_root(path: str, app_name: str, name: str) -> dict[str, Any]:
         return err(f"Agent not found: {name!r}. Create it before setting it as root.")
 
     model = _model_set_root(model, name)
+    return _commit(path, app_name, model)
+
+
+@agents_server.tool(tags={"agents"})
+def set_planner(
+    path: str,
+    app_name: str,
+    agent_name: str,
+    kind: str,
+    thinking_budget: int | None = None,
+) -> dict[str, Any]:
+    """Attach a planner (``google.adk.planners``) to an **existing** ``llm`` agent, then regenerate.
+
+    ``kind`` ∈ {``built_in``, ``plan_react``}:
+    - ``built_in`` → ``planner=BuiltInPlanner(thinking_config=types.ThinkingConfig(...))`` (turns
+      on the model's native thinking; the optional ``thinking_budget`` (an ``int`` > 0) caps the
+      thinking token budget — omitted, it renders the no-arg ``types.ThinkingConfig()``).
+    - ``plan_react`` → ``planner=PlanReActPlanner()`` (model-agnostic Plan-Reason-Act scaffold;
+      ``thinking_budget`` is ignored).
+
+    Validates that the agent exists and is an ``LlmAgent`` (only ``LlmAgent`` carries a planner).
+    Returns the common ``{ok, data, error}`` payload. ``cf. docs/adk-api-notes/planners.md``.
+    """
+    if not is_identifier(app_name):
+        return err(_APP_NAME_ERR)
+    if kind not in PLANNER_KINDS:
+        return err(f"Unknown planner kind: {kind!r}. Known: {', '.join(sorted(PLANNER_KINDS))}.")
+
+    model = _load(path, app_name)
+    if isinstance(model, dict):
+        return model
+
+    current = model.get(agent_name)
+    if current is None:
+        return err(f"Agent not found: {agent_name!r}. Create it before setting a planner.")
+    if current.type != "llm":
+        return err(
+            f"A planner can only be attached to an 'llm' agent (got {current.type!r} for "
+            f"{agent_name!r}). Only LlmAgent has a 'planner'."
+        )
+
+    # ``kind`` validity was checked against PLANNER_KINDS above; the cast satisfies the Literal.
+    planner = PlannerSpec(kind=cast("PlannerKind", kind), thinking_budget=thinking_budget)
+    updated = replace(current, planner=planner)
+    spec_error = validate_spec(updated)
+    if spec_error is not None:
+        return err(spec_error)
+
+    model = add_or_update_agent(model, updated)
     return _commit(path, app_name, model)
 
 

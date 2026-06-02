@@ -18,6 +18,7 @@ from adk_toolkit_mcp.project_model import (
     AgentSpec,
     AuthSpec,
     CallbackSpec,
+    PlannerSpec,
     ProjectModel,
     ToolRender,
     ToolSpec,
@@ -1704,3 +1705,105 @@ def test_render_callbacks_with_tools_and_gcc_format_stable(tmp_path: Path) -> No
     )
     src = render_agent_module(ProjectModel(app_name="app", root="full", agents=(spec,)))
     _assert_ruff_format_stable(src, tmp_path, "callbacks_with_tools")
+
+
+# --------------------------------------------------------------------------- #
+# Planners (google.adk.planners) — render + imports + validation + round-trip
+# --------------------------------------------------------------------------- #
+def test_render_planner_built_in_with_budget(tmp_path: Path) -> None:
+    """A ``built_in`` planner renders BuiltInPlanner + ThinkingConfig(thinking_budget=N)."""
+    spec = AgentSpec(
+        name="a", type="llm", instruction="Think", planner=PlannerSpec("built_in", 1024)
+    )
+    src = render_agent_module(ProjectModel(app_name="app", root="a", agents=(spec,)))
+    assert "from google.adk.planners import BuiltInPlanner" in src
+    assert "from google.genai import types" in src
+    assert (
+        "planner=BuiltInPlanner(thinking_config=types.ThinkingConfig(thinking_budget=1024))" in src
+    )
+    _assert_ruff_format_stable(src, tmp_path, "planner_built_in_budget")
+
+
+def test_render_planner_built_in_no_budget_uses_empty_thinking_config(tmp_path: Path) -> None:
+    """Without a budget, ``built_in`` renders the no-arg ThinkingConfig() (always valid)."""
+    spec = AgentSpec(name="a", type="llm", planner=PlannerSpec("built_in"))
+    src = render_agent_module(ProjectModel(app_name="app", root="a", agents=(spec,)))
+    assert "planner=BuiltInPlanner(thinking_config=types.ThinkingConfig())" in src
+    _assert_ruff_format_stable(src, tmp_path, "planner_built_in_nobudget")
+
+
+def test_render_planner_plan_react(tmp_path: Path) -> None:
+    """A ``plan_react`` planner renders PlanReActPlanner() + its import only."""
+    spec = AgentSpec(name="a", type="llm", planner=PlannerSpec("plan_react"))
+    src = render_agent_module(ProjectModel(app_name="app", root="a", agents=(spec,)))
+    assert "from google.adk.planners import PlanReActPlanner" in src
+    assert "planner=PlanReActPlanner()" in src
+    # plan_react needs no ThinkingConfig import.
+    assert "ThinkingConfig" not in src
+    _assert_ruff_format_stable(src, tmp_path, "planner_plan_react")
+
+
+def test_render_planner_with_tool_and_gcc_format_stable(tmp_path: Path) -> None:
+    """An LlmAgent with planner + tool + gcc stays ruff-stable (import merge)."""
+    from adk_toolkit_mcp.project_model import GenerateContentConfigSpec
+
+    tool = ToolSpec(
+        kind="function",
+        name="greet",
+        params=(("name", "str", None),),
+        docstring="Greet",
+        returns="str",
+        body='return f"hi {name}"',
+    )
+    spec = AgentSpec(
+        name="full",
+        type="llm",
+        instruction="Be helpful",
+        tools=(tool,),
+        generate_content_config=GenerateContentConfigSpec(temperature=0.2),
+        planner=PlannerSpec("built_in", 512),
+    )
+    src = render_agent_module(ProjectModel(app_name="app", root="full", agents=(spec,)))
+    # types is imported once (shared by gcc + ThinkingConfig).
+    assert src.count("from google.genai import types") == 1
+    _assert_ruff_format_stable(src, tmp_path, "planner_with_tool_gcc")
+
+
+def test_planner_spec_round_trips_through_sidecar(tmp_path: Path) -> None:
+    """A planner survives save_model → load_model (sidecar JSON round-trip)."""
+    spec = AgentSpec(name="a", type="llm", planner=PlannerSpec("built_in", 256))
+    model = ProjectModel(app_name="rt", root="a", agents=(spec,))
+    ws = Workspace(tmp_path / "rt")
+    save_model(ws, model)
+    loaded = load_model(ws, "rt")
+    got = loaded.get("a")
+    assert got is not None
+    assert got.planner is not None
+    assert got.planner.kind == "built_in"
+    assert got.planner.thinking_budget == 256
+    # plan_react (no budget) also round-trips.
+    spec2 = AgentSpec(name="a", type="llm", planner=PlannerSpec("plan_react"))
+    save_model(ws, ProjectModel(app_name="rt", root="a", agents=(spec2,)))
+    loaded2 = load_model(ws, "rt")
+    assert loaded2.get("a").planner.kind == "plan_react"
+    assert loaded2.get("a").planner.thinking_budget is None
+
+
+def test_validate_spec_rejects_planner_on_non_llm() -> None:
+    """A planner on a non-llm agent is rejected by validate_spec."""
+    spec = AgentSpec(name="pipe", type="sequential", planner=PlannerSpec("built_in"))
+    assert validate_spec(spec) is not None
+
+
+def test_validate_spec_rejects_nonpositive_thinking_budget() -> None:
+    """A non-positive thinking_budget is rejected by validate_spec."""
+    spec = AgentSpec(name="a", type="llm", planner=PlannerSpec("built_in", 0))
+    assert validate_spec(spec) is not None
+
+
+def test_validate_spec_accepts_valid_planner() -> None:
+    """A valid planner on an llm agent passes validation."""
+    assert (
+        validate_spec(AgentSpec(name="a", type="llm", planner=PlannerSpec("built_in", 8))) is None
+    )
+    assert validate_spec(AgentSpec(name="a", type="llm", planner=PlannerSpec("plan_react"))) is None

@@ -20,6 +20,7 @@ from typing import Any
 from ..workspace import Workspace
 from ._codegen import (
     _Call,
+    _kwarg_call,
     _py_str,
     _render_call,
     callback_needs_refuse,
@@ -34,12 +35,16 @@ from .sidecar import validate_workflow_graph as _validate_workflow_graph
 from .specs import (
     _CLASS_FOR_TYPE,
     _IMPORT_ORDER,
+    _PLANNER_IMPORT_BUILT_IN,
+    _PLANNER_IMPORT_PLAN_REACT,
     _REMOTE_A2A_IMPORT,
     _STDLIB_IMPORT_MODULES,
+    _THINKING_CONFIG_IMPORT,
     LINE_LENGTH,
     AgentSpec,
     GenerateContentConfigSpec,
     LiteLlmSpec,
+    PlannerSpec,
     ProjectModel,
     SafetySettingSpec,
     ToolRender,
@@ -219,6 +224,32 @@ def _render_generate_content_config(gcc: GenerateContentConfigSpec) -> tuple[str
     return rendered, tuple(imports)
 
 
+def _render_planner(planner: PlannerSpec) -> tuple[str, tuple[str, ...]]:
+    """Render the **value** of the ``planner=`` kwarg + the imports it needs.
+
+    - ``built_in`` → ``BuiltInPlanner(thinking_config=types.ThinkingConfig([thinking_budget=N]))``
+      (imports ``BuiltInPlanner`` + ``types``). The ``thinking_budget`` (an ``int``) is rendered
+      only if set; otherwise the no-arg ``types.ThinkingConfig()`` (always valid) is rendered.
+    - ``plan_react`` → ``PlanReActPlanner()`` (imports ``PlanReActPlanner``).
+
+    Structured via :class:`_Call` so the output is stable for ``ruff format`` (folds beyond the
+    line limit exactly like ``ruff format`` would). Returns ``(rendered_value, imports)``.
+    """
+    if planner.kind == "plan_react":
+        call = _Call("PlanReActPlanner", ())
+        rendered = _render_call(call, col=len("    planner="), base_indent=4)
+        return rendered, (_PLANNER_IMPORT_PLAN_REACT,)
+
+    # built_in (default): BuiltInPlanner(thinking_config=types.ThinkingConfig(...)).
+    tc_args: tuple[str | _Call, ...] = ()
+    if planner.thinking_budget is not None:
+        tc_args = (f"thinking_budget={planner.thinking_budget!r}",)
+    thinking_config = _Call("types.ThinkingConfig", tc_args)
+    call = _Call("BuiltInPlanner", (_kwarg_call("thinking_config", thinking_config),))
+    rendered = _render_call(call, col=len("    planner="), base_indent=4)
+    return rendered, (_PLANNER_IMPORT_BUILT_IN, _THINKING_CONFIG_IMPORT)
+
+
 def _render_llm_with_imports(spec: AgentSpec) -> tuple[str, tuple[str, ...]]:
     """Render an ``LlmAgent(...)`` omitting empty/None kwargs + return the model imports.
 
@@ -254,6 +285,12 @@ def _render_llm_with_imports(spec: AgentSpec) -> tuple[str, tuple[str, ...]]:
         gcc_rendered, gcc_imports = _render_generate_content_config(spec.generate_content_config)
         extra_imports.extend(gcc_imports)
         pairs.append(("generate_content_config", gcc_rendered))
+    # Planner (google.adk.planners): rendered as ``planner=BuiltInPlanner(...)`` /
+    # ``planner=PlanReActPlanner()`` with the matching import(s).
+    if spec.planner is not None:
+        planner_rendered, planner_imports = _render_planner(spec.planner)
+        extra_imports.extend(planner_imports)
+        pairs.append(("planner", planner_rendered))
     # Guardrails (P4c): each callback is a generated top-level function; we attach its name via
     # the real kwarg (``before_model_callback=_guard_before_model_<agent>``). The body imports
     # (LlmResponse/types) are collected separately (cf. ``_collect_model_imports``).
@@ -451,6 +488,9 @@ def _collect_model_imports(ordered: list[AgentSpec]) -> list[str]:
             if spec.generate_content_config is not None:
                 _, gcc_imps = _render_generate_content_config(spec.generate_content_config)
                 imports.extend(gcc_imps)
+            if spec.planner is not None:
+                _, planner_imps = _render_planner(spec.planner)
+                imports.extend(planner_imps)
     return imports
 
 

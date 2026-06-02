@@ -27,6 +27,7 @@ from .specs import (
     _AUTH_SCHEMES,
     _CALLBACK_HOOKS,
     _MCP_TRANSPORTS,
+    _PLANNER_KINDS,
     _POLICY_HOOKS,
     _POLICY_KINDS,
     _TOOL_KINDS,
@@ -69,6 +70,17 @@ def validate_spec(spec: AgentSpec) -> str | None:
     for sub in spec.sub_agents:
         if not is_identifier(sub):
             return f"Invalid sub_agent: {sub!r}. Expected a Python identifier."
+    if spec.planner is not None:
+        if spec.type != "llm":
+            return "A planner can only be attached to an 'llm' agent (LlmAgent.planner)."
+        if spec.planner.kind not in _PLANNER_KINDS:
+            return (
+                f"Unknown planner kind: {spec.planner.kind!r}. "
+                f"Known: {', '.join(sorted(_PLANNER_KINDS))}."
+            )
+        budget = spec.planner.thinking_budget
+        if budget is not None and budget <= 0:
+            return f"thinking_budget must be > 0 (received {budget})."
     return None
 
 

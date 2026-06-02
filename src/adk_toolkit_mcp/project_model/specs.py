@@ -87,6 +87,29 @@ _AGENT_TYPES: frozenset[str] = frozenset(
 )
 
 # --------------------------------------------------------------------------- #
+# Planners — `google.adk.planners` dimension (LlmAgent.planner)
+# --------------------------------------------------------------------------- #
+#: Supported planner kinds (cf. ``docs/adk-api-notes/planners.md``). An ``LlmAgent`` takes a
+#: ``planner=`` (an ``Optional[BasePlanner]``); the two concrete ADK planners are:
+#: - ``built_in``: ``BuiltInPlanner(thinking_config=types.ThinkingConfig([thinking_budget=N]))``
+#:   — turns on the model's native thinking feature (Gemini 2.5). ``thinking_config`` is REQUIRED;
+#:   the no-arg ``types.ThinkingConfig()`` is valid (thinking on, no explicit budget).
+#: - ``plan_react``: ``PlanReActPlanner()`` — model-agnostic Plan-Reason-Act prompt scaffold (no
+#:   arguments). Only ``LlmAgent`` carries a planner (the workflow agents have none).
+PlannerKind = Literal["built_in", "plan_react"]
+
+_PLANNER_KINDS: frozenset[str] = frozenset({"built_in", "plan_react"})
+
+#: Public alias (without underscore) re-exported for validation on the ``agents`` domain side.
+PLANNER_KINDS: frozenset[str] = _PLANNER_KINDS
+
+#: Canonical imports emitted for each planner kind (the module renderer merges/sorts these).
+_PLANNER_IMPORT_BUILT_IN = "from google.adk.planners import BuiltInPlanner"
+_PLANNER_IMPORT_PLAN_REACT = "from google.adk.planners import PlanReActPlanner"
+#: ``types.ThinkingConfig`` lives in google-genai (a CORE dep, no extra).
+_THINKING_CONFIG_IMPORT = "from google.genai import types"
+
+# --------------------------------------------------------------------------- #
 # Workflow graph engine — `workflow` domain (google.adk.workflow, 2.0)
 # --------------------------------------------------------------------------- #
 #: Supported workflow node kinds (cf. ``docs/adk-api-notes/workflow.md``).
@@ -716,6 +739,39 @@ class CallbackSpec:
 
 
 @dataclass(frozen=True)
+class PlannerSpec:
+    """Immutable spec of a planner attached to an ``LlmAgent`` (``planner=``).
+
+    ``kind`` ∈ :data:`_PLANNER_KINDS`:
+    - ``built_in`` → ``BuiltInPlanner(thinking_config=types.ThinkingConfig(...))``. The optional
+      ``thinking_budget`` (an ``int``) is rendered as ``thinking_budget=N``; if ``None``, the
+      no-arg ``types.ThinkingConfig()`` is rendered (always valid).
+    - ``plan_react`` → ``PlanReActPlanner()`` (no config; ``thinking_budget`` is ignored).
+
+    Validity of ``kind`` is enforced upstream by ``validate_spec`` (on the domain side). Rendering
+    lives in :mod:`adk_toolkit_mcp.project_model.render`.
+    """
+
+    kind: PlannerKind
+    thinking_budget: int | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        d: dict[str, Any] = {"kind": self.kind}
+        if self.thinking_budget is not None:
+            d["thinking_budget"] = self.thinking_budget
+        return d
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> PlannerSpec:
+        # Tolerant deserialization: ``kind`` is annotated Literal for mypy, but the actual validity
+        # is guaranteed upstream by ``validate_spec`` (on the domain side).
+        kind: PlannerKind = data.get("kind", "built_in")
+        raw_budget = data.get("thinking_budget")
+        thinking_budget = int(raw_budget) if isinstance(raw_budget, int) else None
+        return cls(kind=kind, thinking_budget=thinking_budget)
+
+
+@dataclass(frozen=True)
 class AgentSpec:
     """Immutable spec of an agent in the project model.
 
@@ -754,6 +810,9 @@ class AgentSpec:
     #: (it is not an ``LlmAgent`` kwarg but a ``RunConfig`` setting exposed by the ``run``
     #: domain). ``None`` = ADK default (500).
     max_llm_calls: int | None = None
+    #: Planner (``google.adk.planners``). If not None, rendered as ``planner=BuiltInPlanner(...)``
+    #: or ``planner=PlanReActPlanner()`` on the ``LlmAgent``. LlmAgent only.
+    planner: PlannerSpec | None = None
 
     def tool_specs(self) -> tuple[ToolSpec, ...]:
         """Normalize ``tools`` to ``ToolSpec`` (legacy strings -> ``builtin``)."""
@@ -784,6 +843,8 @@ class AgentSpec:
                 base["callbacks"] = [c.to_dict() for c in self.callbacks]
             if self.max_llm_calls is not None:
                 base["max_llm_calls"] = self.max_llm_calls
+            if self.planner is not None:
+                base["planner"] = self.planner.to_dict()
         elif self.type in ("sequential", "parallel"):
             base["sub_agents"] = list(self.sub_agents)
         elif self.type == "loop":
@@ -814,6 +875,8 @@ class AgentSpec:
         callbacks = tuple(CallbackSpec.from_dict(c) for c in raw_cbs if isinstance(c, dict))
         raw_max = data.get("max_llm_calls")
         max_llm_calls = int(raw_max) if isinstance(raw_max, int) else None
+        raw_planner = data.get("planner")
+        planner = PlannerSpec.from_dict(raw_planner) if isinstance(raw_planner, dict) else None
         return cls(
             name=str(data["name"]),
             type=atype,
@@ -829,6 +892,7 @@ class AgentSpec:
             generate_content_config=generate_content_config,
             callbacks=callbacks,
             max_llm_calls=max_llm_calls,
+            planner=planner,
         )
 
 
