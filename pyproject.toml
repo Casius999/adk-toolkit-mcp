@@ -5,6 +5,31 @@ description = "Exhaustive MCP server wrapping Google ADK (Agent Development Kit)
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "Apache-2.0" }
+authors = [{ name = "Julien Compain", email = "julien@novaquantix.tech" }]
+maintainers = [{ name = "Julien Compain", email = "julien@novaquantix.tech" }]
+keywords = [
+    "mcp",
+    "model-context-protocol",
+    "google-adk",
+    "adk",
+    "agent-development-kit",
+    "ai-agents",
+    "agents",
+    "fastmcp",
+    "llm",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Typing :: Typed",
+]
 dependencies = [
     "fastmcp>=3.3.1",
     "google-adk>=2.0,<3",
@@ -37,6 +62,13 @@ dev = [
 
 [project.scripts]
 adk-toolkit-mcp = "adk_toolkit_mcp.server:main"
+
+[project.urls]
+Homepage = "https://github.com/__OWNER__/adk-toolkit-mcp"
+Repository = "https://github.com/__OWNER__/adk-toolkit-mcp"
+Issues = "https://github.com/__OWNER__/adk-toolkit-mcp/issues"
+Documentation = "https://github.com/__OWNER__/adk-toolkit-mcp/tree/main/docs"
+Changelog = "https://github.com/__OWNER__/adk-toolkit-mcp/blob/main/CHANGELOG.md"
 
 [build-system]
 requires = ["hatchling"]
