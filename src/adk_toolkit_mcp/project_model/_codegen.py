@@ -34,6 +34,9 @@ from .specs import (
     _MCP_TOOLSET_IMPORT_MODULE,
     _MCP_TRANSPORTS,
     _OPENAPI_IMPORT,
+    _SKILL_LOADER_IMPORT,
+    _SKILL_TOOLSET_IMPORT,
+    _SKILLS_DIR_VAR,
     _SPANNER_IMPORT,
     _TOOLS_IMPORT_MODULE,
     ARG_BUILTINS,
@@ -196,6 +199,9 @@ def render_tool_ref(tool: ToolSpec | str) -> ToolRender:
             f"description={_py_str(tool.description)})"
         )
         return ToolRender(imports=imports, helpers=(), ref=ref)
+
+    if tool.kind == "skill_toolset":
+        return _render_skill_toolset(tool)
 
     raise ValueError(f"Unrendered tool kind: {tool.kind!r}")  # pragma: no cover
 
@@ -374,6 +380,60 @@ def _render_apihub(tool: ToolSpec) -> ToolRender:
     args += auth_args
     helper = _render_toolset_helper(tool.name, _Call("APIHubToolset", tuple(args)))
     return ToolRender(imports=(_APIHUB_IMPORT, *auth_imports), helpers=(helper,), ref=tool.name)
+
+
+def _skills_dir_anchor(skills_dir: str) -> str:
+    """The shared ``_ADK_SKILLS_DIR = Path(__file__).parent / "<dir>"`` assignment line.
+
+    Emitted as a tool *helper* (not an import) but **deduplicated** by the module renderer, so
+    several ``skill_toolset`` tools in the same agent share a single anchor. Carries the
+    ``from pathlib import Path`` import via the owning :class:`ToolRender`.
+    """
+    return f"{_SKILLS_DIR_VAR} = Path(__file__).parent / {_py_str(skills_dir)}\n"
+
+
+def _render_skill_toolset(tool: ToolSpec) -> ToolRender:
+    """``<id> = SkillToolset(skills=[load_skill_from_dir(_ADK_SKILLS_DIR / "<name>"), ...])``.
+
+    Renders an Agent Skill Registry toolset (P7, cf. ``docs/adk-api-notes/skills.md``). Each skill
+    dir name becomes a ``load_skill_from_dir(_ADK_SKILLS_DIR / "<name>")`` element — skills are
+    loaded **from disk at the agent's runtime** (the toolkit never bakes skill content into
+    ``agent.py``). The list folds inline for a single skill, one-per-line beyond the width limit
+    (stable for ``ruff format``). Emits two helpers: the shared ``_ADK_SKILLS_DIR`` anchor
+    (deduplicated by the renderer) and the toolset assignment. ``SkillToolset`` goes directly into
+    ``tools=[...]`` (it is a ``BaseToolset``). It takes no ``auth_credential``.
+    """
+    loads: tuple[str | _Call, ...] = tuple(
+        f"load_skill_from_dir({_SKILLS_DIR_VAR} / {_py_str(name)})" for name in tool.skill_names
+    )
+    # ``skills=[...]``: a single foldable list argument. We model it as one atomic kwarg whose
+    # value is rendered by ``_render_list_arg`` so the fold matches ``ruff format`` exactly.
+    skills_arg = _render_skills_list_arg(loads, var=tool.name)
+    helper = _render_toolset_helper(tool.name, _Call("SkillToolset", (skills_arg,)))
+    anchor = _skills_dir_anchor(tool.skills_dir)
+    return ToolRender(
+        imports=(_SKILL_TOOLSET_IMPORT, _SKILL_LOADER_IMPORT, "from pathlib import Path"),
+        helpers=(anchor, helper),
+        ref=tool.name,
+    )
+
+
+def _render_skills_list_arg(loads: tuple[str | _Call, ...], var: str) -> str:
+    """Render the ``skills=[...]`` argument **stable for ``ruff format``**.
+
+    Inline ``skills=[a, b]`` if the whole assignment line ``<var> = SkillToolset(skills=[...])``
+    fits in :data:`LINE_LENGTH`; otherwise a multi-line list (one ``load_skill_from_dir(...)`` per
+    line at indent 8, trailing comma) — exactly what ``ruff format`` produces for a folded
+    single-argument call carrying a list. An empty list renders ``skills=[]`` (a ``SkillToolset``
+    with no skills is still valid).
+    """
+    items = [a if isinstance(a, str) else _call_inline(a) for a in loads]
+    inline = f"skills=[{', '.join(items)}]"
+    # Full assignment line width: ``<var> = SkillToolset(`` + ``skills=[...]`` + ``)``.
+    if len(var) + len(" = SkillToolset(") + len(inline) + 1 <= LINE_LENGTH:
+        return inline
+    body = "".join(f"        {item},\n" for item in items)
+    return f"skills=[\n{body}    ]"
 
 
 def _mcp_connection_params_call(tool: ToolSpec) -> tuple[_Call, tuple[str, ...]]:

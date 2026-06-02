@@ -159,6 +159,15 @@ _GUARD_FN_PREFIX = "_guard"
 #: An agent name must be a Python identifier (it serves as a module variable name).
 _IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
+#: A skill name must be lowercase **kebab-case** (a-z, 0-9, hyphens; no leading/trailing/double
+#: hyphen) and == its directory name. Mirrors ``google.adk.skills.models._KEBAB_NAME_PATTERN``
+#: (the ``SNAKE_CASE_SKILL_NAME`` feature is OFF by default in 2.1.0 — cf.
+#: ``docs/adk-api-notes/skills.md``). ≤ 64 chars enforced by the validator.
+_SKILL_NAME_RE = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
+
+#: Max length of a skill name (matches ADK's ``Frontmatter._validate_name``).
+_SKILL_NAME_MAXLEN = 64
+
 #: Target line length (must mirror ``[tool.ruff] line-length`` from pyproject) so that the
 #: generated code is already in the form produced by ``ruff format`` (idempotence).
 LINE_LENGTH = 100
@@ -169,7 +178,8 @@ LINE_LENGTH = 100
 #: Supported tool kinds. 3a (no dependency): ``function``, ``long_running``, ``builtin``,
 #: ``agent_tool``, ``openapi``. 3b (optional dependency / ``google-adk[...]`` extras,
 #: codegen-only): ``bigquery``, ``spanner``, ``mcp_toolset``, ``apihub``, ``langchain``,
-#: ``crewai``.
+#: ``crewai``. P7 (Agent Skill Registry): ``skill_toolset`` — a ``SkillToolset`` loading skills
+#: from the project's on-disk skills dir (cf. ``docs/adk-api-notes/skills.md``).
 ToolKind = Literal[
     "function",
     "long_running",
@@ -182,6 +192,7 @@ ToolKind = Literal[
     "apihub",
     "langchain",
     "crewai",
+    "skill_toolset",
 ]
 
 _TOOL_KINDS: frozenset[str] = frozenset(
@@ -197,13 +208,14 @@ _TOOL_KINDS: frozenset[str] = frozenset(
         "apihub",
         "langchain",
         "crewai",
+        "skill_toolset",
     }
 )
 
 #: "Toolset" kinds whose ``ref`` is a module-level variable (``<id>`` in ``tools=[...]``) built
 #: by a helper block. The :class:`ToolSpec` ``name`` serves as the variable identifier.
 _TOOLSET_VAR_KINDS: frozenset[str] = frozenset(
-    {"openapi", "bigquery", "spanner", "mcp_toolset", "apihub"}
+    {"openapi", "bigquery", "spanner", "mcp_toolset", "apihub", "skill_toolset"}
 )
 
 #: "Toolset" kinds that natively accept ``auth_scheme=`` / ``auth_credential=`` (confirmed by
@@ -279,6 +291,12 @@ _APIHUB_IMPORT = "from google.adk.tools.apihub_tool import APIHubToolset"
 _LANGCHAIN_IMPORT = "from google.adk.tools.langchain_tool import LangchainTool"
 _CREWAI_IMPORT = "from google.adk.tools.crewai_tool import CrewaiTool"
 
+#: Top-level **stdlib** module names the renderer may emit (as ``import X`` or ``from X import``).
+#: Used to place them in isort's stdlib group (before third-party). ``os`` (LiteLlm api_key),
+#: ``pathlib`` (the skill-toolset ``_ADK_SKILLS_DIR`` anchor). Extend if new stdlib imports are
+#: emitted. Membership is checked against the FIRST dotted segment of the imported module.
+_STDLIB_IMPORT_MODULES: frozenset[str] = frozenset({"os", "pathlib"})
+
 #: Module of the auth classes (confirmed re-export).
 _AUTH_IMPORT_MODULE = "google.adk.auth"
 #: Module of the auth sub-objects (HttpAuth/OAuth2Auth/ServiceAccount/HttpCredentials).
@@ -286,6 +304,26 @@ _AUTH_CRED_IMPORT_MODULE = "google.adk.auth.auth_credential"
 #: MCP imports (toolset + StdioServerParameters from the ``mcp`` package).
 _MCP_TOOLSET_IMPORT_MODULE = "google.adk.tools.mcp_tool"
 _MCP_STDIO_PARAMS_IMPORT = "from mcp import StdioServerParameters"
+
+# --------------------------------------------------------------------------- #
+# Agent Skill Registry (`skills` domain, P7) — google.adk.skills
+# --------------------------------------------------------------------------- #
+#: Imports (real paths confirmed by introspection in 2.1.0 — cf. ``docs/adk-api-notes/skills.md``)
+#: of the skill-toolset machinery. ``SkillToolset`` lives in ``google.adk.tools.skill_toolset``
+#: (NOT in ``google.adk.tools``'s top-level namespace); ``load_skill_from_dir`` is re-exported
+#: from ``google.adk.skills``. The toolkit emits these imports; loading happens at the agent's
+#: runtime (skill content is read from disk, never baked into ``agent.py``).
+_SKILL_TOOLSET_IMPORT = "from google.adk.tools.skill_toolset import SkillToolset"
+_SKILL_LOADER_IMPORT = "from google.adk.skills import load_skill_from_dir"
+
+#: Default folder (relative to the app folder ``<path>/<app_name>``) holding the project's skills,
+#: one ``<skill-name>/`` subdirectory per skill (each with a ``SKILL.md``).
+SKILLS_DIR = "skills"
+
+#: Module variable emitted once per ``agent.py`` to anchor the skills directory next to the
+#: generated module (``Path(__file__).parent / "<skills_dir>"``). Deduplicated like an import so
+#: several skill toolsets in the same agent share a single definition.
+_SKILLS_DIR_VAR = "_ADK_SKILLS_DIR"
 
 #: Mapping of agent type -> ADK class name to import.
 _CLASS_FOR_TYPE: dict[str, str] = {
@@ -391,6 +429,12 @@ class ToolSpec:
     tool_expr: str = ""
     description: str = ""
     auth: AuthSpec | None = None
+    # --- P7: skill_toolset (Agent Skill Registry) ---
+    #: ``skill_toolset``: the skill **directory names** to load from ``skills_dir`` (each a
+    #: ``<name>/SKILL.md`` folder). Rendered as ``load_skill_from_dir(_ADK_SKILLS_DIR / "<name>")``.
+    skill_names: tuple[str, ...] = ()
+    #: ``skill_toolset``: skills directory relative to the app folder (default :data:`SKILLS_DIR`).
+    skills_dir: str = SKILLS_DIR
 
     def ref_key(self) -> str:
         """Uniqueness key (used for append-unique / replace-by-name on the domain side).
@@ -456,6 +500,10 @@ class ToolSpec:
                 base["name"] = self.name
             if self.description:
                 base["description"] = self.description
+        elif self.kind == "skill_toolset":
+            base.update({"name": self.name, "skill_names": list(self.skill_names)})
+            if self.skills_dir != SKILLS_DIR:
+                base["skills_dir"] = self.skills_dir
         if self.auth is not None:
             base["auth"] = self.auth.to_dict()
         return base
@@ -502,6 +550,8 @@ class ToolSpec:
             tool_expr=str(data.get("tool_expr", "")),
             description=str(data.get("description", "")),
             auth=auth,
+            skill_names=tuple(str(s) for s in (data.get("skill_names") or [])),
+            skills_dir=str(data.get("skills_dir", SKILLS_DIR)),
         )
 
 
@@ -993,3 +1043,13 @@ class ProjectModel:
 def is_identifier(name: str) -> bool:
     """True if ``name`` is a valid Python identifier (module variable name)."""
     return bool(_IDENT_RE.match(name))
+
+
+def is_skill_name(name: str) -> bool:
+    """True if ``name`` is a valid skill name: lowercase kebab-case, ≤ 64 chars.
+
+    Mirrors ADK's ``Frontmatter`` name validation (default, ``SNAKE_CASE_SKILL_NAME`` off). A skill
+    directory must be named exactly its frontmatter ``name`` — so this also gates the on-disk dir
+    name written by ``skills_create`` (cf. ``docs/adk-api-notes/skills.md``).
+    """
+    return len(name) <= _SKILL_NAME_MAXLEN and bool(_SKILL_NAME_RE.match(name))

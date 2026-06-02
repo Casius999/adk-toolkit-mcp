@@ -43,6 +43,7 @@ from .specs import (
     WorkflowNodeSpec,
     WorkflowSpec,
     is_identifier,
+    is_skill_name,
 )
 
 
@@ -290,6 +291,21 @@ def validate_tool_spec(tool: ToolSpec, model: ProjectModel, owner: str) -> str |
             return f"{tool.kind}: tool_expr is empty (e.g. 'MyTool(arg=...)')."
         if tool.kind == "crewai" and not tool.name.strip():
             return "crewai: 'name' is required (CrewaiTool requires a name, keyword-only)."
+        return None
+
+    if tool.kind == "skill_toolset":
+        if not is_identifier(tool.name):
+            return f"Invalid SkillToolset name: {tool.name!r} (Python identifier expected)."
+        if not tool.skill_names:
+            return (
+                "skill_toolset: at least one skill name is required (create it first via create)."
+            )
+        for sname in tool.skill_names:
+            if not is_skill_name(sname):
+                return (
+                    f"Invalid skill name: {sname!r}. A skill name must be lowercase kebab-case "
+                    "(a-z, 0-9, hyphens), <= 64 chars, and match its directory name."
+                )
         return None
 
     return None  # pragma: no cover

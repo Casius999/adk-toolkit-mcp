@@ -35,6 +35,7 @@ from .specs import (
     _CLASS_FOR_TYPE,
     _IMPORT_ORDER,
     _REMOTE_A2A_IMPORT,
+    _STDLIB_IMPORT_MODULES,
     LINE_LENGTH,
     AgentSpec,
     GenerateContentConfigSpec,
@@ -504,6 +505,24 @@ def _merge_tool_imports(import_stmts: list[str]) -> list[str]:
     return _dedup_preserve(passthrough) + merged
 
 
+def _is_stdlib_import(stmt: str) -> bool:
+    """True if ``stmt`` imports a **stdlib** module (isort places these before third-party).
+
+    Recognizes both ``import <mod>[...]`` and ``from <mod>[...] import ...`` and checks the FIRST
+    dotted segment of ``<mod>`` against :data:`_STDLIB_IMPORT_MODULES`. Multi-line parenthesized
+    ``from`` imports (``from x import (``) are matched on their first line — fine here since the
+    only stdlib imports the renderer emits (``os``, ``pathlib``) are always single-name inline.
+    """
+    head = stmt.lstrip()
+    if head.startswith("import "):
+        module = head[len("import ") :].strip()
+    elif head.startswith("from "):
+        module = head[len("from ") :].split(" import", 1)[0].strip()
+    else:
+        return False
+    return module.split(".", 1)[0] in _STDLIB_IMPORT_MODULES
+
+
 def _render_import_line(module: str, names: list[str]) -> str:
     """Render ``from <module> import a, b`` **stable for ``ruff format``**.
 
@@ -567,7 +586,12 @@ def render_agent_module(model: ProjectModel) -> str:
 
     # Render the tools (imports + helpers + refs) in the topo order of the owning agents.
     tool_renders = _collect_tool_renders(ordered)
-    tool_helpers = [helper for tr in tool_renders for helper in tr.helpers]
+    # Deduplicate helpers while preserving first-appearance order: most helpers are unique
+    # (function-tool defs, per-toolset assignments keyed by their variable name), but a *shared*
+    # module-level anchor — e.g. ``_ADK_SKILLS_DIR = Path(__file__).parent / "skills"`` emitted by
+    # every ``skill_toolset`` — must appear exactly once (E305/idempotence). Identical strings
+    # collapse; distinct blocks never collide.
+    tool_helpers = _dedup_preserve([helper for tr in tool_renders for helper in tr.helpers])
 
     # Render the guardrails (callbacks, P4c): top-level defs emitted before the agents + imports.
     callback_renders = _collect_callback_renders(ordered)
@@ -601,11 +625,12 @@ def render_agent_module(model: ProjectModel) -> str:
         all_tool_and_model_imports.extend(workflow_imports(wf))
     merged = _merge_tool_imports(all_tool_and_model_imports)
 
-    # Separate stdlib plain-imports (e.g. ``import os``) from third-party ``from <module> import``.
+    # Separate stdlib imports (``import os``, ``from pathlib import Path``) from third-party ones,
+    # so isort's stdlib group precedes the third-party block (cf. :func:`_is_stdlib_import`).
     stdlib_imports: list[str] = []
     thirdparty_imports: list[str] = []
     for stmt in merged:
-        if stmt.startswith("import ") and not stmt.startswith("import google"):
+        if _is_stdlib_import(stmt):
             stdlib_imports.append(stmt)
         else:
             thirdparty_imports.append(stmt)

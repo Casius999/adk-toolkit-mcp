@@ -616,6 +616,106 @@ def test_render_tool_ref_crewai_wraps_expr_with_name_and_description() -> None:
 
 
 # --------------------------------------------------------------------------- #
+# Tool rendering — render_tool_ref (P7: skill_toolset / Agent Skill Registry)
+# --------------------------------------------------------------------------- #
+def test_render_tool_ref_skill_toolset_single_skill_inline() -> None:
+    tr = render_tool_ref(
+        ToolSpec(kind="skill_toolset", name="asst_skills", skill_names=("greeter",))
+    )
+    assert tr.ref == "asst_skills"
+    imps = "\n".join(tr.imports)
+    assert "from google.adk.tools.skill_toolset import SkillToolset" in imps
+    assert "from google.adk.skills import load_skill_from_dir" in imps
+    assert "from pathlib import Path" in imps
+    # Two helpers: the shared anchor + the toolset assignment.
+    anchor, helper = tr.helpers
+    assert anchor == '_ADK_SKILLS_DIR = Path(__file__).parent / "skills"\n'
+    # A single skill folds inline.
+    assert helper == (
+        'asst_skills = SkillToolset(skills=[load_skill_from_dir(_ADK_SKILLS_DIR / "greeter")])\n'
+    )
+
+
+def test_render_tool_ref_skill_toolset_multi_skill_folds() -> None:
+    tr = render_tool_ref(
+        ToolSpec(kind="skill_toolset", name="asst_skills", skill_names=("greeter", "summarizer"))
+    )
+    helper = tr.helpers[1]
+    # Beyond the width limit, ruff folds one element per line with a trailing comma.
+    assert helper == (
+        "asst_skills = SkillToolset(\n"
+        "    skills=[\n"
+        '        load_skill_from_dir(_ADK_SKILLS_DIR / "greeter"),\n'
+        '        load_skill_from_dir(_ADK_SKILLS_DIR / "summarizer"),\n'
+        "    ]\n"
+        ")\n"
+    )
+
+
+def test_render_tool_ref_skill_toolset_custom_dir() -> None:
+    tr = render_tool_ref(
+        ToolSpec(kind="skill_toolset", name="s", skill_names=("greeter",), skills_dir="my_skills")
+    )
+    assert tr.helpers[0] == '_ADK_SKILLS_DIR = Path(__file__).parent / "my_skills"\n'
+
+
+def test_skill_toolset_ref_key_is_kind_and_name() -> None:
+    tool = ToolSpec(kind="skill_toolset", name="asst_skills", skill_names=("greeter",))
+    assert tool.ref_key() == "skill_toolset:asst_skills"
+
+
+def test_skill_toolset_roundtrips_through_sidecar() -> None:
+    tool = ToolSpec(kind="skill_toolset", name="asst_skills", skill_names=("greeter", "summarizer"))
+    restored = ToolSpec.from_dict(tool.to_dict())
+    assert restored.kind == "skill_toolset"
+    assert restored.name == "asst_skills"
+    assert restored.skill_names == ("greeter", "summarizer")
+    assert restored.skills_dir == "skills"
+
+
+def test_validate_skill_toolset_ok_and_errors() -> None:
+    model = ProjectModel(app_name="app")
+    ok_tool = ToolSpec(kind="skill_toolset", name="s", skill_names=("greeter",))
+    assert validate_tool_spec(ok_tool, model, "owner") is None
+    # No skills.
+    assert "at least one skill" in (
+        validate_tool_spec(ToolSpec(kind="skill_toolset", name="s"), model, "owner") or ""
+    )
+    # Bad toolset variable name.
+    assert "Python identifier" in (
+        validate_tool_spec(
+            ToolSpec(kind="skill_toolset", name="1bad", skill_names=("greeter",)), model, "owner"
+        )
+        or ""
+    )
+    # Bad skill name (not kebab-case).
+    assert "kebab-case" in (
+        validate_tool_spec(
+            ToolSpec(kind="skill_toolset", name="s", skill_names=("Bad_Name",)), model, "owner"
+        )
+        or ""
+    )
+
+
+def test_render_module_skill_toolset_groups_pathlib_in_stdlib() -> None:
+    """A skill_toolset puts ``from pathlib import Path`` in the stdlib import group (isort)."""
+    import ast
+
+    tool = ToolSpec(kind="skill_toolset", name="asst_skills", skill_names=("greeter",))
+    agent = AgentSpec(name="asst", type="llm", instruction="Help.", tools=(tool,))
+    model = ProjectModel(app_name="app", root="asst", agents=(agent,))
+    src = render_agent_module(model)
+    ast.parse(src)
+    # stdlib block (pathlib) precedes the third-party google.adk block, separated by a blank line.
+    pathlib_idx = src.index("from pathlib import Path")
+    google_idx = src.index("from google.adk")
+    assert pathlib_idx < google_idx
+    assert "from pathlib import Path\n\nfrom google.adk" in src
+    # Anchor emitted exactly once.
+    assert src.count('_ADK_SKILLS_DIR = Path(__file__).parent / "skills"') == 1
+
+
+# --------------------------------------------------------------------------- #
 # Auth rendering (set_auth) — auth_credential= on compatible toolsets
 # --------------------------------------------------------------------------- #
 def test_render_tool_ref_openapi_with_apikey_auth() -> None:

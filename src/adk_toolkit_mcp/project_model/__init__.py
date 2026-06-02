@@ -62,6 +62,7 @@ from .specs import (
     SIDECAR_DIR,
     SIDECAR_FILE,
     SIDECAR_PATH,
+    SKILLS_DIR,
     WORKFLOW_START,
     AgentSpec,
     AgentType,
@@ -81,6 +82,7 @@ from .specs import (
     WorkflowNodeSpec,
     WorkflowSpec,
     is_identifier,
+    is_skill_name,
 )
 
 #: Stable public surface. Every name historically importable from
@@ -118,9 +120,11 @@ __all__ = [
     "SIDECAR_DIR",
     "SIDECAR_FILE",
     "SIDECAR_PATH",
+    "SKILLS_DIR",
     "WORKFLOW_START",
     # Validation
     "is_identifier",
+    "is_skill_name",
     "validate_callback_spec",
     "validate_spec",
     "validate_tool_spec",
