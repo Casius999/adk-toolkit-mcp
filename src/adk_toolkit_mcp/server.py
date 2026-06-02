@@ -24,101 +24,101 @@ from .resources import register_resources
 
 SERVER_NAME = "adk-toolkit-mcp"
 
-#: Valeurs d'env reconnues comme « vrai » pour activer le Code Mode (insensible à la casse).
+#: Env values recognized as "truthy" to enable Code Mode (case-insensitive).
 _TRUTHY: frozenset[str] = frozenset({"1", "true", "yes", "on"})
 
-#: Variable d'env activant le Code Mode au lancement (``main()``).
+#: Env variable enabling Code Mode at launch (``main()``).
 _CODE_MODE_ENV = "ADK_TOOLKIT_CODE_MODE"
 
 
 def code_mode_enabled() -> bool:
-    """Vrai si la variable d'env ``ADK_TOOLKIT_CODE_MODE`` demande le Code Mode.
+    """True if the ``ADK_TOOLKIT_CODE_MODE`` env variable requests Code Mode.
 
-    Reconnaît ``1``/``true``/``yes``/``on`` (insensible à la casse). Toute autre valeur
-    (ou l'absence de variable) → ``False`` (mode outils-directs par défaut).
+    Recognizes ``1``/``true``/``yes``/``on`` (case-insensitive). Any other value (or the absence
+    of the variable) → ``False`` (direct-tools mode by default).
     """
     return (os.getenv(_CODE_MODE_ENV) or "").strip().lower() in _TRUTHY
 
 
 def _apply_code_mode(mcp: FastMCP) -> None:
-    """Effondre le catalogue d'outils en une petite surface discovery + execute (Code Mode).
+    """Collapse the tool catalog into a small discovery + execute surface (Code Mode).
 
-    Applique le VRAI transform FastMCP 3.3.1
+    Applies the REAL FastMCP 3.3.1 transform
     (:class:`fastmcp.experimental.transforms.code_mode.CodeMode`) via
-    :meth:`FastMCP.add_transform`. La surface exposée passe alors des 81 outils nommés à
-    seulement ``search`` / ``get_schema`` / ``tags`` / ``execute`` (gros gain de tokens pour
-    un gros catalogue). Les outils de découverte lisent ``tool.tags`` — d'où l'intérêt
-    d'avoir tagué chaque outil par domaine (TASK 1) : ``GetTags`` liste les 15 domaines, puis
-    ``search(tags=[...])`` filtre par domaine.
+    :meth:`FastMCP.add_transform`. The exposed surface then goes from the 81 named tools to just
+    ``search`` / ``get_schema`` / ``tags`` / ``execute`` (a big token saving for a large
+    catalog). The discovery tools read ``tool.tags`` — hence the value of having tagged each tool
+    by domain (TASK 1): ``GetTags`` lists the 15 domains, then ``search(tags=[...])`` filters by
+    domain.
 
-    NB (honnêteté, cf. ``docs/adk-api-notes/fastmcp-codemode.md``) : les outils de découverte
-    (``search``/``get_schema``/``tags``) fonctionnent SANS dépendance supplémentaire ; seul
-    l'outil ``execute`` (sandbox ``MontySandboxProvider`` par défaut) nécessite le paquet
-    optionnel ``pydantic-monty`` (extra ``fastmcp[code-mode]``), importé paresseusement à
-    l'appel. Le transform est donc « câblé » ici, mais l'exécution de code requiert l'extra.
-    L'import est local pour ne rien coûter au mode outils-directs (par défaut).
+    NB (honesty, cf. ``docs/adk-api-notes/fastmcp-codemode.md``): the discovery tools
+    (``search``/``get_schema``/``tags``) work WITHOUT any extra dependency; only the ``execute``
+    tool (``MontySandboxProvider`` sandbox by default) requires the optional ``pydantic-monty``
+    package (extra ``fastmcp[code-mode]``), imported lazily at call time. The transform is thus
+    "wired" here, but executing code requires the extra. The import is local so it costs nothing
+    for direct-tools mode (the default).
     """
     from fastmcp.experimental.transforms.code_mode import CodeMode, GetSchemas, GetTags, Search
 
-    # GetTags est ajouté à la liste par défaut (Search + GetSchemas) car on tague par domaine :
-    # le modèle peut parcourir les domaines, puis search(tags=[...]), puis get_schema, puis execute.
+    # GetTags is added to the default list (Search + GetSchemas) because we tag by domain: the
+    # model can browse the domains, then search(tags=[...]), then get_schema, then execute.
     mcp.add_transform(CodeMode(discovery_tools=[Search(), GetSchemas(), GetTags()]))
 
 
 def build_server(code_mode: bool = False) -> FastMCP:
-    """Construit le serveur MCP racine (15 sous-serveurs, 81 outils).
+    """Build the root MCP server (15 sub-servers, 81 tools).
 
-    Par défaut (``code_mode=False``), tous les outils sont exposés par leur nom
-    ``<domaine>_<bare>`` (UX outils-directs ; les tests read-through les appellent par nom).
+    By default (``code_mode=False``), all tools are exposed by their ``<domain>_<bare>`` name
+    (direct-tools UX; the read-through tests call them by name).
 
-    Si ``code_mode=True``, on applique le transform Code Mode de FastMCP 3.3.1 APRÈS avoir
-    monté tous les sous-serveurs : le catalogue est effondré en une surface discovery+execute
-    (``search``/``get_schema``/``tags``/``execute``) — économie de tokens pour les 81 outils.
-    Voir :func:`_apply_code_mode` et ``docs/adk-api-notes/fastmcp-codemode.md`` (l'outil
-    ``execute`` requiert l'extra ``fastmcp[code-mode]`` ; la découverte fonctionne sans).
+    If ``code_mode=True``, we apply the FastMCP 3.3.1 Code Mode transform AFTER mounting all the
+    sub-servers: the catalog is collapsed into a discovery+execute surface
+    (``search``/``get_schema``/``tags``/``execute``) — token saving for the 81 tools. See
+    :func:`_apply_code_mode` and ``docs/adk-api-notes/fastmcp-codemode.md`` (the ``execute`` tool
+    requires the ``fastmcp[code-mode]`` extra; discovery works without it).
     """
     mcp = FastMCP(SERVER_NAME)
     register_resources(mcp)
     register_prompts(mcp)
-    # P1 domaine 1/4 : project. namespace -> outils exposés comme `project_<nom>`.
-    # (`prefix=` est déprécié en fastmcp 3.3.1 ; `namespace=` est l'API courante.)
+    # P1 domain 1/4: project. namespace -> tools exposed as `project_<name>`.
+    # (`prefix=` is deprecated in fastmcp 3.3.1; `namespace=` is the current API.)
     mcp.mount(project_server, namespace="project")
-    # P1 domaine 2/4 : agents. Outils exposés comme `agents_<nom>`.
+    # P1 domain 2/4: agents. Tools exposed as `agents_<name>`.
     mcp.mount(agents_server, namespace="agents")
-    # P3 domaine 3/4 : tools. Outils exposés comme `tools_<nom>`.
+    # P3 domain 3/4: tools. Tools exposed as `tools_<name>`.
     mcp.mount(tools_server, namespace="tools")
-    # P1 domaine 4/4 : models. Outils exposés comme `models_<nom>`.
+    # P1 domain 4/4: models. Tools exposed as `models_<name>`.
     mcp.mount(models_server, namespace="models")
-    # P2 domaine a : sessions (runtime). Outils exposés comme `sessions_<nom>`.
+    # P2 domain a: sessions (runtime). Tools exposed as `sessions_<name>`.
     mcp.mount(sessions_server, namespace="sessions")
-    # P2 domaine b : memory (runtime). Outils exposés comme `memory_<nom>`.
+    # P2 domain b: memory (runtime). Tools exposed as `memory_<name>`.
     mcp.mount(memory_server, namespace="memory")
-    # P2 domaine b : artifacts (runtime). Outils exposés comme `artifacts_<nom>`.
+    # P2 domain b: artifacts (runtime). Tools exposed as `artifacts_<name>`.
     mcp.mount(artifacts_server, namespace="artifacts")
-    # P3 domaine a : run (exécution d'agents). Outils exposés comme `run_<nom>`.
+    # P3 domain a: run (agent execution). Tools exposed as `run_<name>`.
     mcp.mount(run_server, namespace="run")
-    # P3 domaine b : eval (évaluation d'agents). Outils exposés comme `eval_<nom>`.
+    # P3 domain b: eval (agent evaluation). Tools exposed as `eval_<name>`.
     mcp.mount(eval_server, namespace="eval")
-    # P4 domaine a : deploy (construction de commandes adk deploy). Exposés `deploy_<nom>`.
+    # P4 domain a: deploy (building adk deploy commands). Exposed as `deploy_<name>`.
     mcp.mount(deploy_server, namespace="deploy")
-    # P4 domaine a : dev (serveurs de dev longue durée + one-shot run). Exposés `dev_<nom>`.
+    # P4 domain a: dev (long-running dev servers + one-shot run). Exposed as `dev_<name>`.
     mcp.mount(dev_server, namespace="dev")
-    # P4 domaine b : mcp_bridge (exposer des outils ADK comme MCP). Exposés `mcp_bridge_<nom>`.
+    # P4 domain b: mcp_bridge (exposing ADK tools as MCP). Exposed as `mcp_bridge_<name>`.
     mcp.mount(mcp_bridge_server, namespace="mcp_bridge")
-    # P4 domaine b : a2a (consume/expose/agent_card Agent-to-Agent). Exposés `a2a_<nom>`.
+    # P4 domain b: a2a (consume/expose/agent_card Agent-to-Agent). Exposed as `a2a_<name>`.
     mcp.mount(a2a_server, namespace="a2a")
-    # P4 domaine c : safety (callbacks/plugins/réglages de sûreté). Exposés `safety_<nom>`.
+    # P4 domain c: safety (callbacks/plugins/safety settings). Exposed as `safety_<name>`.
     mcp.mount(safety_server, namespace="safety")
-    # P4 domaine c : observability (OpenTelemetry/Cloud Trace). Exposés `observability_<nom>`.
+    # P4 domain c: observability (OpenTelemetry/Cloud Trace). Exposed as `observability_<name>`.
     mcp.mount(observability_server, namespace="observability")
-    # P6 : Code Mode opt-in — APRÈS tous les mounts (le transform agit sur le catalogue complet).
+    # P6: opt-in Code Mode — AFTER all mounts (the transform acts on the complete catalog).
     if code_mode:
         _apply_code_mode(mcp)
     return mcp
 
 
 def main() -> None:
-    """Point d'entrée CLI : lance le serveur (Code Mode si ``ADK_TOOLKIT_CODE_MODE`` est vrai)."""
+    """CLI entry point: launch the server (Code Mode if ``ADK_TOOLKIT_CODE_MODE`` is truthy)."""
     build_server(code_mode=code_mode_enabled()).run()
 
 

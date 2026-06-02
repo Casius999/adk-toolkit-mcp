@@ -1,16 +1,14 @@
-"""Tests du skill compagnon ``adk-toolkit`` (P5).
+"""Tests for the companion skill ``adk-toolkit`` (P5).
 
-Vérifie que le skill livré dans ``skill/`` est bien formé :
+Verifies that the skill shipped in ``skill/`` is well-formed:
 
-- ``skill/SKILL.md`` existe et porte un frontmatter YAML valide avec
-  ``name == "adk-toolkit"`` et une ``description`` non vide ;
-- chaque fichier de référence mentionné par ``SKILL.md`` (``references/NN-*.md``)
-  existe réellement sur disque.
+- ``skill/SKILL.md`` exists and carries a valid YAML frontmatter with
+  ``name == "adk-toolkit"`` and a non-empty ``description``;
+- each reference file mentioned by ``SKILL.md`` (``references/NN-*.md``) actually exists on disk.
 
-Le frontmatter est parsé de façon **minimale** (sans dépendance YAML) : on lit le bloc
-entre les deux délimiteurs ``---`` en tête de fichier et on en extrait les clés simples
-``clé: valeur`` (suffisant pour ``name`` ; ``description`` peut être un scalaire de bloc
-``>-`` multi-lignes, géré explicitement).
+The frontmatter is parsed **minimally** (no YAML dependency): we read the block between the two
+``---`` delimiters at the top of the file and extract the simple ``key: value`` keys (enough for
+``name``; ``description`` can be a multi-line ``>-`` block scalar, handled explicitly).
 """
 
 from __future__ import annotations
@@ -18,32 +16,32 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-#: Racine du dépôt = deux niveaux au-dessus de ``tests/unit/``.
+#: Repo root = two levels above ``tests/unit/``.
 _REPO_ROOT = Path(__file__).resolve().parents[2]
-#: Dossier du skill livré dans le dépôt.
+#: Folder of the skill shipped in the repo.
 _SKILL_DIR = _REPO_ROOT / "skill"
 _SKILL_MD = _SKILL_DIR / "SKILL.md"
 
 
 def _split_frontmatter(text: str) -> tuple[str, str]:
-    """Sépare le frontmatter YAML (entre les deux ``---``) du corps.
+    """Split the YAML frontmatter (between the two ``---``) from the body.
 
-    Renvoie ``(frontmatter, body)``. Lève ``AssertionError`` si le fichier ne commence
-    pas par un bloc ``---`` ... ``---``.
+    Returns ``(frontmatter, body)``. Raises ``AssertionError`` if the file does not start with a
+    ``---`` ... ``---`` block.
     """
-    assert text.startswith("---"), "SKILL.md doit commencer par un frontmatter '---'."
-    # Le corps suit le second '---' en début de ligne.
+    assert text.startswith("---"), "SKILL.md must start with a '---' frontmatter."
+    # The body follows the second '---' at the start of a line.
     match = re.match(r"^---\s*\n(.*?)\n---\s*\n(.*)$", text, re.DOTALL)
-    assert match is not None, "Frontmatter YAML mal délimité (attendu '---' ... '---')."
+    assert match is not None, "YAML frontmatter badly delimited (expected '---' ... '---')."
     return match.group(1), match.group(2)
 
 
 def _parse_frontmatter(front: str) -> dict[str, str]:
-    """Parse minimal du frontmatter : clés ``clé: valeur`` + scalaire de bloc ``>-``.
+    """Minimal parse of the frontmatter: ``key: value`` keys + ``>-`` block scalar.
 
-    Suffisant pour ce skill : ``name`` est une valeur simple ; ``description`` est un
-    scalaire de bloc ``>-`` (lignes indentées suivantes jointes par des espaces). On
-    n'a PAS besoin d'un parseur YAML complet (pas de dépendance ajoutée).
+    Enough for this skill: ``name`` is a simple value; ``description`` is a ``>-`` block scalar
+    (following indented lines joined by spaces). We do NOT need a full YAML parser (no added
+    dependency).
     """
     result: dict[str, str] = {}
     lines = front.splitlines()
@@ -57,7 +55,7 @@ def _parse_frontmatter(front: str) -> dict[str, str]:
             continue
         key, value = key_match.group(1), key_match.group(2).strip()
         if value in (">-", ">", "|", "|-"):
-            # Scalaire de bloc : agrège les lignes indentées suivantes.
+            # Block scalar: aggregate the following indented lines.
             block: list[str] = []
             index += 1
             while index < len(lines):
@@ -74,38 +72,38 @@ def _parse_frontmatter(front: str) -> dict[str, str]:
 
 
 def test_skill_md_exists() -> None:
-    """``skill/SKILL.md`` doit exister."""
-    assert _SKILL_MD.is_file(), f"SKILL.md introuvable : {_SKILL_MD}"
+    """``skill/SKILL.md`` must exist."""
+    assert _SKILL_MD.is_file(), f"SKILL.md not found: {_SKILL_MD}"
 
 
 def test_skill_frontmatter_name_and_description() -> None:
-    """Le frontmatter porte ``name == 'adk-toolkit'`` et une ``description`` non vide."""
+    """The frontmatter carries ``name == 'adk-toolkit'`` and a non-empty ``description``."""
     front, _ = _split_frontmatter(_SKILL_MD.read_text(encoding="utf-8"))
     meta = _parse_frontmatter(front)
 
     name = meta.get("name")
-    assert name == "adk-toolkit", f"name attendu 'adk-toolkit', obtenu {name!r}."
+    assert name == "adk-toolkit", f"expected name 'adk-toolkit', got {name!r}."
     description = meta.get("description", "")
-    assert description.strip(), "La description du frontmatter ne doit pas être vide."
-    # La description est la surface de déclenchement : on exige un minimum de substance.
-    assert len(description) >= 50, "La description doit être riche en déclencheurs (>= 50 car.)."
+    assert description.strip(), "The frontmatter description must not be empty."
+    # The description is the triggering surface: we require a minimum of substance.
+    assert len(description) >= 50, "The description must be rich in triggers (>= 50 chars)."
 
 
 def test_referenced_reference_files_exist() -> None:
-    """Chaque ``references/NN-*.md`` cité par SKILL.md existe sur disque."""
+    """Each ``references/NN-*.md`` cited by SKILL.md exists on disk."""
     text = _SKILL_MD.read_text(encoding="utf-8")
     referenced = sorted(set(re.findall(r"references/[0-9A-Za-z._-]+\.md", text)))
-    assert referenced, "SKILL.md devrait référencer au moins un fichier references/*.md."
+    assert referenced, "SKILL.md should reference at least one references/*.md file."
 
     missing = [rel for rel in referenced if not (_SKILL_DIR / rel).is_file()]
-    assert not missing, f"Fichiers de référence cités mais absents : {missing}"
+    assert not missing, f"Reference files cited but absent: {missing}"
 
 
 def test_expected_reference_set_present() -> None:
-    """Les 14 références canoniques (00..13) sont présentes dans ``skill/references/``.
+    """The 14 canonical references (00..13) are present in ``skill/references/``.
 
-    Garde-fou contre une livraison partielle : la table de routage du SKILL.md route vers
-    ces 14 fichiers (cf. spec §6 ; ``13-tool-catalog.md`` est le pont tâche→outil).
+    Guardrail against a partial delivery: the SKILL.md routing table routes to these 14 files
+    (cf. spec §6; ``13-tool-catalog.md`` is the task→tool bridge).
     """
     refs_dir = _SKILL_DIR / "references"
     expected = {
@@ -126,4 +124,4 @@ def test_expected_reference_set_present() -> None:
     }
     present = {p.name for p in refs_dir.glob("*.md")}
     missing = expected - present
-    assert not missing, f"Références manquantes : {sorted(missing)}"
+    assert not missing, f"Missing references: {sorted(missing)}"

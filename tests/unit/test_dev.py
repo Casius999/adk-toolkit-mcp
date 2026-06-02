@@ -1,19 +1,19 @@
-"""Tests du domaine ``dev`` (P4a — serveurs de dev longue durée + one-shot run).
+"""Tests for the ``dev`` domain (P4a — long-running dev servers + one-shot run).
 
-Le domaine ``dev`` gère des process ``adk web`` / ``adk api_server`` via le registre de
-:mod:`adk_toolkit_mcp.adk_cli`, et lance ``adk run`` en one-shot. On TESTE TOUJOURS :
-- la **construction de la commande** (argv) pour web/api_server/run ;
-- le cycle de vie via le **registre** (start → status running → logs → stop → not-running),
-  prouvé avec le vrai chemin de code (le binaire lancé est ``adk`` ; on n'attend pas qu'il serve).
+The ``dev`` domain manages ``adk web`` / ``adk api_server`` processes via the
+:mod:`adk_toolkit_mcp.adk_cli` registry, and runs ``adk run`` as a one-shot. We ALWAYS TEST:
+- the **command building** (argv) for web/api_server/run;
+- the lifecycle via the **registry** (start → status running → logs → stop → not-running), proven
+  with the real code path (the launched binary is ``adk``; we do not wait for it to serve).
 
-PREUVE FONCTIONNELLE (best-effort, GATÉE) : booter un vrai ``adk api_server`` sur un port
-éphémère et le sonder en HTTP (``/docs``) est LENT/parfois instable en CI. Ce test n'est exécuté
-que si ``ADK_TOOLKIT_TEST_API_SERVER=1`` ; sinon il SKIP bruyamment. Quoi qu'il arrive, on ne
-laisse aucun process actif ni port lié (fixture de nettoyage + stop systématique).
+FUNCTIONAL PROOF (best-effort, GATED): booting a real ``adk api_server`` on an ephemeral port and
+probing it over HTTP (``/docs``) is SLOW/sometimes flaky in CI. This test only runs if
+``ADK_TOOLKIT_TEST_API_SERVER=1``; otherwise it SKIPs loudly. Either way, we leave no active
+process or bound port (cleanup fixture + systematic stop).
 
-``adk run`` nécessite des creds modèle pour produire une réponse : le test l'exécute avec un
-court timeout et accepte un rc non nul / une sortie d'erreur (renvoyés en DONNÉES, jamais un
-hang). On vérifie surtout que la commande est correctement construite et exécutée.
+``adk run`` requires model creds to produce a response: the test runs it with a short timeout and
+accepts a non-zero rc / an error output (returned in DATA, never a hang). We mainly verify that
+the command is correctly built and executed.
 """
 
 from __future__ import annotations
@@ -32,27 +32,27 @@ from adk_toolkit_mcp import adk_cli
 from adk_toolkit_mcp.domains import dev as DEV
 from adk_toolkit_mcp.server import build_server
 
-#: Flag d'opt-in pour le boot RÉEL d'un api_server (lent/instable en CI sinon).
+#: Opt-in flag for the REAL boot of an api_server (slow/flaky in CI otherwise).
 _BOOT_FLAG = "ADK_TOOLKIT_TEST_API_SERVER"
 
 
 @pytest.fixture(autouse=True)
 def _clear_registry() -> None:
-    """Termine tout process géré avant ET après chaque test (aucun orphelin / port lié)."""
+    """Terminate any managed process before AND after each test (no orphan / bound port)."""
     adk_cli.stop_all_processes()
     yield
     adk_cli.stop_all_processes()
 
 
 def _free_port() -> int:
-    """Renvoie un port TCP libre (bind éphémère puis relâché)."""
+    """Return a free TCP port (ephemeral bind then released)."""
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.bind(("127.0.0.1", 0))
         return int(s.getsockname()[1])
 
 
 def _scaffold_agent(tmp_path: Path, app_name: str = "myapp") -> str:
-    """Scaffolde une app ADK minimale (importable SANS clé API) ; renvoie le chemin parent."""
+    """Scaffold a minimal ADK app (importable WITHOUT an API key); return the parent path."""
     app_dir = tmp_path / app_name
     app_dir.mkdir(parents=True, exist_ok=True)
     (app_dir / "__init__.py").write_text("from . import agent\n", encoding="utf-8")
@@ -75,7 +75,7 @@ def _wait_until(predicate, timeout: float = 30.0, interval: float = 0.2) -> bool
 
 
 def _http_ok(url: str, timeout: float = 2.0) -> bool:
-    """True si un GET sur ``url`` répond (statut < 500). Toute erreur réseau → False."""
+    """True if a GET on ``url`` responds (status < 500). Any network error → False."""
     try:
         with urllib.request.urlopen(url, timeout=timeout) as resp:  # noqa: S310 - localhost test
             return resp.status < 500
@@ -84,10 +84,10 @@ def _http_ok(url: str, timeout: float = 2.0) -> bool:
 
 
 # --------------------------------------------------------------------------- #
-# Construction de commande (web / api_server) — sans booter
+# Command building (web / api_server) — without booting
 # --------------------------------------------------------------------------- #
 def test_build_serve_argv_api_server(tmp_path: Path) -> None:
-    """``_build_serve_argv`` produit la commande attendue pour api_server (dir + host/port)."""
+    """``_build_serve_argv`` produces the expected command for api_server (dir + host/port)."""
     path = _scaffold_agent(tmp_path)
     argv, agents_dir = DEV._build_serve_argv(
         "api_server", path, "myapp", port=8123, host="127.0.0.1"
@@ -95,13 +95,13 @@ def test_build_serve_argv_api_server(tmp_path: Path) -> None:
     assert argv[0] == "api_server"
     assert "--host" in argv and argv[argv.index("--host") + 1] == "127.0.0.1"
     assert "--port" in argv and argv[argv.index("--port") + 1] == "8123"
-    # app_name fourni → AGENTS_DIR pointe sur le dossier de l'app (positionnel final).
+    # app_name provided → AGENTS_DIR points to the app folder (final positional).
     assert argv[-1] == str(Path(path) / "myapp")
     assert agents_dir == str(Path(path) / "myapp")
 
 
 def test_build_serve_argv_web_without_app_name(tmp_path: Path) -> None:
-    """Sans app_name, AGENTS_DIR = le dossier parent (répertoire d'agents)."""
+    """Without app_name, AGENTS_DIR = the parent folder (agents directory)."""
     path = _scaffold_agent(tmp_path)
     argv, agents_dir = DEV._build_serve_argv("web", path, None, port=8000, host="0.0.0.0")
     assert argv[0] == "web"
@@ -110,17 +110,17 @@ def test_build_serve_argv_web_without_app_name(tmp_path: Path) -> None:
 
 
 def test_serve_argv_flags_valid_against_real_help(tmp_path: Path) -> None:
-    """Les flags émis pour web/api_server existent réellement (available_flags)."""
+    """The flags emitted for web/api_server actually exist (available_flags)."""
     path = _scaffold_agent(tmp_path)
     for kind in ("web", "api_server"):
         argv, _ = DEV._build_serve_argv(kind, path, "myapp", port=8000, host="127.0.0.1")
         valid = adk_cli.available_flags([kind])
         emitted = {t for t in argv if t.startswith("--")}
-        assert emitted <= valid, f"{kind}: flags inconnus {emitted - valid}"
+        assert emitted <= valid, f"{kind}: unknown flags {emitted - valid}"
 
 
 # --------------------------------------------------------------------------- #
-# Validation des entrées
+# Input validation
 # --------------------------------------------------------------------------- #
 async def test_web_missing_agent_dir_returns_err(tmp_path: Path) -> None:
     result = await DEV.web(path=str(tmp_path), app_name="ghost")
@@ -135,14 +135,14 @@ async def test_api_server_rejects_bad_port(tmp_path: Path) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# Cycle de vie via le registre — prouvé avec le vrai chemin de code (start/stop)
+# Lifecycle via the registry — proven with the real code path (start/stop)
 # --------------------------------------------------------------------------- #
 async def test_dev_start_status_stop_lifecycle(tmp_path: Path) -> None:
-    """api_server démarre (process enregistré + running), status le voit, stop le termine.
+    """api_server starts (process registered + running), status sees it, stop terminates it.
 
-    On NE dépend PAS de la disponibilité HTTP du serveur (lent) — on prouve le contrat du
-    registre via le vrai démarrage du process ``adk api_server`` puis son arrêt. Le binaire est
-    bien ``adk`` (preuve dans l'argv enregistré).
+    We do NOT depend on the server's HTTP availability (slow) — we prove the registry contract via
+    the real start of the ``adk api_server`` process then its stop. The binary is indeed ``adk``
+    (proof in the registered argv).
     """
     path = _scaffold_agent(tmp_path)
     port = _free_port()
@@ -153,17 +153,17 @@ async def test_dev_start_status_stop_lifecycle(tmp_path: Path) -> None:
     assert started["data"]["port"] == port
     assert "api_server" in started["data"]["url"] or started["data"]["url"].startswith("http")
 
-    # status voit le process (running au moins juste après le lancement).
+    # status sees the process (running at least just after launch).
     status = await DEV.status(key=key)
     assert status["ok"] is True
     assert status["data"]["found"] is True
 
-    # logs accessibles (le fichier existe même si vide au tout début).
+    # logs accessible (the file exists even if empty at the very start).
     logs = await DEV.logs(key=key, tail=20)
     assert logs["ok"] is True
     assert "lines" in logs["data"]
 
-    # stop termine effectivement le process.
+    # stop actually terminates the process.
     stopped = await DEV.stop(key=key)
     assert stopped["ok"] is True
     assert stopped["data"]["found"] is True
@@ -171,14 +171,14 @@ async def test_dev_start_status_stop_lifecycle(tmp_path: Path) -> None:
 
 
 async def test_dev_double_start_same_key_returns_err(tmp_path: Path) -> None:
-    """Démarrer deux fois la même app/port (process vivant) → err propre (pas d'exception)."""
+    """Starting the same app/port twice (live process) → clean err (no exception)."""
     path = _scaffold_agent(tmp_path)
     port = _free_port()
     first = await DEV.api_server(path=path, app_name="myapp", port=port)
     assert first["ok"] is True
     second = await DEV.api_server(path=path, app_name="myapp", port=port)
     assert second["ok"] is False
-    assert "déjà" in second["error"] or "already" in second["error"].lower()
+    assert "already" in second["error"].lower()
     await DEV.stop(key=first["data"]["key"])
 
 
@@ -195,17 +195,17 @@ async def test_dev_status_unknown_key() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# FUNCTIONAL (gaté) — boot RÉEL d'un api_server + sonde HTTP
+# FUNCTIONAL (gated) — REAL boot of an api_server + HTTP probe
 # --------------------------------------------------------------------------- #
 @pytest.mark.skipif(
     os.getenv(_BOOT_FLAG) != "1",
     reason=(
-        f"Boot api_server RÉEL gaté derrière {_BOOT_FLAG}=1 "
-        "(lent/instable en CI). Le registre + la construction de commande sont testés sans gate."
+        f"REAL api_server boot gated behind {_BOOT_FLAG}=1 "
+        "(slow/flaky in CI). The registry + the command building are tested without a gate."
     ),
 )
 async def test_api_server_boots_and_serves_http(tmp_path: Path) -> None:
-    """[GATÉ {flag}=1] Boote un vrai adk api_server sur un port éphémère et sonde /docs en HTTP."""
+    """[GATED {flag}=1] Boots a real adk api_server on an ephemeral port; probes /docs over HTTP."""
     path = _scaffold_agent(tmp_path)
     port = _free_port()
     started = await DEV.api_server(path=path, app_name="myapp", port=port)
@@ -215,27 +215,27 @@ async def test_api_server_boots_and_serves_http(tmp_path: Path) -> None:
     try:
         booted = _wait_until(lambda: _http_ok(url), timeout=60.0)
         logs = await DEV.logs(key=key, tail=50)
-        assert booted, f"api_server n'a pas répondu sur {url}. logs={logs['data']['lines']}"
+        assert booted, f"api_server did not respond on {url}. logs={logs['data']['lines']}"
     finally:
         await DEV.stop(key=key)
     assert _wait_until(lambda: DEV._status_running(key) is False, timeout=15.0)
 
 
 # --------------------------------------------------------------------------- #
-# run (one-shot) — construit/execute, jamais de hang
+# run (one-shot) — builds/executes, never a hang
 # --------------------------------------------------------------------------- #
 def test_run_argv_construction(tmp_path: Path) -> None:
-    """``_build_run_argv`` met le message en QUERY positionnel (pas un flag) après AGENT."""
+    """``_build_run_argv`` puts the message as a positional QUERY (not a flag) after AGENT."""
     path = _scaffold_agent(tmp_path)
     argv = DEV._build_run_argv(path, "myapp", "hello there")
     assert argv[0] == "run"
-    # AGENT (dossier d'app) puis QUERY (message).
+    # AGENT (app folder) then QUERY (message).
     assert argv[1] == str(Path(path) / "myapp")
     assert argv[-1] == "hello there"
 
 
 async def test_run_without_message_returns_guidance(tmp_path: Path) -> None:
-    """Sans message, run renvoie une guidance (le mode interactif bloquerait) — pas d'exécution."""
+    """Without a message, run returns guidance (the interactive mode would block) — no execution."""
     path = _scaffold_agent(tmp_path)
     result = await DEV.run(path=path, app_name="myapp", message=None)
     assert result["ok"] is True
@@ -246,7 +246,7 @@ async def test_run_without_message_returns_guidance(tmp_path: Path) -> None:
 async def test_run_with_message_executes_mocked(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Avec un message, run invoque adk run (mocké) et remonte rc/sortie ; jamais de hang."""
+    """With a message, run invokes adk run (mocked) and surfaces rc/output; never a hang."""
     recorded: dict[str, object] = {}
 
     def _fake_run(args, cwd=None, timeout=None):  # type: ignore[no-untyped-def]
@@ -262,7 +262,7 @@ async def test_run_with_message_executes_mocked(
     assert result["data"]["rc"] == 0
     assert "agent says hi" in result["data"]["stdout"]
     assert recorded["args"][0] == "run"
-    # Un timeout est passé (jamais d'attente infinie).
+    # A timeout is passed (never an infinite wait).
     assert recorded["timeout"] is not None
 
 
@@ -272,10 +272,10 @@ async def test_run_missing_agent_dir_returns_err(tmp_path: Path) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# read-through fastmcp.Client (noms exposés + flux registre)
+# read-through fastmcp.Client (exposed names + registry flow)
 # --------------------------------------------------------------------------- #
 async def test_client_exposed_names_and_registry_flow(tmp_path: Path) -> None:
-    """Outils exposés dev_<bare> (pas de double-préfixe) ; flux start→status→stop via le client."""
+    """Tools exposed as dev_<bare> (no double prefix); start→status→stop flow via the client."""
     path = _scaffold_agent(tmp_path)
     port = _free_port()
     mcp = build_server()

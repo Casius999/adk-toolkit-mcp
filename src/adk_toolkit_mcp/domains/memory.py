@@ -1,25 +1,25 @@
-"""Domaine `memory` : opère le service de MÉMOIRE runtime d'ADK (P2b).
+"""`memory` domain: operates ADK's runtime MEMORY service (P2b).
 
-Comme `sessions` (et contrairement aux domaines P1 qui *écrivent* du code dans ``agent.py``),
-ce domaine **instancie un vrai service de mémoire ADK** et l'appelle de façon asynchrone. Le
-service concret (``InMemoryMemoryService`` / ``VertexAiRagMemoryService`` /
-``VertexAiMemoryBankService``) est choisi par le backend persisté dans
-``<app_dir>/.adk_toolkit/runtime.json`` et fourni par la fabrique singleton
-:mod:`adk_toolkit_mcp.runtime` (l'instance ``in_memory`` est partagée entre appels d'outils,
-donc l'état mémoire survit dans le process).
+Like `sessions` (and unlike the P1 domains that *write* code into ``agent.py``), this domain
+**instantiates a real ADK memory service** and calls it asynchronously. The concrete service
+(``InMemoryMemoryService`` / ``VertexAiRagMemoryService`` / ``VertexAiMemoryBankService``) is
+chosen by the backend persisted in ``<app_dir>/.adk_toolkit/runtime.json`` and provided by the
+singleton factory :mod:`adk_toolkit_mcp.runtime` (the ``in_memory`` instance is shared across
+tool calls, so the memory state survives within the process).
 
-Sous-serveur FastMCP monté sous ``namespace="memory"`` → outils exposés ``memory_<nom>``.
-Fonctions à noms **BARE** (``service_set``, ``add_session``, ``search``).
+A FastMCP sub-server mounted under ``namespace="memory"`` → tools exposed as ``memory_<name>``.
+Functions with **BARE** names (``service_set``, ``add_session``, ``search``).
 
-Rappel ADK (cf. ``docs/adk-api-notes/memory-artifacts.md``) :
-- ``add_session_to_memory(session)`` ingère une session (les événements PORTANT du texte) ;
-- ``search_memory(*, app_name, user_id, query) -> SearchMemoryResponse`` renvoie des
-  ``MemoryEntry`` (``content``/``author``/``timestamp``) ; on les sérialise en dicts simples.
-- ``InMemoryMemoryService`` fait un rappel par MOTS-CLÉS (pas sémantique) : seuls les
-  événements avec ``content.parts`` textuels sont indexés.
+ADK reminder (cf. ``docs/adk-api-notes/memory-artifacts.md``):
+- ``add_session_to_memory(session)`` ingests a session (the events CARRYING text);
+- ``search_memory(*, app_name, user_id, query) -> SearchMemoryResponse`` returns
+  ``MemoryEntry`` objects (``content``/``author``/``timestamp``); we serialize them into simple
+  dicts.
+- ``InMemoryMemoryService`` does a KEYWORD recall (not semantic): only events with textual
+  ``content.parts`` are indexed.
 
-Chaque outil renvoie l'enveloppe ``{ok, data, error}`` ; entrées invalides, config corrompue
-et session introuvable renvoient ``err(...)`` (jamais d'exception qui remonte).
+Each tool returns the ``{ok, data, error}`` envelope; invalid inputs, corrupt config and a
+session not found return ``err(...)`` (never an exception that propagates).
 """
 
 from __future__ import annotations
@@ -41,7 +41,7 @@ from ..runtime import (
 )
 from ..workspace import Workspace
 
-if TYPE_CHECKING:  # pragma: no cover - hints seulement
+if TYPE_CHECKING:  # pragma: no cover - hints only
     from google.adk.memory import BaseMemoryService
     from google.adk.memory.memory_entry import MemoryEntry
 
@@ -49,15 +49,15 @@ memory_server: FastMCP = FastMCP("memory")
 
 
 # --------------------------------------------------------------------------- #
-# Helpers internes (non exposés)
+# Internal helpers (not exposed)
 # --------------------------------------------------------------------------- #
 def _app_ws(path: str, app_name: str) -> Workspace:
-    """Workspace pointant sur le dossier de l'app (``<path>/<app_name>``)."""
+    """Workspace pointing at the app folder (``<path>/<app_name>``)."""
     return Workspace(Path(path) / app_name)
 
 
 def _config_for(path: str, app_name: str) -> RuntimeConfig | dict[str, Any]:
-    """Charge la config runtime de l'app, ou renvoie un ``err(...)`` si corrompue."""
+    """Load the app's runtime config, or return an ``err(...)`` if corrupt."""
     ws = _app_ws(path, app_name)
     try:
         return load_runtime_config(ws, app_name)
@@ -66,19 +66,17 @@ def _config_for(path: str, app_name: str) -> RuntimeConfig | dict[str, Any]:
 
 
 def _memory_service_for(path: str, app_name: str) -> BaseMemoryService | dict[str, Any]:
-    """Renvoie le service de mémoire (caché) configuré pour l'app, ou un ``err(...)``.
+    """Return the (cached) memory service configured for the app, or an ``err(...)``.
 
-    ``err`` si la config est corrompue, si aucun backend mémoire n'a été choisi
-    (``memory_service_set`` non appelé), ou si le backend est invalide (champ requis manquant /
-    extra ``gcp`` absent).
+    ``err`` if the config is corrupt, if no memory backend has been chosen
+    (``memory_service_set`` not called), or if the backend is invalid (missing required field /
+    missing ``gcp`` extra).
     """
     config = _config_for(path, app_name)
     if isinstance(config, dict):
         return config
     if config.memory is None:
-        return err(
-            "Aucun service de mémoire configuré pour cette app. Appelle d'abord memory_service_set."
-        )
+        return err("No memory service configured for this app. Call memory_service_set first.")
     try:
         return get_memory_service(config.memory)
     except ValueError as exc:
@@ -86,11 +84,11 @@ def _memory_service_for(path: str, app_name: str) -> BaseMemoryService | dict[st
 
 
 def _entry_to_dict(entry: MemoryEntry) -> dict[str, Any]:
-    """Sérialise un ``MemoryEntry`` en dict simple (texte concaténé + author + timestamp).
+    """Serialize a ``MemoryEntry`` into a simple dict (concatenated text + author + timestamp).
 
-    ``content`` est aplati via ``model_dump(exclude_none=True)`` (forme
-    ``{"parts": [{"text": …}], "role": …}``) ; ``text`` agrège les parts textuelles pour un
-    accès direct côté appelant.
+    ``content`` is flattened via ``model_dump(exclude_none=True)`` (form
+    ``{"parts": [{"text": …}], "role": …}``); ``text`` aggregates the textual parts for direct
+    access on the caller side.
     """
     content = entry.content
     parts = list(content.parts or []) if content is not None else []
@@ -104,7 +102,7 @@ def _entry_to_dict(entry: MemoryEntry) -> dict[str, Any]:
 
 
 # --------------------------------------------------------------------------- #
-# Outils MCP
+# MCP tools
 # --------------------------------------------------------------------------- #
 @memory_server.tool(tags={"memory"})
 def service_set(
@@ -116,39 +114,38 @@ def service_set(
     rag_corpus: str | None = None,
     agent_engine_id: str | None = None,
 ) -> dict[str, Any]:
-    """Choisit et persiste le backend du service de mémoire de l'app (``runtime.json``).
+    """Choose and persist the app's memory service backend (``runtime.json``).
 
     ``kind`` ∈ {``in_memory``, ``vertex_rag``, ``vertex_memory_bank``}.
-    - ``vertex_rag`` exige ``rag_corpus`` (nom de corpus RAG complet) ; extra ``gcp``.
-    - ``vertex_memory_bank`` exige ``project``, ``location`` et ``agent_engine_id`` ; extra ``gcp``.
+    - ``vertex_rag`` requires ``rag_corpus`` (full RAG corpus name); ``gcp`` extra.
+    - ``vertex_memory_bank`` requires ``project``, ``location`` and ``agent_engine_id``; ``gcp``
+      extra.
 
-    N'instancie PAS le service (validation de forme seulement) ; préserve les backends session
-    et artifacts déjà écrits. Renvoie la config mémoire persistée.
+    Does NOT instantiate the service (shape validation only); preserves the session and artifacts
+    backends already written. Returns the persisted memory config.
     """
     if kind not in MEMORY_KINDS:
-        return err(
-            f"kind invalide : {kind!r}. Attendu l'un de : {', '.join(sorted(MEMORY_KINDS))}."
-        )
+        return err(f"Invalid kind: {kind!r}. Expected one of: {', '.join(sorted(MEMORY_KINDS))}.")
     if kind == "vertex_rag" and not (rag_corpus and rag_corpus.strip()):
-        return err("kind='vertex_rag' nécessite 'rag_corpus' (nom de corpus RAG complet).")
+        return err("kind='vertex_rag' requires 'rag_corpus' (full RAG corpus name).")
     if kind == "vertex_memory_bank" and not (
         (project and project.strip())
         and (location and location.strip())
         and (agent_engine_id and agent_engine_id.strip())
     ):
         return err(
-            "kind='vertex_memory_bank' nécessite 'project', 'location' et 'agent_engine_id'."
+            "kind='vertex_memory_bank' requires 'project', 'location' and 'agent_engine_id'."
         )
 
     ws = _app_ws(path, app_name)
     backend = MemoryBackend(
-        kind=kind,  # type: ignore[arg-type]  # validé ci-dessus contre MEMORY_KINDS
+        kind=kind,  # type: ignore[arg-type]  # validated above against MEMORY_KINDS
         project=project,
         location=location,
         rag_corpus=rag_corpus,
         agent_engine_id=agent_engine_id,
     )
-    # Préserve les backends session/artifacts déjà persistés.
+    # Preserve the session/artifacts backends already persisted.
     try:
         existing = load_runtime_config(ws, app_name)
     except ValueError:
@@ -177,22 +174,20 @@ async def add_session(
     user_id: str,
     session_id: str,
 ) -> dict[str, Any]:
-    """Ingère une session existante dans la mémoire (``add_session_to_memory``).
+    """Ingest an existing session into memory (``add_session_to_memory``).
 
-    Charge la session via le service de SESSIONS configuré (même ``runtime.json``), puis
-    l'ajoute au service de MÉMOIRE. Seuls les événements porteurs de texte seront rappelables
-    par ``search`` (sémantique ADK). Renvoie l'id de session et son nombre d'événements.
+    Loads the session via the configured SESSIONS service (same ``runtime.json``), then adds it to
+    the MEMORY service. Only the text-carrying events will be recallable by ``search`` (ADK
+    semantics). Returns the session id and its event count.
     """
     if not session_id.strip():
-        return err("session_id est vide.")
+        return err("session_id is empty.")
 
     config = _config_for(path, app_name)
     if isinstance(config, dict):
         return config
     if config.memory is None:
-        return err(
-            "Aucun service de mémoire configuré pour cette app. Appelle d'abord memory_service_set."
-        )
+        return err("No memory service configured for this app. Call memory_service_set first.")
 
     try:
         session_service = get_session_service(config.session)
@@ -204,7 +199,7 @@ async def add_session(
         app_name=app_name, user_id=user_id, session_id=session_id
     )
     if session is None:
-        return err(f"Session introuvable : {session_id!r} (app={app_name}, user={user_id}).")
+        return err(f"Session not found: {session_id!r} (app={app_name}, user={user_id}).")
 
     await memory_service.add_session_to_memory(session)
     return ok(
@@ -219,15 +214,15 @@ async def add_session(
 
 @memory_server.tool(tags={"memory"})
 async def search(path: str, app_name: str, user_id: str, query: str) -> dict[str, Any]:
-    """Cherche dans la mémoire et renvoie les souvenirs correspondants (sérialisés).
+    """Search memory and return the matching memories (serialized).
 
-    Appelle ``search_memory(app_name=, user_id=, query=)`` et aplatit la
-    ``SearchMemoryResponse`` en une liste de dicts ``{author, timestamp, text, content}``.
-    ``InMemoryMemoryService`` fait un rappel par mots-clés (un mot de la requête doit figurer
-    dans le texte d'un événement ingéré).
+    Calls ``search_memory(app_name=, user_id=, query=)`` and flattens the
+    ``SearchMemoryResponse`` into a list of ``{author, timestamp, text, content}`` dicts.
+    ``InMemoryMemoryService`` does a keyword recall (a word from the query must appear in an
+    ingested event's text).
     """
     if not query.strip():
-        return err("query est vide.")
+        return err("query is empty.")
 
     service = _memory_service_for(path, app_name)
     if isinstance(service, dict):

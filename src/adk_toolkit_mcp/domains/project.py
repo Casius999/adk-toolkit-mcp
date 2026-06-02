@@ -1,17 +1,16 @@
-"""Domaine `project` : scaffolding et inspection d'apps ADK (code-first).
+"""`project` domain: scaffolding and inspection of ADK apps (code-first).
 
-Sous-serveur FastMCP monté par le serveur racine sous le namespace ``project``
-(les outils sont alors exposés comme ``project_<nom>`` côté client).
+A FastMCP sub-server mounted by the root server under the ``project`` namespace (the tools are
+then exposed as ``project_<name>`` on the client side).
 
-Convention de nommage : les fonctions sont nommées avec des noms BARE (``create``,
-``inspect``, ``set_env``, …). Le mount avec ``namespace="project"`` produit les noms
-exposés ``project_create``, ``project_inspect``, ``project_set_env``, etc.
-(un seul préfixe). Voir ``docs/adk-api-notes/conventions.md``.
+Naming convention: the functions are named with BARE names (``create``, ``inspect``,
+``set_env``, …). Mounting with ``namespace="project"`` produces the exposed names
+``project_create``, ``project_inspect``, ``project_set_env``, etc. (a single prefix). See
+``docs/adk-api-notes/conventions.md``.
 
-Chaque outil renvoie l'enveloppe uniforme ``{ok, data, error}`` et écrit de vrais
-fichiers via :class:`~adk_toolkit_mcp.workspace.Workspace`. Le layout produit par
-``create`` reflète la sortie réelle de ``adk create`` (voir
-``docs/adk-api-notes/project.md``).
+Each tool returns the uniform ``{ok, data, error}`` envelope and writes real files via
+:class:`~adk_toolkit_mcp.workspace.Workspace`. The layout produced by ``create`` mirrors the real
+output of ``adk create`` (see ``docs/adk-api-notes/project.md``).
 """
 
 from __future__ import annotations
@@ -29,26 +28,26 @@ project_server: FastMCP = FastMCP("project")
 
 Backend = Literal["ai_studio", "vertex"]
 
-#: Extras ``google-adk`` connus (cf. pyproject du projet racine).
+#: Known ``google-adk`` extras (cf. the root project's pyproject).
 KNOWN_EXTRAS: frozenset[str] = frozenset(
     {"gcp", "bigquery", "spanner", "a2a", "eval", "mcp", "community", "litellm"}
 )
 
-#: Nom de fichier de l'Agent Config (voie no-code d'ADK).
+#: File name of the Agent Config (ADK's no-code path).
 AGENT_CONFIG_FILE = "root_agent.yaml"
 
-#: app_name = identifiant de package Python (sert de nom de dossier ET de module).
+#: app_name = Python package identifier (serves as both folder AND module name).
 _APP_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
-#: Valeur affichée à la place de toute valeur `.env` (redaction systématique).
+#: Value displayed in place of any `.env` value (systematic redaction).
 _REDACTED = "***"
 
 
 # --------------------------------------------------------------------------- #
-# Helpers purs (testables indirectement via les outils)
+# Pure helpers (indirectly testable via the tools)
 # --------------------------------------------------------------------------- #
 def _agent_py(app_name: str, model: str) -> str:
-    """Source de ``agent.py`` mirroir de ``adk create`` (alias importé sous LlmAgent)."""
+    """Source of ``agent.py`` mirroring ``adk create`` (alias imported as LlmAgent)."""
     return (
         "from google.adk.agents import LlmAgent\n"
         "\n"
@@ -62,10 +61,10 @@ def _agent_py(app_name: str, model: str) -> str:
 
 
 def _env_content(backend: Backend) -> str:
-    """Contenu `.env` selon le backend.
+    """`.env` content per backend.
 
-    NB: on écrit ``FALSE``/``TRUE`` (lisible, demandé par la spec) là où le vrai
-    scaffolder écrit ``0``/``1`` — les deux sont acceptés par ADK à l'exécution.
+    NB: we write ``FALSE``/``TRUE`` (readable, requested by the spec) where the real scaffolder
+    writes ``0``/``1`` — both are accepted by ADK at runtime.
     """
     if backend == "vertex":
         return "GOOGLE_GENAI_USE_VERTEXAI=TRUE\nGOOGLE_CLOUD_PROJECT=\nGOOGLE_CLOUD_LOCATION=\n"
@@ -73,7 +72,7 @@ def _env_content(backend: Backend) -> str:
 
 
 def _parse_env(text: str) -> dict[str, str]:
-    """Parse minimal d'un `.env` (``KEY=VALUE`` par ligne; ignore vides/commentaires)."""
+    """Minimal parse of a `.env` (``KEY=VALUE`` per line; ignores empties/comments)."""
     result: dict[str, str] = {}
     for raw in text.splitlines():
         line = raw.strip()
@@ -87,25 +86,25 @@ def _parse_env(text: str) -> dict[str, str]:
 
 
 def _serialize_env(values: dict[str, str]) -> str:
-    """Sérialise un mapping en `.env` déterministe (ordre d'insertion préservé)."""
+    """Serialize a mapping into a deterministic `.env` (insertion order preserved)."""
     return "".join(f"{key}={value}\n" for key, value in values.items())
 
 
 def _redact_keys(keys: list[str]) -> dict[str, str]:
-    """Map chaque clé vers sa valeur affichable (toujours redacted)."""
+    """Map each key to its displayable value (always redacted)."""
     return {key: _REDACTED for key in keys}
 
 
 def _inject_extra_pyproject(text: str, extra: str) -> tuple[str, bool]:
-    """Ajoute l'extra `google-adk[<extra>]` aux dépendances pyproject.
+    """Add the `google-adk[<extra>]` extra to the pyproject dependencies.
 
-    Renvoie (nouveau_texte, changed). Idempotent : si l'extra est déjà présent
-    sur une ligne ``google-adk[...]``, ne touche rien.
+    Returns (new_text, changed). Idempotent: if the extra is already present on a
+    ``google-adk[...]`` line, touches nothing.
     """
     if re.search(rf"google-adk\[[^\]]*\b{re.escape(extra)}\b[^\]]*\]", text):
         return text, False
 
-    # Cas 1 : une ligne google-adk existe -> on y greffe l'extra.
+    # Case 1: a google-adk line exists -> we graft the extra onto it.
     bare = re.search(r'(["\'])google-adk(?P<spec>[^"\']*)\1', text)
     if bare is not None:
         spec = bare.group("spec")
@@ -117,7 +116,7 @@ def _inject_extra_pyproject(text: str, extra: str) -> tuple[str, bool]:
         replacement = f"{bare.group(1)}google-adk{new_spec}{bare.group(1)}"
         return text[: bare.start()] + replacement + text[bare.end() :], True
 
-    # Cas 2 : pas de google-adk -> on insère dans la liste dependencies = [ ... ].
+    # Case 2: no google-adk -> we insert into the dependencies = [ ... ] list.
     dep = re.search(r"dependencies\s*=\s*\[", text)
     if dep is not None:
         insert_at = dep.end()
@@ -128,20 +127,20 @@ def _inject_extra_pyproject(text: str, extra: str) -> tuple[str, bool]:
 
 
 def _validate_app_name(app_name: str) -> str | None:
-    """Renvoie un message d'erreur si invalide, sinon None."""
+    """Return an error message if invalid, otherwise None."""
     name = app_name.strip()
     if not name:
-        return "app_name est vide."
+        return "app_name is empty."
     if not _APP_NAME_RE.match(name):
         return (
-            f"app_name invalide : {app_name!r}. Attendu un identifiant Python "
-            "(lettres, chiffres, underscore ; ne commence pas par un chiffre)."
+            f"Invalid app_name: {app_name!r}. Expected a Python identifier "
+            "(letters, digits, underscore; not starting with a digit)."
         )
     return None
 
 
 # --------------------------------------------------------------------------- #
-# Outils MCP
+# MCP tools
 # --------------------------------------------------------------------------- #
 @project_server.tool(tags={"project"})
 def create(
@@ -150,18 +149,18 @@ def create(
     model: str = "gemini-2.5-flash",
     backend: Backend = "ai_studio",
 ) -> dict[str, Any]:
-    """Scaffold une app ADK dans ``<path>/<app_name>/`` (mirroir de ``adk create``).
+    """Scaffold an ADK app in ``<path>/<app_name>/`` (mirrors ``adk create``).
 
-    Écrit ``__init__.py``, ``agent.py`` (avec un ``root_agent = LlmAgent(...)``) et
-    ``.env`` adapté au backend. Idempotent : un second appel identique ne réécrit rien.
+    Writes ``__init__.py``, ``agent.py`` (with a ``root_agent = LlmAgent(...)``) and a ``.env``
+    suited to the backend. Idempotent: an identical second call rewrites nothing.
     """
     name_error = _validate_app_name(app_name)
     if name_error is not None:
         return err(name_error)
     if backend not in ("ai_studio", "vertex"):
-        return err(f"backend invalide : {backend!r}. Attendu 'ai_studio' ou 'vertex'.")
+        return err(f"Invalid backend: {backend!r}. Expected 'ai_studio' or 'vertex'.")
     if not model.strip():
-        return err("model est vide.")
+        return err("model is empty.")
 
     app_name = app_name.strip()
     ws = Workspace(Path(path) / app_name)
@@ -183,15 +182,15 @@ def create(
 
 @project_server.tool(tags={"project"})
 def inspect(path: str) -> dict[str, Any]:
-    """Inspecte une app ADK : présence de ``root_agent``, fichiers ``*.py``, clés `.env`.
+    """Inspect an ADK app: presence of ``root_agent``, ``*.py`` files, `.env` keys.
 
-    Les valeurs `.env` ne sont jamais renvoyées (seulement les noms de clés).
+    The `.env` values are never returned (only the key names).
     """
     root = Path(path)
     if not root.exists():
-        return err(f"Chemin introuvable : {path}")
+        return err(f"Path not found: {path}")
     if not root.is_dir():
-        return err(f"Chemin n'est pas un dossier : {path}")
+        return err(f"Path is not a directory: {path}")
 
     ws = Workspace(root)
     py_files = sorted(p.name for p in root.glob("*.py"))
@@ -212,18 +211,18 @@ def inspect(path: str) -> dict[str, Any]:
 
 @project_server.tool(tags={"project"})
 def set_env(path: str, values: dict[str, str]) -> dict[str, Any]:
-    """Fusionne ``values`` dans le `.env` du projet (idempotent, sans écraser le reste).
+    """Merge ``values`` into the project's `.env` (idempotent, without overwriting the rest).
 
-    Crée le `.env` s'il n'existe pas. Renvoie les clés résultantes (valeurs redacted).
+    Creates the `.env` if it does not exist. Returns the resulting keys (redacted values).
     """
     if not values:
-        return err("values est vide : rien à écrire.")
+        return err("values is empty: nothing to write.")
     if not all(isinstance(k, str) and k.strip() for k in values):
-        return err("Toutes les clés de values doivent être des chaînes non vides.")
+        return err("All keys in values must be non-empty strings.")
 
     root = Path(path)
     if not root.exists():
-        return err(f"Chemin introuvable : {path}")
+        return err(f"Path not found: {path}")
 
     ws = Workspace(root)
     merged: dict[str, str] = {}
@@ -237,18 +236,18 @@ def set_env(path: str, values: dict[str, str]) -> dict[str, Any]:
 
 @project_server.tool(tags={"project"})
 def add_extra(path: str, extra: str) -> dict[str, Any]:
-    """Ajoute un extra ``google-adk`` aux dépendances du projet.
+    """Add a ``google-adk`` extra to the project's dependencies.
 
-    Modifie ``pyproject.toml`` s'il existe, sinon écrit une ligne dans
-    ``requirements.txt``. Idempotent. Rejette tout extra hors de KNOWN_EXTRAS.
+    Modifies ``pyproject.toml`` if it exists, otherwise writes a line in ``requirements.txt``.
+    Idempotent. Rejects any extra outside KNOWN_EXTRAS.
     """
     extra = extra.strip()
     if extra not in KNOWN_EXTRAS:
-        return err(f"Extra inconnu : {extra!r}. Connus : {', '.join(sorted(KNOWN_EXTRAS))}.")
+        return err(f"Unknown extra: {extra!r}. Known: {', '.join(sorted(KNOWN_EXTRAS))}.")
 
     root = Path(path)
     if not root.exists():
-        return err(f"Chemin introuvable : {path}")
+        return err(f"Path not found: {path}")
 
     ws = Workspace(root)
 
@@ -258,7 +257,7 @@ def add_extra(path: str, extra: str) -> dict[str, Any]:
             ws.write("pyproject.toml", new_text)
         return ok({"target": "pyproject.toml", "extra": extra, "changed": changed})
 
-    # Pas de pyproject -> requirements.txt.
+    # No pyproject -> requirements.txt.
     line = f"google-adk[{extra}]"
     existing = ws.read("requirements.txt") if ws.exists("requirements.txt") else ""
     if re.search(rf"google-adk\[[^\]]*\b{re.escape(extra)}\b[^\]]*\]", existing):
@@ -270,14 +269,14 @@ def add_extra(path: str, extra: str) -> dict[str, Any]:
 
 @project_server.tool(tags={"project"})
 def agent_config(path: str, yaml_content: str | None = None) -> dict[str, Any]:
-    """Voie Agent Config (no-code) d'ADK.
+    """ADK's Agent Config (no-code) path.
 
-    Si ``yaml_content`` est fourni, écrit ``<path>/root_agent.yaml`` (idempotent).
-    Sinon, renvoie le chemin attendu et si le fichier existe déjà.
+    If ``yaml_content`` is provided, writes ``<path>/root_agent.yaml`` (idempotent). Otherwise,
+    returns the expected path and whether the file already exists.
     """
     root = Path(path)
     if not root.exists():
-        return err(f"Chemin introuvable : {path}")
+        return err(f"Path not found: {path}")
 
     ws = Workspace(root)
     if yaml_content is not None:

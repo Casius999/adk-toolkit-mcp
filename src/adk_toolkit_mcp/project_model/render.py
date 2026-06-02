@@ -1,15 +1,15 @@
-"""Génération complète de ``agent.py`` à partir du :class:`ProjectModel`.
+"""Full generation of ``agent.py`` from the :class:`ProjectModel`.
 
-Cœur du renderer : tri topologique des agents (détection de cycle), rendu de chaque type
-d'agent (``LlmAgent`` / workflow / loop / ``custom``), du ``model=`` LiteLLM et du
-``generate_content_config=``, puis assemblage du module complet — section d'imports ordonnée
-façon isort (stdlib, ``google.adk.agents``, autres third-party ; noms triés, dédupliqués) et
-espacement PEP 8 (E302/E303/E305) stable pour ``ruff format``.
+Core of the renderer: topological sort of the agents (cycle detection), rendering of each agent
+type (``LlmAgent`` / workflow / loop / ``custom``), of the LiteLLM ``model=`` and of the
+``generate_content_config=``, then assembly of the complete module — an import section ordered
+isort-style (stdlib, ``google.adk.agents``, other third-party; sorted, deduplicated names) and
+PEP 8 spacing (E302/E303/E305) stable for ``ruff format``.
 
-S'appuie sur :mod:`adk_toolkit_mcp.project_model._codegen` pour les primitives ruff-stables et
-le rendu des outils, et sur :mod:`adk_toolkit_mcp.project_model.specs` pour les dataclasses et
-constantes. :func:`render_tool_ref` est ré-importé ici (utilisé par le rendu de ``LlmAgent``)
-et reste exposé via ``adk_toolkit_mcp.project_model``.
+Relies on :mod:`adk_toolkit_mcp.project_model._codegen` for the ruff-stable primitives and the
+tool rendering, and on :mod:`adk_toolkit_mcp.project_model.specs` for the dataclasses and
+constants. :func:`render_tool_ref` is re-imported here (used by the ``LlmAgent`` rendering) and
+stays exposed via ``adk_toolkit_mcp.project_model``.
 """
 
 from __future__ import annotations
@@ -44,15 +44,15 @@ from .specs import (
 
 
 # --------------------------------------------------------------------------- #
-# Tri topologique + détection de cycle
+# Topological sort + cycle detection
 # --------------------------------------------------------------------------- #
 def _agent_dependencies(spec: AgentSpec) -> tuple[str, ...]:
-    """Noms d'agents dont ``spec`` dépend pour être défini après eux dans ``agent.py``.
+    """Names of agents that ``spec`` depends on, to be defined after them in ``agent.py``.
 
-    Deux sources de dépendance vers un autre agent :
-    - ``sub_agents`` (composition : l'enfant doit précéder le parent) ;
-    - un outil ``agent_tool`` ciblant un agent (la cible doit précéder l'agent enveloppant,
-      sinon ``AgentTool(agent=<cible>)`` référencerait une variable non définie).
+    Two sources of dependency on another agent:
+    - ``sub_agents`` (composition: the child must precede the parent);
+    - an ``agent_tool`` tool targeting an agent (the target must precede the wrapping agent,
+      otherwise ``AgentTool(agent=<target>)`` would reference an undefined variable).
     """
     deps: list[str] = list(spec.sub_agents)
     for tool in spec.tool_specs():
@@ -62,16 +62,16 @@ def _agent_dependencies(spec: AgentSpec) -> tuple[str, ...]:
 
 
 def topological_order(model: ProjectModel) -> list[AgentSpec]:
-    """Trie les agents pour qu'une dépendance soit définie avant son dépendant.
+    """Sort the agents so that a dependency is defined before its dependent.
 
-    Une dépendance = un ``sub_agent`` **ou** la cible d'un outil ``agent_tool`` (cf.
-    :func:`_agent_dependencies`). Lève ``ValueError`` si un cycle est détecté (les outils
-    convertissent en ``err``). Les références à un nom absent sont ignorées pour
-    l'ordonnancement (la validation d'existence est faite en amont par les outils du domaine).
+    A dependency = a ``sub_agent`` **or** the target of an ``agent_tool`` tool (cf.
+    :func:`_agent_dependencies`). Raises ``ValueError`` if a cycle is detected (the tools convert
+    it to ``err``). References to an absent name are ignored for ordering (existence validation is
+    done upstream by the domain tools).
     """
     by_name: dict[str, AgentSpec] = {a.name: a for a in model.agents}
     order: list[AgentSpec] = []
-    # États : 0 = non visité, 1 = en cours (gris), 2 = terminé (noir).
+    # States: 0 = unvisited, 1 = in progress (gray), 2 = done (black).
     state: dict[str, int] = {a.name: 0 for a in model.agents}
 
     def visit(name: str, path: tuple[str, ...]) -> None:
@@ -80,39 +80,39 @@ def topological_order(model: ProjectModel) -> list[AgentSpec]:
             return
         if st == 1:
             cycle = " -> ".join((*path, name))
-            raise ValueError(f"Cycle détecté dans les dépendances d'agents : {cycle}")
+            raise ValueError(f"Cycle detected in agent dependencies: {cycle}")
         state[name] = 1
         spec = by_name[name]
         for dep in _agent_dependencies(spec):
-            if dep in by_name:  # n'ordonne que les références internes connues
+            if dep in by_name:  # only orders known internal references
                 visit(dep, (*path, name))
         state[name] = 2
         order.append(spec)
 
-    # Ordre stable : on itère dans l'ordre d'insertion du modèle.
+    # Stable order: we iterate in the model's insertion order.
     for a in model.agents:
         visit(a.name, ())
     return order
 
 
 # --------------------------------------------------------------------------- #
-# Rendu de source — agents, modèle, imports
+# Source rendering — agents, model, imports
 # --------------------------------------------------------------------------- #
 def _render_kwargs(pairs: list[tuple[str, str]]) -> str:
-    """Assemble des ``k=v`` déjà rendus en une liste d'arguments multi-lignes."""
+    """Assemble already-rendered ``k=v`` pairs into a multi-line argument list."""
     return "".join(f"    {key}={value},\n" for key, value in pairs)
 
 
 def _render_list_kwarg(key: str, refs: list[str]) -> str:
-    """Rend la **valeur** d'un kwarg liste (``tools``/``sub_agents``) façon ``ruff format``.
+    """Render the **value** of a list kwarg (``tools``/``sub_agents``) ``ruff format``-style.
 
-    Inline ``[a, b]`` si la ligne ``    {key}={value},`` tient dans :data:`LINE_LENGTH` ;
-    sinon, liste multi-lignes (un élément par ligne, indent 8, virgule finale) — exactement
-    ce que produirait ``ruff format`` au-delà de la limite. Ainsi le ``agent.py`` généré est
-    déjà stable (``format --check`` ne reformatte rien).
+    Inline ``[a, b]`` if the line ``    {key}={value},`` fits in :data:`LINE_LENGTH`; otherwise,
+    a multi-line list (one element per line, indent 8, trailing comma) — exactly what
+    ``ruff format`` would produce beyond the limit. This way the generated ``agent.py`` is already
+    stable (``format --check`` reformats nothing).
     """
     inline = f"[{', '.join(refs)}]"
-    # 4 (indent kwarg) + len("key=") + len(inline) + 1 (virgule finale).
+    # 4 (kwarg indent) + len("key=") + len(inline) + 1 (trailing comma).
     if 4 + len(key) + 1 + len(inline) + 1 <= LINE_LENGTH:
         return inline
     items = "".join(f"        {ref},\n" for ref in refs)
@@ -120,17 +120,17 @@ def _render_list_kwarg(key: str, refs: list[str]) -> str:
 
 
 def _render_litellm_model(spec: LiteLlmSpec) -> tuple[str, tuple[str, ...]]:
-    """Rend ``LiteLlm(model="<provider>/<model>"[, api_base=...][, api_key=...])`` + imports.
+    """Render ``LiteLlm(model="<provider>/<model>"[, api_base=...][, api_key=...])`` + imports.
 
-    - Pour ``lm_studio``, le provider est rendu comme ``openai`` et ``api_base`` vaut
-      ``http://127.0.0.1:1234/v1`` si non fourni.
-    - ``api_key`` est rendu comme ``os.getenv("<ENV>")`` (+ ``import os``) uniquement si
-      ``api_key_env`` est défini. **La clé n'est jamais écrite en dur.**
+    - For ``lm_studio``, the provider is rendered as ``openai`` and ``api_base`` defaults to
+      ``http://127.0.0.1:1234/v1`` if not provided.
+    - ``api_key`` is rendered as ``os.getenv("<ENV>")`` (+ ``import os``) only if ``api_key_env``
+      is set. **The key is never hardcoded.**
     """
     provider = spec.provider
     api_base = spec.api_base
 
-    # lm_studio : provider rendu comme openai, api_base par défaut.
+    # lm_studio: provider rendered as openai, default api_base.
     if provider == "lm_studio":
         provider = "openai"
         if not api_base:
@@ -152,21 +152,21 @@ def _render_litellm_model(spec: LiteLlmSpec) -> tuple[str, tuple[str, ...]]:
 
 
 def _render_safety_settings_arg(safety_settings: tuple[SafetySettingSpec, ...]) -> str:
-    """Rend l'argument ``safety_settings=[...]`` pour ``GenerateContentConfig``.
+    """Render the ``safety_settings=[...]`` argument for ``GenerateContentConfig``.
 
-    Les ``SafetySetting`` items sont dans la liste à ``base_indent=8`` (dans le corps
-    de ``GenerateContentConfig`` qui est lui-même à base_indent=4 dans ``LlmAgent``).
-    Chaque ``SafetySetting(...)`` est rendu avec ``_render_call(col=12, base_indent=12)``
-    pour que le repli soit stable pour ``ruff format``.
+    The ``SafetySetting`` items are in the list at ``base_indent=8`` (within the body of
+    ``GenerateContentConfig``, which is itself at base_indent=4 in ``LlmAgent``). Each
+    ``SafetySetting(...)`` is rendered with ``_render_call(col=12, base_indent=12)`` so that the
+    folding is stable for ``ruff format``.
 
-    Ruff rend les items d'une liste multi-lignes avec **12 espaces** (8 + 4) — c'est la forme
-    standard quand la liste est un argument d'un call replié à ``base_indent=8``.
+    Ruff renders the items of a multi-line list with **12 spaces** (8 + 4) — this is the standard
+    form when the list is an argument of a call folded at ``base_indent=8``.
     """
-    # inner_indent = base_indent des items dans le corps du call GenerateContentConfig
-    # = 8 (base_indent=4 pour les kwargs de GCC + 4 pour le repli).
-    item_indent = 12  # 8 (inner du GCC replié) + 4 (un niveau de liste supplémentaire)
+    # inner_indent = base_indent of the items within the GenerateContentConfig call body
+    # = 8 (base_indent=4 for the GCC kwargs + 4 for the fold).
+    item_indent = 12  # 8 (inner of the folded GCC) + 4 (one extra list level)
     pad = " " * item_indent
-    closing_pad = " " * 8  # même niveau que les args de GenerateContentConfig
+    closing_pad = " " * 8  # same level as the GenerateContentConfig args
 
     rendered_items: list[str] = []
     for ss in safety_settings:
@@ -177,7 +177,7 @@ def _render_safety_settings_arg(safety_settings: tuple[SafetySettingSpec, ...]) 
                 f"threshold=types.HarmBlockThreshold.{ss.threshold}",
             ),
         )
-        # col = item_indent (on est à 12 col dans le source), base_indent = item_indent
+        # col = item_indent (we are at 12 col in the source), base_indent = item_indent
         r = _render_call(ss_call, col=item_indent, base_indent=item_indent)
         rendered_items.append(f"{pad}{r},")
 
@@ -186,10 +186,10 @@ def _render_safety_settings_arg(safety_settings: tuple[SafetySettingSpec, ...]) 
 
 
 def _render_generate_content_config(gcc: GenerateContentConfigSpec) -> tuple[str, tuple[str, ...]]:
-    """Rend ``types.GenerateContentConfig(...)`` + imports.
+    """Render ``types.GenerateContentConfig(...)`` + imports.
 
-    Seuls les champs non-None/non-vides sont inclus. La structure est rendue via
-    :class:`_Call` pour être stable pour ``ruff format``.
+    Only the non-None/non-empty fields are included. The structure is rendered via :class:`_Call`
+    to be stable for ``ruff format``.
     """
     imports: list[str] = ["from google.genai import types"]
     args: list[str | _Call] = []
@@ -217,15 +217,15 @@ def _render_generate_content_config(gcc: GenerateContentConfigSpec) -> tuple[str
 
 
 def _render_llm_with_imports(spec: AgentSpec) -> tuple[str, tuple[str, ...]]:
-    """Rend un ``LlmAgent(...)`` en omettant les kwargs vides/None + renvoie les imports modèle.
+    """Render an ``LlmAgent(...)`` omitting empty/None kwargs + return the model imports.
 
-    Si ``model_spec`` est défini, rend ``model=LiteLlm(...)`` ; sinon ``model="<gemini>"``.
-    Si ``generate_content_config`` est défini, rend le kwarg correspondant.
-    Renvoie ``(bloc_source, imports_supplémentaires)``.
+    If ``model_spec`` is set, renders ``model=LiteLlm(...)``; otherwise ``model="<gemini>"``.
+    If ``generate_content_config`` is set, renders the corresponding kwarg.
+    Returns ``(source_block, extra_imports)``.
     """
     extra_imports: list[str] = []
 
-    # Rendu du model=
+    # Rendering of model=
     if spec.model_spec is not None:
         model_rendered, model_imports = _render_litellm_model(spec.model_spec)
         extra_imports.extend(model_imports)
@@ -251,9 +251,9 @@ def _render_llm_with_imports(spec: AgentSpec) -> tuple[str, tuple[str, ...]]:
         gcc_rendered, gcc_imports = _render_generate_content_config(spec.generate_content_config)
         extra_imports.extend(gcc_imports)
         pairs.append(("generate_content_config", gcc_rendered))
-    # Garde-fous (P4c) : chaque callback est une fonction générée top-level ; on attache son nom
-    # via le vrai kwarg (``before_model_callback=_guard_before_model_<agent>``). Les imports des
-    # corps (LlmResponse/types) sont collectés séparément (cf. ``_collect_model_imports``).
+    # Guardrails (P4c): each callback is a generated top-level function; we attach its name via
+    # the real kwarg (``before_model_callback=_guard_before_model_<agent>``). The body imports
+    # (LlmResponse/types) are collected separately (cf. ``_collect_model_imports``).
     for cb in spec.callbacks:
         ref = render_callback(cb, spec.name).ref
         pairs.append((cb.kwarg_name(), ref))
@@ -263,14 +263,14 @@ def _render_llm_with_imports(spec: AgentSpec) -> tuple[str, tuple[str, ...]]:
 
 
 def _render_llm(spec: AgentSpec) -> str:
-    """Wrapper de :func:`_render_llm_with_imports` — les imports supplémentaires sont collectés
-    séparément via :func:`_collect_model_imports` lors du rendu du module complet."""
+    """Wrapper around :func:`_render_llm_with_imports` — the extra imports are collected
+    separately via :func:`_collect_model_imports` when rendering the complete module."""
     block, _ = _render_llm_with_imports(spec)
     return block
 
 
 def _render_workflow(spec: AgentSpec, class_name: str) -> str:
-    """Rend un ``SequentialAgent``/``ParallelAgent`` (name + sub_agents + description?)."""
+    """Render a ``SequentialAgent``/``ParallelAgent`` (name + sub_agents + description?)."""
     pairs: list[tuple[str, str]] = [("name", _py_str(spec.name))]
     if spec.description:
         pairs.append(("description", _py_str(spec.description)))
@@ -279,7 +279,7 @@ def _render_workflow(spec: AgentSpec, class_name: str) -> str:
 
 
 def _render_loop(spec: AgentSpec) -> str:
-    """Rend un ``LoopAgent`` (name + sub_agents + max_iterations + description?)."""
+    """Render a ``LoopAgent`` (name + sub_agents + max_iterations + description?)."""
     pairs: list[tuple[str, str]] = [("name", _py_str(spec.name))]
     if spec.description:
         pairs.append(("description", _py_str(spec.description)))
@@ -289,11 +289,11 @@ def _render_loop(spec: AgentSpec) -> str:
 
 
 def _render_remote_a2a(spec: AgentSpec) -> str:
-    """Rend un ``RemoteA2aAgent`` (name + agent_card + description?).
+    """Render a ``RemoteA2aAgent`` (name + agent_card + description?).
 
-    ``agent_card`` est l'URL (ou chemin JSON) de l'agent-card distant. Le proxy n'a pas
-    d'enfants ; il entre directement dans ``tools=[...]``/``sub_agents=[...]`` d'autres agents
-    comme n'importe quelle variable d'agent. L'import vit dans un sous-module dédié — cf.
+    ``agent_card`` is the URL (or JSON path) of the remote agent-card. The proxy has no children;
+    it goes directly into other agents' ``tools=[...]``/``sub_agents=[...]`` like any agent
+    variable. The import lives in a dedicated submodule — cf.
     :data:`~adk_toolkit_mcp.project_model.specs._REMOTE_A2A_IMPORT`.
     """
     pairs: list[tuple[str, str]] = [
@@ -306,7 +306,7 @@ def _render_remote_a2a(spec: AgentSpec) -> str:
 
 
 def _custom_class_name(name: str) -> str:
-    """Nom de classe PascalCase pour un agent custom (``my_agent`` -> ``MyAgentAgent``)."""
+    """PascalCase class name for a custom agent (``my_agent`` -> ``MyAgentAgent``)."""
     pascal = "".join(part.capitalize() for part in name.split("_") if part)
     if not pascal:
         pascal = "Custom"
@@ -314,35 +314,35 @@ def _custom_class_name(name: str) -> str:
 
 
 def _render_custom(spec: AgentSpec) -> tuple[str, str]:
-    """Rend une sous-classe ``BaseAgent`` (stub) + une instance module-level.
+    """Render a ``BaseAgent`` subclass (stub) + a module-level instance.
 
-    Retourne un tuple ``(class_block, instance_block)`` pour permettre au renderer
-    de module d'insérer exactement 2 lignes vides entre les deux (PEP 8 E305).
+    Returns a tuple ``(class_block, instance_block)`` to let the module renderer insert exactly 2
+    blank lines between the two (PEP 8 E305).
 
-    Le ``_run_async_impl`` est un **async generator** no-op (``return`` puis ``yield``
-    inatteignable) — c'est la forme valide attendue par ADK (cf. agents.md).
+    The ``_run_async_impl`` is a no-op **async generator** (``return`` then an unreachable
+    ``yield``) — this is the valid form expected by ADK (cf. agents.md).
     """
     class_name = _custom_class_name(spec.name)
     desc = _py_str(spec.description) if spec.description else _py_str("")
     class_block = (
         f"class {class_name}(BaseAgent):\n"
-        f'    """Agent custom généré (stub). Complétez `_run_async_impl`."""\n'
+        f'    """Generated custom agent (stub). Fill in `_run_async_impl`."""\n'
         "\n"
         "    async def _run_async_impl(self, ctx):\n"
-        "        # TODO: implémenter la logique de l'agent.\n"
+        "        # TODO: implement the agent's logic.\n"
         "        return\n"
-        "        yield  # rend cette méthode un async generator (inatteignable)\n"
+        "        yield  # makes this method an async generator (unreachable)\n"
     )
     instance_block = f"{spec.name} = {class_name}(name={_py_str(spec.name)}, description={desc})\n"
     return class_block, instance_block
 
 
 def _render_agent_blocks(spec: AgentSpec) -> list[str]:
-    """Retourne la liste de blocs de code (1 ou 2) pour un agent donné.
+    """Return the list of code blocks (1 or 2) for a given agent.
 
-    Un agent ``custom`` émet deux blocs distincts (classe + instance) afin que le
-    renderer de module puisse insérer le bon nombre de lignes vides entre eux.
-    Tous les autres types émettent un seul bloc d'assignation.
+    A ``custom`` agent emits two distinct blocks (class + instance) so the module renderer can
+    insert the right number of blank lines between them. All other types emit a single assignment
+    block.
     """
     if spec.type == "llm":
         return [_render_llm(spec)]
@@ -355,15 +355,15 @@ def _render_agent_blocks(spec: AgentSpec) -> list[str]:
     if spec.type == "custom":
         class_block, instance_block = _render_custom(spec)
         return [class_block, instance_block]
-    raise ValueError(f"Type d'agent non rendu : {spec.type!r}")  # pragma: no cover
+    raise ValueError(f"Unrendered agent type: {spec.type!r}")  # pragma: no cover
 
 
 def _render_agent(spec: AgentSpec) -> str:
-    """Aiguille vers le renderer du bon type — retourne un seul bloc de texte.
+    """Dispatch to the renderer for the right type — returns a single block of text.
 
-    Note: pour un agent ``custom``, le bloc unique inclut la classe *et* l'instance
-    séparées par une ligne vide interne. Utiliser ``_render_agent_blocks`` (liste) quand
-    on a besoin du contrôle fin des espacements inter-blocs dans le module complet.
+    Note: for a ``custom`` agent, the single block includes the class *and* the instance
+    separated by an internal blank line. Use ``_render_agent_blocks`` (list) when fine-grained
+    control of inter-block spacing in the complete module is needed.
     """
     if spec.type == "custom":
         class_block, instance_block = _render_custom(spec)
@@ -373,11 +373,11 @@ def _render_agent(spec: AgentSpec) -> str:
 
 
 def _needed_agent_imports(model: ProjectModel) -> list[str]:
-    """Classes d'agents ADK importées **depuis ``google.adk.agents``**, dans l'ordre canonique.
+    """ADK agent classes imported **from ``google.adk.agents``**, in canonical order.
 
-    ``remote_a2a`` est EXCLU : ``RemoteA2aAgent`` vit dans un sous-module distinct
-    (:data:`~adk_toolkit_mcp.project_model.specs._REMOTE_A2A_IMPORT`) et son import est ajouté
-    séparément par :func:`render_agent_module`.
+    ``remote_a2a`` is EXCLUDED: ``RemoteA2aAgent`` lives in a separate submodule
+    (:data:`~adk_toolkit_mcp.project_model.specs._REMOTE_A2A_IMPORT`) and its import is added
+    separately by :func:`render_agent_module`.
     """
     used: set[str] = set()
     for a in model.agents:
@@ -389,16 +389,16 @@ def _needed_agent_imports(model: ProjectModel) -> list[str]:
 
 
 def _uses_remote_a2a(model: ProjectModel) -> bool:
-    """Vrai si au moins un agent du modèle est de type ``remote_a2a`` (proxy A2A)."""
+    """True if at least one agent in the model is of type ``remote_a2a`` (A2A proxy)."""
     return any(a.type == "remote_a2a" for a in model.agents)
 
 
 def _collect_tool_renders(ordered: list[AgentSpec]) -> list[ToolRender]:
-    """Rend tous les outils des agents (dans l'ordre topo fourni) en une liste de ``ToolRender``.
+    """Render all the agents' tools (in the provided topo order) into a list of ``ToolRender``.
 
-    L'ordre topologique garantit qu'un ``agent_tool`` ciblant un agent voit cet agent défini
-    avant l'agent enveloppant (les helpers d'outils sont émis avant *tous* les agents, mais la
-    cible étant elle-même un agent, son instance précède l'enveloppant dans la section agents).
+    The topological order guarantees that an ``agent_tool`` targeting an agent sees that agent
+    defined before the wrapping agent (the tool helpers are emitted before *all* the agents, but
+    the target being itself an agent, its instance precedes the wrapper in the agents section).
     """
     renders: list[ToolRender] = []
     for spec in ordered:
@@ -408,11 +408,11 @@ def _collect_tool_renders(ordered: list[AgentSpec]) -> list[ToolRender]:
 
 
 def _collect_callback_renders(ordered: list[AgentSpec]) -> list[ToolRender]:
-    """Rend tous les garde-fous (callbacks) des agents en une liste de ``ToolRender``.
+    """Render all the agents' guardrails (callbacks) into a list of ``ToolRender``.
 
-    Les fonctions de garde-fou sont des ``def`` top-level émis AVANT les agents (l'agent les
-    référence par nom via son kwarg). Si au moins une politique requiert le helper partagé
-    ``_user_text``, celui-ci est inséré en tête (une seule fois).
+    The guardrail functions are top-level ``def`` emitted BEFORE the agents (the agent references
+    them by name via its kwarg). If at least one policy requires the shared helper ``_user_text``,
+    it is inserted at the top (only once).
     """
     renders: list[ToolRender] = []
     needs_user_text = False
@@ -422,9 +422,9 @@ def _collect_callback_renders(ordered: list[AgentSpec]) -> list[ToolRender]:
             renders.append(render_callback(cb, spec.name))
             needs_user_text = needs_user_text or callback_needs_user_text(cb)
             needs_refuse = needs_refuse or callback_needs_refuse(cb)
-    # Helpers partagés émis UNE seule fois, en tête (ordre : _user_text puis _refuse). Les
-    # garde-fous ``before_model`` les appellent par nom ; ``_refuse`` porte les imports
-    # ``LlmResponse``/``types`` (remontés à la section d'imports du module).
+    # Shared helpers emitted ONCE, at the top (order: _user_text then _refuse). The
+    # ``before_model`` guardrails call them by name; ``_refuse`` carries the ``LlmResponse``/
+    # ``types`` imports (lifted to the module's import section).
     prelude: list[ToolRender] = []
     if needs_user_text:
         prelude.append(user_text_helper_render())
@@ -434,10 +434,10 @@ def _collect_callback_renders(ordered: list[AgentSpec]) -> list[ToolRender]:
 
 
 def _collect_model_imports(ordered: list[AgentSpec]) -> list[str]:
-    """Collecte les imports supplémentaires liés au rendu du modèle (LiteLlm, types, os).
+    """Collect the extra imports related to model rendering (LiteLlm, types, os).
 
-    Appelle :func:`_render_litellm_model` / :func:`_render_generate_content_config` directement
-    (sans re-rendre le bloc LlmAgent entier) pour éviter la duplication.
+    Calls :func:`_render_litellm_model` / :func:`_render_generate_content_config` directly
+    (without re-rendering the whole LlmAgent block) to avoid duplication.
     """
     imports: list[str] = []
     for spec in ordered:
@@ -452,7 +452,7 @@ def _collect_model_imports(ordered: list[AgentSpec]) -> list[str]:
 
 
 def _dedup_preserve(items: list[str]) -> list[str]:
-    """Déduplique en préservant l'ordre de première apparition."""
+    """Deduplicate while preserving first-appearance order."""
     seen: set[str] = set()
     out: list[str] = []
     for it in items:
@@ -463,14 +463,14 @@ def _dedup_preserve(items: list[str]) -> list[str]:
 
 
 def _agent_import_line(model: ProjectModel) -> str:
-    """Ligne d'import des classes d'agents (vide si aucune classe agent utilisée).
+    """Import line for the agent classes (empty if no agent class is used).
 
-    Les **noms importés sont triés** comme l'exige la règle isort de ruff (``I001``) : tri
-    ``sorted()`` standard (sensible à la casse / ordinal — vérifié contre ``ruff check
-    --select I``), identique au tri appliqué aux imports d'outils/modèle par
-    :func:`_render_import_line`. ``_needed_agent_imports`` conserve l'ordre canonique ADK pour
-    la sémantique interne ; seule l'**émission** est triée pour que le ``agent.py`` généré soit
-    isort-clean (et pas seulement format-clean).
+    The **imported names are sorted** as ruff's isort rule (``I001``) requires: a standard
+    ``sorted()`` (case-sensitive / ordinal — verified against ``ruff check --select I``),
+    identical to the sorting applied to the tool/model imports by :func:`_render_import_line`.
+    ``_needed_agent_imports`` keeps the ADK canonical order for the internal semantics; only the
+    **emission** is sorted so the generated ``agent.py`` is isort-clean (and not just
+    format-clean).
     """
     imports = _needed_agent_imports(model)
     if not imports:
@@ -479,11 +479,11 @@ def _agent_import_line(model: ProjectModel) -> str:
 
 
 def _merge_tool_imports(import_stmts: list[str]) -> list[str]:
-    """Fusionne/trie des ``from <module> import <name>`` façon isort (stable pour ruff ``I``).
+    """Merge/sort ``from <module> import <name>`` lines isort-style (stable for ruff ``I``).
 
-    - Regroupe par module ; fusionne les noms (dédupliqués, triés) sur une seule ligne.
-    - Trie les modules par ordre alphabétique.
-    Toute ligne non reconnue (improbable ici) est conservée telle quelle, en tête.
+    - Groups by module; merges the names (deduplicated, sorted) onto a single line.
+    - Sorts the modules alphabetically.
+    Any unrecognized line (unlikely here) is kept as-is, at the top.
     """
     by_module: dict[str, set[str]] = {}
     passthrough: list[str] = []
@@ -503,11 +503,11 @@ def _merge_tool_imports(import_stmts: list[str]) -> list[str]:
 
 
 def _render_import_line(module: str, names: list[str]) -> str:
-    """Rend ``from <module> import a, b`` **stable pour ``ruff format``**.
+    """Render ``from <module> import a, b`` **stable for ``ruff format``**.
 
-    Inline si la ligne tient dans :data:`LINE_LENGTH` ; sinon, forme parenthésée multi-lignes
-    (un nom par ligne, indent 4, virgule finale) — exactement ce que ``ruff format`` produit
-    au-delà de la limite pour un import à noms multiples.
+    Inline if the line fits in :data:`LINE_LENGTH`; otherwise, a multi-line parenthesized form
+    (one name per line, indent 4, trailing comma) — exactly what ``ruff format`` produces beyond
+    the limit for a multi-name import.
     """
     inline = f"from {module} import {', '.join(names)}"
     if len(inline) <= LINE_LENGTH:
@@ -517,49 +517,49 @@ def _render_import_line(module: str, names: list[str]) -> str:
 
 
 # --------------------------------------------------------------------------- #
-# Rendu de source — module complet
+# Source rendering — complete module
 # --------------------------------------------------------------------------- #
 def render_agent_module(model: ProjectModel) -> str:
-    """Produit une source ``agent.py`` valide à partir du modèle.
+    """Produce valid ``agent.py`` source from the model.
 
-    - Importe uniquement les classes utilisées (ordre canonique).
-    - Définit chaque agent comme variable de module, **triées topologiquement** (un
-      enfant avant son parent). Cycle -> ``ValueError``.
-    - Omet les kwargs vides/None.
-    - Termine par ``root_agent = <root>`` (ou un commentaire clair si racine non définie).
+    - Imports only the used classes (canonical order).
+    - Defines each agent as a module variable, **topologically sorted** (a child before its
+      parent). Cycle -> ``ValueError``.
+    - Omits empty/None kwargs.
+    - Ends with ``root_agent = <root>`` (or a clear comment if the root is undefined).
     """
     header = (
-        '"""Généré par adk-toolkit-mcp. NE PAS éditer à la main : '
-        "régénéré depuis le sidecar.\n\n"
-        "Source de vérité : `.adk_toolkit/agents.json`.\n"
+        '"""Generated by adk-toolkit-mcp. DO NOT edit by hand: '
+        "regenerated from the sidecar.\n\n"
+        "Source of truth: `.adk_toolkit/agents.json`.\n"
         '"""\n\n'
     )
 
     if not model.agents:
-        body = "# Aucun agent défini dans le modèle.\n"
-        root_line = "# root_agent non défini : ajoutez un agent puis appelez set_root.\n"
+        body = "# No agent defined in the model.\n"
+        root_line = "# root_agent undefined: add an agent then call set_root.\n"
         return header + body + "\n" + root_line
 
-    ordered = topological_order(model)  # peut lever ValueError (cycle)
+    ordered = topological_order(model)  # may raise ValueError (cycle)
 
-    # Rendu des outils (imports + helpers + refs) dans l'ordre topo des agents propriétaires.
+    # Render the tools (imports + helpers + refs) in the topo order of the owning agents.
     tool_renders = _collect_tool_renders(ordered)
     tool_helpers = [helper for tr in tool_renders for helper in tr.helpers]
 
-    # Rendu des garde-fous (callbacks, P4c) : defs top-level émis avant les agents + leurs imports.
+    # Render the guardrails (callbacks, P4c): top-level defs emitted before the agents + imports.
     callback_renders = _collect_callback_renders(ordered)
     callback_helpers = [helper for cr in callback_renders for helper in cr.helpers]
 
-    # Imports supplémentaires du rendu modèle (LiteLlm, types, os).
+    # Extra imports from model rendering (LiteLlm, types, os).
     model_imports = _collect_model_imports(ordered)
 
-    # Section d'imports — entièrement **isort-clean** (ruff ``I001``), pas seulement
-    # format-clean. La ligne des classes d'agents (``from google.adk.agents import ...``) est
-    # fusionnée avec les imports d'outils + modèle puis triée **par module** comme tout le reste
-    # (isort range tout le third-party en un seul bloc alphabétique : ``crewai_tools`` <
-    # ``google.adk.*`` < ``langchain_community`` < ``mcp`` …). Les noms à l'intérieur de chaque
-    # ``from X import a, b`` sont triés via :func:`_render_import_line`. Les imports stdlib (ex.
-    # ``import os``) forment une section séparée placée **avant** le third-party (isort).
+    # Import section — fully **isort-clean** (ruff ``I001``), not just format-clean. The agent
+    # classes line (``from google.adk.agents import ...``) is merged with the tool + model
+    # imports then sorted **by module** like everything else (isort puts all third-party in a
+    # single alphabetical block: ``crewai_tools`` < ``google.adk.*`` < ``langchain_community`` <
+    # ``mcp`` …). The names inside each ``from X import a, b`` are sorted via
+    # :func:`_render_import_line`. The stdlib imports (e.g. ``import os``) form a separate section
+    # placed **before** the third-party (isort).
     agent_import_stmt = _agent_import_line(model).rstrip("\n")
     all_tool_and_model_imports = (
         [imp for tr in tool_renders for imp in tr.imports]
@@ -568,13 +568,13 @@ def render_agent_module(model: ProjectModel) -> str:
     )
     if agent_import_stmt:
         all_tool_and_model_imports.append(agent_import_stmt)
-    # RemoteA2aAgent (P4b) vit dans un sous-module dédié : son import est ajouté ici puis trié
-    # par module avec tout le reste par ``_merge_tool_imports`` (isort-clean).
+    # RemoteA2aAgent (P4b) lives in a dedicated submodule: its import is added here then sorted by
+    # module with everything else by ``_merge_tool_imports`` (isort-clean).
     if _uses_remote_a2a(model):
         all_tool_and_model_imports.append(_REMOTE_A2A_IMPORT)
     merged = _merge_tool_imports(all_tool_and_model_imports)
 
-    # Sépare stdlib plain-imports (ex. ``import os``) des ``from <module> import ...`` third-party.
+    # Separate stdlib plain-imports (e.g. ``import os``) from third-party ``from <module> import``.
     stdlib_imports: list[str] = []
     thirdparty_imports: list[str] = []
     for stmt in merged:
@@ -583,8 +583,8 @@ def render_agent_module(model: ProjectModel) -> str:
         else:
             thirdparty_imports.append(stmt)
 
-    # Ordre final : section stdlib (triée) si présente, un saut de ligne, puis le third-party
-    # déjà trié par module par :func:`_merge_tool_imports` (qui inclut la ligne des agents).
+    # Final order: stdlib section (sorted) if present, a blank line, then the third-party already
+    # sorted by module by :func:`_merge_tool_imports` (which includes the agents line).
     import_lines: list[str] = []
     if stdlib_imports:
         import_lines.extend(sorted(stdlib_imports))
@@ -593,9 +593,9 @@ def render_agent_module(model: ProjectModel) -> str:
 
     import_block = ("\n".join(import_lines) + "\n\n") if import_lines else ""
 
-    # Blocs top-level : helpers d'outils, PUIS garde-fous (callbacks), PUIS les agents (qui
-    # référencent les fonctions de garde-fou par nom). Chaque agent émet 1 bloc (llm/workflow/
-    # loop) ou 2 (custom : classe + instance).
+    # Top-level blocks: tool helpers, THEN guardrails (callbacks), THEN the agents (which
+    # reference the guardrail functions by name). Each agent emits 1 block (llm/workflow/loop) or
+    # 2 (custom: class + instance).
     agent_blocks: list[str] = []
     for spec in ordered:
         agent_blocks.extend(_render_agent_blocks(spec))
@@ -632,23 +632,21 @@ def render_agent_module(model: ProjectModel) -> str:
     if model.root is not None and model.get(model.root) is not None:
         root_line = f"\nroot_agent = {model.root}\n"
     elif model.root is not None:
-        root_line = (
-            f"\n# root '{model.root}' introuvable parmi les agents ; root_agent non défini.\n"
-        )
+        root_line = f"\n# root '{model.root}' not found among the agents; root_agent undefined.\n"
     else:
-        root_line = "\n# root_agent non défini : appelez set_root pour désigner la racine.\n"
+        root_line = "\n# root_agent undefined: call set_root to designate the root.\n"
 
     return header + import_block + blocks + root_line
 
 
 # --------------------------------------------------------------------------- #
-# Régénération sur disque
+# On-disk regeneration
 # --------------------------------------------------------------------------- #
 def regenerate(ws: Workspace, model: ProjectModel) -> dict[str, Any]:
-    """Écrit ``agent.py`` (rendu) + assure ``__init__.py``. Idempotent.
+    """Write ``agent.py`` (rendered) + ensure ``__init__.py``. Idempotent.
 
-    Renvoie ``{"agent_py", "init_py", "changed"}`` (chemins absolus, drapeau global).
-    Peut lever ``ValueError`` (cycle) — l'outil appelant le convertit en ``err``.
+    Returns ``{"agent_py", "init_py", "changed"}`` (absolute paths, global flag). May raise
+    ``ValueError`` (cycle) — the calling tool converts it to ``err``.
     """
     source = render_agent_module(model)
     agent_changed = ws.write("agent.py", source)

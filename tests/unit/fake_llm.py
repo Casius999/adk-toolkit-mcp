@@ -1,15 +1,15 @@
-"""Modèles ``BaseLlm`` factices pour prouver l'exécution d'agents ADK **hors-ligne**.
+"""Fake ``BaseLlm`` models to prove ADK agent execution **offline**.
 
-Aucune clé API n'est requise : ``generate_content_async`` (un async generator côté ADK) renvoie
-des ``LlmResponse`` canned. Deux modèles :
+No API key required: ``generate_content_async`` (an async generator on the ADK side) returns
+canned ``LlmResponse`` objects. Two models:
 
-- :class:`FakeLlm` — renvoie toujours une unique réponse texte finale (``answer``).
-- :class:`ScriptedLlm` — premier tour : un ``function_call`` vers ``tool_name`` avec
-  ``tool_args`` ; tours suivants : la réponse texte finale (``final_text``).
+- :class:`FakeLlm` — always returns a single final text response (``answer``).
+- :class:`ScriptedLlm` — first turn: a ``function_call`` to ``tool_name`` with ``tool_args``;
+  subsequent turns: the final text response (``final_text``).
 
-``BaseLlm`` est un modèle pydantic : l'état de scénario est déclaré en champs pydantic. Ces
-classes sont importables depuis un ``agent.py`` généré (via ``sys.path``) pour prouver l'outil
-``run_agent`` monté de bout en bout, sans clé.
+``BaseLlm`` is a pydantic model: the scenario state is declared in pydantic fields. These classes
+are importable from a generated ``agent.py`` (via ``sys.path``) to prove the mounted ``run_agent``
+tool end to end, without a key.
 """
 
 from __future__ import annotations
@@ -22,14 +22,14 @@ from google.genai import types
 
 
 class FakeLlm(BaseLlm):
-    """Renvoie une unique réponse texte finale, quel que soit l'input (offline)."""
+    """Returns a single final text response, regardless of the input (offline)."""
 
     answer: str = "Hello from FakeLlm."
 
     async def generate_content_async(
         self, llm_request: LlmRequest, stream: bool = False
     ) -> AsyncGenerator[LlmResponse, None]:
-        """Émet exactement une ``LlmResponse`` finale portant ``answer`` (partial=False)."""
+        """Emit exactly one final ``LlmResponse`` carrying ``answer`` (partial=False)."""
         yield LlmResponse(
             content=types.Content(role="model", parts=[types.Part.from_text(text=self.answer)]),
             partial=False,
@@ -37,7 +37,7 @@ class FakeLlm(BaseLlm):
 
 
 class ScriptedLlm(BaseLlm):
-    """Tour 1 → un ``function_call`` ; tours suivants → réponse texte finale (offline)."""
+    """Turn 1 → a ``function_call``; subsequent turns → final text response (offline)."""
 
     tool_name: str = "add_numbers"
     tool_args: dict[str, Any] = {"a": 2, "b": 3}
@@ -47,7 +47,7 @@ class ScriptedLlm(BaseLlm):
     async def generate_content_async(
         self, llm_request: LlmRequest, stream: bool = False
     ) -> AsyncGenerator[LlmResponse, None]:
-        """Premier appel : function_call ; ensuite : texte final (boucle d'agent complète)."""
+        """First call: function_call; then: final text (a complete agent loop)."""
         self.calls += 1
         if self.calls == 1:
             yield LlmResponse(
@@ -67,5 +67,5 @@ class ScriptedLlm(BaseLlm):
 
 
 def add_numbers(a: int, b: int) -> int:
-    """Additionne deux entiers et renvoie la somme (outil ADK pour la preuve tool-call)."""
+    """Add two integers and return the sum (ADK tool for the tool-call proof)."""
     return a + b

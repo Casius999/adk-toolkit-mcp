@@ -1,14 +1,14 @@
-"""Tests du domaine ``tools`` : attache/validation/idempotence des outils, régénération, et
-**preuve fonctionnelle** que ``agent.py`` généré instancie de vrais objets ADK avec outils.
+"""Tests for the ``tools`` domain: tool attach/validation/idempotence, regeneration, and
+**functional proof** that the generated ``agent.py`` instantiates real ADK objects with tools.
 
-La preuve fonctionnelle importe le module généré dans un **subprocess** (le venv uv,
-``sys.executable``), lancé avec ``-W ignore::DeprecationWarning`` (les agents workflow émettent
-une ``DeprecationWarning`` en google-adk 2.1.0 — hors sujet ici). Outils **sans dépendance**
-uniquement (3a) : ``function`` + ``builtin`` ``google_search`` + ``agent_tool``.
+The functional proof imports the generated module in a **subprocess** (the uv venv,
+``sys.executable``), launched with ``-W ignore::DeprecationWarning`` (the workflow agents emit a
+``DeprecationWarning`` in google-adk 2.1.0 — off topic here). **No-dependency** tools only (3a):
+``function`` + ``builtin`` ``google_search`` + ``agent_tool``.
 
-Rappel clé (cf. ``docs/adk-api-notes/tools.md``) : un plain function reste de type ``function``
-dans le champ ``.tools`` brut après init ; il n'est wrappé en ``FunctionTool`` que par l'appel
-**asynchrone** ``canonical_tools()``. On asserte donc sur les deux niveaux.
+Key reminder (cf. ``docs/adk-api-notes/tools.md``): a plain function stays of type ``function`` in
+the raw ``.tools`` field after init; it is only wrapped in a ``FunctionTool`` by the **async**
+``canonical_tools()`` call. So we assert at both levels.
 """
 
 from __future__ import annotations
@@ -80,11 +80,11 @@ def test_add_function_appends_spec_and_renders_def(tmp_path: Path) -> None:
     )
     assert res["ok"] is True, res["error"]
     src = _agent_src(tmp_path, "demo")
-    # def généré avec signature typée + docstring, référencé bare dans tools=[...].
+    # generated def with typed signature + docstring, referenced bare in tools=[...].
     assert "def add(a: int, b: int = 0) -> dict:" in src
     assert '"""Add two integers."""' in src
     assert "add" in src and "tools=[" in src
-    # listé via tools_list.
+    # listed via tools_list.
     listing = list_tools_for_agent(str(tmp_path), "demo", "root")
     kinds = [t["kind"] for t in listing["data"]["tools"]]
     assert kinds == ["function"]
@@ -122,8 +122,8 @@ def test_add_function_replace_by_name_is_idempotent(tmp_path: Path) -> None:
     assert first["ok"] is True
     again = add_function(str(tmp_path), "demo", "root", "f", params=[], docstring="v1")
     assert again["ok"] is True
-    assert again["data"]["changed"] is False  # contenu identique -> rien réécrit
-    # Toujours un seul outil (remplacement par nom, pas de doublon).
+    assert again["data"]["changed"] is False  # identical content -> nothing rewritten
+    # Still a single tool (replacement by name, no duplicate).
     listing = list_tools_for_agent(str(tmp_path), "demo", "root")
     assert len(listing["data"]["tools"]) == 1
 
@@ -173,7 +173,7 @@ def test_add_builtin_core_renders_bare_name_and_import(tmp_path: Path) -> None:
     assert res["ok"] is True, res["error"]
     src = _agent_src(tmp_path, "demo")
     assert "from google.adk.tools import google_search" in src
-    assert "google_search" in src.split("root = LlmAgent(")[1]  # référencé dans l'agent
+    assert "google_search" in src.split("root = LlmAgent(")[1]  # referenced in the agent
 
 
 def test_add_builtin_rejects_unknown_kind(tmp_path: Path) -> None:
@@ -221,7 +221,7 @@ def test_add_agent_tool_wraps_existing_agent(tmp_path: Path) -> None:
     src = _agent_src(tmp_path, "demo")
     assert "AgentTool(agent=helper)" in src
     assert "from google.adk.tools import AgentTool" in src
-    # helper défini avant root (ordre topo : la cible précède l'enveloppant).
+    # helper defined before root (topo order: the target precedes the wrapper).
     assert src.index("helper = LlmAgent(") < src.index("root = LlmAgent(")
 
 
@@ -239,12 +239,12 @@ def test_add_agent_tool_rejects_self_reference(tmp_path: Path) -> None:
 
 
 def test_add_agent_tool_does_not_add_target_as_sub_agent(tmp_path: Path) -> None:
-    # Règle parent unique : l'agent enveloppé en outil ne doit PAS devenir un sub_agent.
+    # Single-parent rule: the agent wrapped as a tool must NOT become a sub_agent.
     create_llm(str(tmp_path), "demo", "root", instruction="Delegate.")
     create_llm(str(tmp_path), "demo", "helper", instruction="Help.")
     add_agent_tool(str(tmp_path), "demo", "root", "helper")
     src = _agent_src(tmp_path, "demo")
-    # root ne référence helper que via AgentTool, pas via sub_agents.
+    # root references helper only via AgentTool, not via sub_agents.
     root_block = src.split("root = LlmAgent(")[1]
     assert "sub_agents=" not in root_block.split(")")[0]
 
@@ -258,11 +258,11 @@ def test_add_openapi_builds_toolset_and_refs_it(tmp_path: Path) -> None:
     assert res["ok"] is True, res["error"]
     src = _agent_src(tmp_path, "demo")
     assert "from google.adk.tools.openapi_tool import OpenAPIToolset" in src
-    # La construction peut être repliée par ruff si la spec est longue (inline ou multi-ligne).
+    # The construction may be folded by ruff if the spec is long (inline or multi-line).
     assert "petstore = OpenAPIToolset(" in src
     assert "spec_str=" in src
     assert 'spec_str_type="json"' in src
-    # le toolset (variable) est référencé bare dans tools=[...].
+    # the toolset (variable) is referenced bare in tools=[...].
     assert "petstore" in src.split("root = LlmAgent(")[1]
 
 
@@ -293,7 +293,7 @@ def test_add_bigquery_default_name_and_args(tmp_path: Path) -> None:
     assert res["ok"] is True, res["error"]
     src = _agent_src(tmp_path, "demo")
     assert "root_bigquery = BigQueryToolset(" in src
-    # args sont des expressions source (référence de variable), pas des littéraux chaîne.
+    # args are source expressions (variable references), not string literals.
     assert "bigquery_tool_config=my_cfg" in src
 
 
@@ -451,7 +451,7 @@ def test_add_crewai_rejects_missing_name(tmp_path: Path) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# 3b : set_auth (attache une sous-spec auth à un toolset existant)
+# 3b: set_auth (attaches an auth sub-spec to an existing toolset)
 # --------------------------------------------------------------------------- #
 def test_set_auth_injects_apikey_on_openapi(tmp_path: Path) -> None:
     create_llm(str(tmp_path), "demo", "root")
@@ -506,7 +506,7 @@ def test_set_auth_rejects_unknown_target(tmp_path: Path) -> None:
 
 
 def test_set_auth_rejects_non_auth_capable_target(tmp_path: Path) -> None:
-    # bigquery n'accepte pas l'auth -> set_auth doit refuser.
+    # bigquery does not accept auth -> set_auth must refuse.
     create_llm(str(tmp_path), "demo", "root")
     add_bigquery(str(tmp_path), "demo", "root", name="bq")
     res = set_auth(
@@ -517,7 +517,7 @@ def test_set_auth_rejects_non_auth_capable_target(tmp_path: Path) -> None:
 
 
 def test_set_auth_rejects_function_tool_target(tmp_path: Path) -> None:
-    # set_auth ne s'applique qu'aux toolsets (par variable), pas à une function-tool.
+    # set_auth only applies to toolsets (by variable), not to a function-tool.
     create_llm(str(tmp_path), "demo", "root")
     add_function(str(tmp_path), "demo", "root", "f", params=[], docstring="d")
     res = set_auth(str(tmp_path), "demo", "root", "f", scheme="apikey", credential={"api_key": "k"})
@@ -546,7 +546,7 @@ def test_set_auth_rejects_missing_agent(tmp_path: Path) -> None:
         str(tmp_path), "demo", "ghost", "hub", scheme="apikey", credential={"api_key": "k"}
     )
     assert res["ok"] is False
-    assert "introuvable" in res["error"]
+    assert "not found" in res["error"]
 
 
 def test_set_auth_rejects_apikey_without_api_key(tmp_path: Path) -> None:
@@ -565,18 +565,18 @@ def test_set_auth_is_idempotent(tmp_path: Path) -> None:
     )
     assert again["ok"] is True
     assert again["data"]["changed"] is False
-    # Toujours un seul outil.
+    # Still a single tool.
     listing = list_tools_for_agent(str(tmp_path), "demo", "root")
     assert len(listing["data"]["tools"]) == 1
 
 
 # --------------------------------------------------------------------------- #
-# Garde-fous communs : agent inexistant / mauvais type / corrompu
+# Common guardrails: nonexistent agent / wrong type / corrupt
 # --------------------------------------------------------------------------- #
 def test_attach_rejects_missing_agent(tmp_path: Path) -> None:
     res = add_builtin(str(tmp_path), "demo", "ghost", "google_search")
     assert res["ok"] is False
-    assert "introuvable" in res["error"]
+    assert "not found" in res["error"]
 
 
 def test_attach_rejects_non_llm_agent(tmp_path: Path) -> None:
@@ -717,7 +717,7 @@ def test_list_tools_reports_each_kind(tmp_path: Path) -> None:
     assert listing["ok"] is True
     kinds = [t["kind"] for t in listing["data"]["tools"]]
     assert kinds == ["function", "builtin", "agent_tool"]
-    # Le résumé function expose les params typés.
+    # The function summary exposes the typed params.
     fn = listing["data"]["tools"][0]
     assert fn["name"] == "compute"
     assert fn["params"] == [{"name": "x", "type": "str", "default": None}]
@@ -736,7 +736,7 @@ def test_list_tools_rejects_missing_agent(tmp_path: Path) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# Stabilité de format ruff — agent.py avec function tools + agent custom
+# ruff format stability — agent.py with function tools + a custom agent
 # --------------------------------------------------------------------------- #
 def _ruff_exe() -> str | None:
     import shutil
@@ -749,8 +749,8 @@ def _ruff_exe() -> str | None:
 
 
 def test_generated_agent_py_is_ruff_format_stable(tmp_path: Path) -> None:
-    """Un agent.py avec function tools + builtin + agent_tool + agent custom passe
-    ``ruff format --check`` (la sortie est déjà formatée)."""
+    """An agent.py with function tools + builtin + agent_tool + custom agent passes
+    ``ruff format --check`` (the output is already formatted)."""
     create_custom(str(tmp_path), "demo", "aux", description="Aux agent")
     create_llm(str(tmp_path), "demo", "child", instruction="Child.")
     create_llm(str(tmp_path), "demo", "root", instruction="Coordinate.")
@@ -773,25 +773,25 @@ def test_generated_agent_py_is_ruff_format_stable(tmp_path: Path) -> None:
     src = _agent_src(tmp_path, "demo")
     ruff = _ruff_exe()
     if ruff is None:
-        pytest.skip("ruff introuvable dans l'environnement — test de format ignoré")
+        pytest.skip("ruff not found in the environment — format test ignored")
     gen = tmp_path / "to_check.py"
     gen.write_text(src, encoding="utf-8")
     result = subprocess.run([ruff, "format", "--check", str(gen)], capture_output=True, text=True)
     assert result.returncode == 0, (
-        f"ruff format --check a échoué.\nStdout: {result.stdout}\nStderr: {result.stderr}\n"
-        f"Source générée :\n{src}"
+        f"ruff format --check failed.\nStdout: {result.stdout}\nStderr: {result.stderr}\n"
+        f"Generated source:\n{src}"
     )
 
 
 # --------------------------------------------------------------------------- #
-# PREUVE FONCTIONNELLE — instanciation réelle des objets ADK (subprocess)
+# FUNCTIONAL PROOF — real instantiation of the ADK objects (subprocess)
 # --------------------------------------------------------------------------- #
 def _probe_tools(project_path: str, app_name: str) -> dict[str, object]:
-    """Importe ``<app_name>.agent`` dans un subprocess et renvoie un résumé des outils.
+    """Import ``<app_name>.agent`` in a subprocess and return a summary of the tools.
 
-    Renvoie le **type brut** des entrées de ``root_agent.tools`` (après init) ET le type
-    **canonique** (après ``await canonical_tools()``), car un plain function n'est wrappé en
-    ``FunctionTool`` que lazily par ``canonical_tools`` (cf. docs/adk-api-notes/tools.md).
+    Returns the **raw type** of the ``root_agent.tools`` entries (after init) AND the **canonical**
+    type (after ``await canonical_tools()``), because a plain function is only wrapped in a
+    ``FunctionTool`` lazily by ``canonical_tools`` (cf. docs/adk-api-notes/tools.md).
     """
     code = (
         "import json,sys,asyncio;"
@@ -815,8 +815,8 @@ def _probe_tools(project_path: str, app_name: str) -> dict[str, object]:
 
 
 def test_functional_deps_free_tools_instantiate(tmp_path: Path) -> None:
-    """function + builtin google_search + agent_tool : le module généré instancie de vrais
-    objets ADK ; on vérifie le compte et les types (bruts + canoniques)."""
+    """function + builtin google_search + agent_tool: the generated module instantiates real
+    ADK objects; we check the count and the types (raw + canonical)."""
     create_llm(str(tmp_path), "probe_app", "root", instruction="Use tools.")
     create_llm(str(tmp_path), "probe_app", "helper", instruction="Help.")
     add_function(
@@ -839,14 +839,14 @@ def test_functional_deps_free_tools_instantiate(tmp_path: Path) -> None:
     info = _probe_tools(str(tmp_path), "probe_app")
     assert info["root_type"] == "LlmAgent"
     assert info["n_tools"] == 3
-    # Champ brut : la fonction reste 'function' ; le builtin est son instance ; AgentTool tel quel.
+    # Raw field: the function stays 'function'; the builtin is its instance; AgentTool as is.
     assert info["raw"] == ["function", "GoogleSearchTool", "AgentTool"]
-    # Canonique : la fonction est wrappée en FunctionTool ; les autres inchangés.
+    # Canonical: the function is wrapped in a FunctionTool; the others unchanged.
     assert info["canonical"] == ["FunctionTool", "GoogleSearchTool", "AgentTool"]
 
 
 # --------------------------------------------------------------------------- #
-# Mount wiring — client in-memory + preuve fonctionnelle bout-en-bout
+# Mount wiring — in-memory client + end-to-end functional proof
 # --------------------------------------------------------------------------- #
 @pytest.mark.asyncio
 async def test_tools_mounted_names_and_read_through(tmp_path: Path) -> None:
@@ -869,10 +869,10 @@ async def test_tools_mounted_names_and_read_through(tmp_path: Path) -> None:
             "tools_list",
         ):
             assert expected in tool_names, f"manquant: {expected}"
-        # Pas de double préfixe.
+        # No double prefix.
         assert not any(n.startswith("tools_tools_") for n in tool_names)
 
-        # Prépare un agent llm puis attache une function-tool via le client.
+        # Prepare an llm agent then attach a function-tool via the client.
         await client.call_tool(
             "agents_create_llm",
             {"path": str(tmp_path), "app_name": "client_app", "name": "root", "instruction": "Hi"},
@@ -896,7 +896,7 @@ async def test_tools_mounted_names_and_read_through(tmp_path: Path) -> None:
             {"path": str(tmp_path), "app_name": "client_app", "name": "root"},
         )
 
-    # Hors client : le module généré instancie un LlmAgent portant une function-tool.
+    # Outside the client: the generated module instantiates an LlmAgent carrying a function-tool.
     info = _probe_tools(str(tmp_path), "client_app")
     assert info["root_type"] == "LlmAgent"
     assert info["n_tools"] == 1
@@ -905,11 +905,11 @@ async def test_tools_mounted_names_and_read_through(tmp_path: Path) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# 3b : agent.py avec TOUS les genres optionnels — ast.parse + ruff format
-# (PAS d'import : les extras ne sont pas installés en CI ; cf. docs/adk-api-notes/tools.md)
+# 3b: agent.py with ALL the optional kinds — ast.parse + ruff format
+# (NO import: the extras are not installed in CI; cf. docs/adk-api-notes/tools.md)
 # --------------------------------------------------------------------------- #
 def _build_all_3b(tmp_path: Path) -> str:
-    """Construit un agent.py via les outils du domaine couvrant tous les genres 3b + auth."""
+    """Build an agent.py via the domain tools covering all the 3b kinds + auth."""
     create_llm(str(tmp_path), "deps", "root", instruction="Use 3b toolsets.")
     add_bigquery(str(tmp_path), "deps", "root", name="bq", args={"bigquery_tool_config": "bq_cfg"})
     add_spanner(str(tmp_path), "deps", "root", name="sp")
@@ -947,14 +947,14 @@ def _build_all_3b(tmp_path: Path) -> str:
 
 
 def test_all_3b_kinds_generate_valid_python(tmp_path: Path) -> None:
-    """L'agent.py contenant tous les genres 3b + auth est du Python valide (ast.parse).
+    """The agent.py containing all the 3b kinds + auth is valid Python (ast.parse).
 
-    On NE l'importe PAS (les extras google-adk ne sont pas installés en CI)."""
+    We do NOT import it (the google-adk extras are not installed in CI)."""
     import ast
 
     src = _build_all_3b(tmp_path)
-    ast.parse(src)  # SyntaxError si le rendu est cassé
-    # Imports + constructions clés présents.
+    ast.parse(src)  # SyntaxError if the rendering is broken
+    # Key imports + constructions present.
     assert "from google.adk.tools.bigquery import BigQueryToolset" in src
     assert "from google.adk.tools.spanner import SpannerToolset" in src
     assert "from google.adk.tools.mcp_tool import" in src
@@ -965,33 +965,33 @@ def test_all_3b_kinds_generate_valid_python(tmp_path: Path) -> None:
 
 
 def test_all_3b_kinds_ruff_format_stable(tmp_path: Path) -> None:
-    """L'agent.py avec tous les genres 3b + auth passe ``ruff format --check``."""
+    """The agent.py with all the 3b kinds + auth passes ``ruff format --check``."""
     src = _build_all_3b(tmp_path)
     ruff = _ruff_exe()
     if ruff is None:
-        pytest.skip("ruff introuvable dans l'environnement — test de format ignoré")
+        pytest.skip("ruff not found in the environment — format test ignored")
     gen = tmp_path / "to_check_3b.py"
     gen.write_text(src, encoding="utf-8")
     result = subprocess.run([ruff, "format", "--check", str(gen)], capture_output=True, text=True)
     assert result.returncode == 0, (
-        f"ruff format --check a échoué.\nStdout: {result.stdout}\nStderr: {result.stderr}\n"
-        f"Source générée :\n{src}"
+        f"ruff format --check failed.\nStdout: {result.stdout}\nStderr: {result.stderr}\n"
+        f"Generated source:\n{src}"
     )
 
 
 def test_mcp_toolset_functional_probe_if_available(tmp_path: Path) -> None:
-    """Preuve fonctionnelle OPTIONNELLE : si l'extra mcp est présent, l'agent.py s'instancie.
+    """OPTIONAL functional proof: if the mcp extra is present, the agent.py instantiates.
 
-    Gardé derrière ``find_spec`` -> SKIP si l'extra absent (CI sans extras). Le McpToolset est
-    sans dépendance lourde dans le venv de base (le paquet ``mcp`` y est déjà), mais on reste
-    défensif : on n'échoue jamais à cause d'un extra manquant.
+    Gated behind ``find_spec`` -> SKIP if the extra is absent (CI without extras). McpToolset has
+    no heavy dependency in the base venv (the ``mcp`` package is already there), but we stay
+    defensive: we never fail because of a missing extra.
     """
     import importlib.util
 
     if importlib.util.find_spec("google.adk.tools.mcp_tool") is None or (
         importlib.util.find_spec("mcp") is None
     ):
-        pytest.skip("extra mcp absent — preuve fonctionnelle ignorée")
+        pytest.skip("mcp extra absent — functional proof ignored")
 
     create_llm(str(tmp_path), "mcp_probe", "root", instruction="Use MCP.")
     add_mcp_toolset(
@@ -1020,7 +1020,7 @@ def test_mcp_toolset_functional_probe_if_available(tmp_path: Path) -> None:
         cwd=str(tmp_path),
     )
     if out.returncode != 0:
-        pytest.skip(f"instanciation MCP indisponible dans cet environnement : {out.stderr[:200]}")
+        pytest.skip(f"MCP instantiation unavailable in this environment: {out.stderr[:200]}")
     info = json.loads(out.stdout.strip().splitlines()[-1])
     assert info["root_type"] == "LlmAgent"
     assert info["raw"] == ["McpToolset"]

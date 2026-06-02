@@ -1,28 +1,28 @@
-"""Domaine `artifacts` : opère le service d'ARTIFACTS runtime d'ADK (P2b).
+"""`artifacts` domain: operates ADK's runtime ARTIFACTS service (P2b).
 
-Comme `sessions`/`memory`, ce domaine **instancie un vrai service d'artifacts ADK** et
-l'appelle de façon asynchrone. Le service concret (``InMemoryArtifactService`` /
-``GcsArtifactService``) est choisi par le backend persisté dans
-``<app_dir>/.adk_toolkit/runtime.json`` et fourni par la fabrique singleton
-:mod:`adk_toolkit_mcp.runtime` (l'instance ``in_memory`` est partagée entre appels d'outils).
+Like `sessions`/`memory`, this domain **instantiates a real ADK artifact service** and calls it
+asynchronously. The concrete service (``InMemoryArtifactService`` / ``GcsArtifactService``) is
+chosen by the backend persisted in ``<app_dir>/.adk_toolkit/runtime.json`` and provided by the
+singleton factory :mod:`adk_toolkit_mcp.runtime` (the ``in_memory`` instance is shared across tool
+calls).
 
-Sous-serveur FastMCP monté sous ``namespace="artifacts"`` → outils exposés ``artifacts_<nom>``.
-Fonctions à noms **BARE** (``service_set``, ``save``, ``load``, ``delete``, ``versions``).
-``list`` est un builtin Python : la fonction s'appelle ``list_artifacts_tool`` mais est
-enregistrée sous le nom d'outil bare ``list`` → exposée ``artifacts_list`` côté client.
+A FastMCP sub-server mounted under ``namespace="artifacts"`` → tools exposed as
+``artifacts_<name>``. Functions with **BARE** names (``service_set``, ``save``, ``load``,
+``delete``, ``versions``). ``list`` is a Python builtin: the function is called
+``list_artifacts_tool`` but is registered under the bare tool name ``list`` → exposed as
+``artifacts_list`` on the client side.
 
-Rappel ADK (cf. ``docs/adk-api-notes/memory-artifacts.md``) :
-- ``save_artifact(*, app_name, user_id, session_id, filename, artifact) -> int`` (version
-  0-indexée) ; ``artifact`` est une ``types.Part`` (construite via ``Part.from_text`` /
-  ``Part.from_bytes``).
-- ``load_artifact(..., version=None) -> Optional[Part]`` : ``.text`` pour du texte, sinon
+ADK reminder (cf. ``docs/adk-api-notes/memory-artifacts.md``):
+- ``save_artifact(*, app_name, user_id, session_id, filename, artifact) -> int`` (0-indexed
+  version); ``artifact`` is a ``types.Part`` (built via ``Part.from_text`` / ``Part.from_bytes``).
+- ``load_artifact(..., version=None) -> Optional[Part]``: ``.text`` for text, otherwise
   ``.inline_data`` (``data`` bytes + ``mime_type``). ``None`` ⇒ artifact absent.
 - ``list_artifact_keys`` / ``list_versions`` / ``delete_artifact``.
-- Un nom de fichier préfixé ``user:`` rend l'artifact **user-scoped** (partagé entre sessions).
+- A filename prefixed with ``user:`` makes the artifact **user-scoped** (shared across sessions).
 
-Chaque outil renvoie l'enveloppe ``{ok, data, error}`` ; les entrées invalides (ex. ni
-``text`` ni ``bytes_b64``, ou les deux), la config corrompue et les artifacts absents
-renvoient ``err(...)`` (jamais d'exception qui remonte).
+Each tool returns the ``{ok, data, error}`` envelope; invalid inputs (e.g. neither ``text`` nor
+``bytes_b64``, or both), a corrupt config and absent artifacts return ``err(...)`` (never an
+exception that propagates).
 """
 
 from __future__ import annotations
@@ -45,7 +45,7 @@ from ..runtime import (
 )
 from ..workspace import Workspace
 
-if TYPE_CHECKING:  # pragma: no cover - hints seulement
+if TYPE_CHECKING:  # pragma: no cover - hints only
     from google.adk.artifacts import BaseArtifactService
     from google.genai import types
 
@@ -53,19 +53,19 @@ artifacts_server: FastMCP = FastMCP("artifacts")
 
 
 # --------------------------------------------------------------------------- #
-# Helpers internes (non exposés)
+# Internal helpers (not exposed)
 # --------------------------------------------------------------------------- #
 def _app_ws(path: str, app_name: str) -> Workspace:
-    """Workspace pointant sur le dossier de l'app (``<path>/<app_name>``)."""
+    """Workspace pointing at the app folder (``<path>/<app_name>``)."""
     return Workspace(Path(path) / app_name)
 
 
 def _artifact_service_for(path: str, app_name: str) -> BaseArtifactService | dict[str, Any]:
-    """Renvoie le service d'artifacts (caché) configuré pour l'app, ou un ``err(...)``.
+    """Return the (cached) artifact service configured for the app, or an ``err(...)``.
 
-    ``err`` si la config est corrompue, si aucun backend artifacts n'a été choisi
-    (``artifacts_service_set`` non appelé), ou si le backend est invalide (champ requis
-    manquant / extra ``gcp`` absent).
+    ``err`` if the config is corrupt, if no artifacts backend has been chosen
+    (``artifacts_service_set`` not called), or if the backend is invalid (missing required field /
+    missing ``gcp`` extra).
     """
     ws = _app_ws(path, app_name)
     try:
@@ -73,10 +73,7 @@ def _artifact_service_for(path: str, app_name: str) -> BaseArtifactService | dic
     except ValueError as exc:
         return err(str(exc))
     if config.artifacts is None:
-        return err(
-            "Aucun service d'artifacts configuré pour cette app. "
-            "Appelle d'abord artifacts_service_set."
-        )
+        return err("No artifact service configured for this app. Call artifacts_service_set first.")
     try:
         return get_artifact_service(config.artifacts)
     except ValueError as exc:
@@ -84,11 +81,10 @@ def _artifact_service_for(path: str, app_name: str) -> BaseArtifactService | dic
 
 
 def _part_to_payload(part: types.Part, version: int | None) -> dict[str, Any]:
-    """Sérialise une ``Part`` chargée en payload : texte si dispo, sinon base64 + mime.
+    """Serialize a loaded ``Part`` into a payload: text if available, otherwise base64 + mime.
 
-    - Partie texte (``part.text``) → ``{"text": …, "mime_type": "text/plain", "encoding":
-      "text"}``.
-    - Partie binaire (``part.inline_data``) → ``{"bytes_b64": …, "mime_type": …, "encoding":
+    - Text part (``part.text``) → ``{"text": …, "mime_type": "text/plain", "encoding": "text"}``.
+    - Binary part (``part.inline_data``) → ``{"bytes_b64": …, "mime_type": …, "encoding":
       "base64"}``.
     """
     inline = getattr(part, "inline_data", None)
@@ -108,7 +104,7 @@ def _part_to_payload(part: types.Part, version: int | None) -> dict[str, Any]:
             "text": None,
             "bytes_b64": base64.b64encode(inline.data).decode("ascii"),
         }
-    # Part sans texte ni données inline (cas dégénéré) : renvoie une enveloppe minimale.
+    # Part with neither text nor inline data (degenerate case): return a minimal envelope.
     return {
         "version": version,
         "encoding": "empty",
@@ -119,26 +115,24 @@ def _part_to_payload(part: types.Part, version: int | None) -> dict[str, Any]:
 
 
 # --------------------------------------------------------------------------- #
-# Outils MCP
+# MCP tools
 # --------------------------------------------------------------------------- #
 @artifacts_server.tool(tags={"artifacts"})
 def service_set(path: str, app_name: str, kind: str, bucket: str | None = None) -> dict[str, Any]:
-    """Choisit et persiste le backend du service d'artifacts de l'app (``runtime.json``).
+    """Choose and persist the app's artifact service backend (``runtime.json``).
 
-    ``kind`` ∈ {``in_memory``, ``gcs``}. ``gcs`` exige ``bucket`` (extra ``gcp``).
+    ``kind`` ∈ {``in_memory``, ``gcs``}. ``gcs`` requires ``bucket`` (``gcp`` extra).
 
-    N'instancie PAS le service (validation de forme seulement) ; préserve les backends session
-    et memory déjà écrits. Renvoie la config artifacts persistée.
+    Does NOT instantiate the service (shape validation only); preserves the session and memory
+    backends already written. Returns the persisted artifacts config.
     """
     if kind not in ARTIFACT_KINDS:
-        return err(
-            f"kind invalide : {kind!r}. Attendu l'un de : {', '.join(sorted(ARTIFACT_KINDS))}."
-        )
+        return err(f"Invalid kind: {kind!r}. Expected one of: {', '.join(sorted(ARTIFACT_KINDS))}.")
     if kind == "gcs" and not (bucket and bucket.strip()):
-        return err("kind='gcs' nécessite 'bucket' (nom du bucket GCS).")
+        return err("kind='gcs' requires 'bucket' (the GCS bucket name).")
 
     ws = _app_ws(path, app_name)
-    backend = ArtifactBackend(kind=kind, bucket=bucket)  # type: ignore[arg-type]  # validé
+    backend = ArtifactBackend(kind=kind, bucket=bucket)  # type: ignore[arg-type]  # validated
     try:
         existing = load_runtime_config(ws, app_name)
     except ValueError:
@@ -168,18 +162,18 @@ async def save(
     bytes_b64: str | None = None,
     mime_type: str = "text/plain",
 ) -> dict[str, Any]:
-    """Enregistre un artifact (nouvelle version) et renvoie son numéro de version (int).
+    """Save an artifact (new version) and return its version number (int).
 
-    Fournir EXACTEMENT un parmi :
-    - ``text`` : construit ``Part.from_text(text=…)`` (``mime_type`` ignoré, toujours texte) ;
-    - ``bytes_b64`` : base64 décodé → ``Part.from_bytes(data=…, mime_type=…)``.
+    Provide EXACTLY one of:
+    - ``text``: builds ``Part.from_text(text=…)`` (``mime_type`` ignored, always text);
+    - ``bytes_b64``: base64 decoded → ``Part.from_bytes(data=…, mime_type=…)``.
 
-    Un ``filename`` préfixé ``user:`` rend l'artifact user-scoped (partagé entre sessions).
+    A ``filename`` prefixed with ``user:`` makes the artifact user-scoped (shared across sessions).
     """
     if not filename.strip():
-        return err("filename est vide.")
+        return err("filename is empty.")
     if (text is None) == (bytes_b64 is None):
-        return err("Fournis EXACTEMENT un de 'text' ou 'bytes_b64' (pas les deux, pas aucun).")
+        return err("Provide EXACTLY one of 'text' or 'bytes_b64' (not both, not neither).")
 
     service = _artifact_service_for(path, app_name)
     if isinstance(service, dict):
@@ -191,11 +185,11 @@ async def save(
         part = types.Part.from_text(text=text)
         stored_mime = "text/plain"
     else:
-        assert bytes_b64 is not None  # garanti par la validation XOR ci-dessus
+        assert bytes_b64 is not None  # guaranteed by the XOR validation above
         try:
             raw = base64.b64decode(bytes_b64, validate=True)
         except (binascii.Error, ValueError) as exc:
-            return err(f"bytes_b64 n'est pas du base64 valide : {exc}")
+            return err(f"bytes_b64 is not valid base64: {exc}")
         part = types.Part.from_bytes(data=raw, mime_type=mime_type)
         stored_mime = mime_type
 
@@ -227,13 +221,13 @@ async def load(
     filename: str,
     version: int | None = None,
 ) -> dict[str, Any]:
-    """Charge un artifact (dernière version par défaut, ou ``version`` précise).
+    """Load an artifact (latest version by default, or a specific ``version``).
 
-    Renvoie ``{version, encoding, mime_type, text, bytes_b64}`` : ``text`` si la part est
-    textuelle, sinon ``bytes_b64`` (base64) + ``mime_type``. Un artifact absent → ``err(...)``.
+    Returns ``{version, encoding, mime_type, text, bytes_b64}``: ``text`` if the part is textual,
+    otherwise ``bytes_b64`` (base64) + ``mime_type``. An absent artifact → ``err(...)``.
     """
     if not filename.strip():
-        return err("filename est vide.")
+        return err("filename is empty.")
 
     service = _artifact_service_for(path, app_name)
     if isinstance(service, dict):
@@ -248,7 +242,7 @@ async def load(
     )
     if part is None:
         return err(
-            f"Artifact introuvable : {filename!r} "
+            f"Artifact not found: {filename!r} "
             f"(app={app_name}, user={user_id}, session={session_id}, version={version})."
         )
 
@@ -261,10 +255,10 @@ async def load(
 async def list_artifacts_tool(
     path: str, app_name: str, user_id: str, session_id: str
 ) -> dict[str, Any]:
-    """Liste les noms d'artifacts pour ``(app_name, user_id, session_id)``.
+    """List the artifact names for ``(app_name, user_id, session_id)``.
 
-    Nommée ``list_artifacts_tool`` en Python (``list`` est un builtin) mais enregistrée sous le
-    nom d'outil bare ``list`` → exposée ``artifacts_list`` côté client.
+    Named ``list_artifacts_tool`` in Python (``list`` is a builtin) but registered under the bare
+    tool name ``list`` → exposed as ``artifacts_list`` on the client side.
     """
     service = _artifact_service_for(path, app_name)
     if isinstance(service, dict):
@@ -287,10 +281,10 @@ async def list_artifacts_tool(
 async def delete(
     path: str, app_name: str, user_id: str, session_id: str, filename: str
 ) -> dict[str, Any]:
-    """Supprime toutes les versions d'un artifact. Renvoie le nom supprimé (idempotent côté
-    service)."""
+    """Delete all versions of an artifact. Returns the deleted name (idempotent on the service
+    side)."""
     if not filename.strip():
-        return err("filename est vide.")
+        return err("filename is empty.")
 
     service = _artifact_service_for(path, app_name)
     if isinstance(service, dict):
@@ -313,9 +307,9 @@ async def delete(
 async def versions(
     path: str, app_name: str, user_id: str, session_id: str, filename: str
 ) -> dict[str, Any]:
-    """Renvoie la liste des numéros de version d'un artifact (``list_versions``)."""
+    """Return the list of an artifact's version numbers (``list_versions``)."""
     if not filename.strip():
-        return err("filename est vide.")
+        return err("filename is empty.")
 
     service = _artifact_service_for(path, app_name)
     if isinstance(service, dict):

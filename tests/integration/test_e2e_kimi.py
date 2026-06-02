@@ -33,7 +33,7 @@ from adk_toolkit_mcp.server import build_server
 _API_BASE = "https://integrate.api.nvidia.com/v1"
 _MODEL = "moonshotai/kimi-k2.6"
 _PROVIDER = "openai"  # the OpenAI-compatible litellm client, pointed at the custom base
-_QUESTION = "Quelle est la capitale de la France ? Réponds en une phrase."
+_QUESTION = "What is the capital of France? Answer in one sentence."
 
 #: Repo root = three levels up from this file (tests/integration/test_e2e_kimi.py).
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -102,7 +102,7 @@ async def test_kimi_k26_via_nvidia_nim_through_run_agent() -> None:
                 "path": path,
                 "app_name": app,
                 "name": "assistant",
-                "instruction": "Tu es un assistant concis. Réponds en une seule phrase.",
+                "instruction": "You are a concise assistant. Answer in a single sentence.",
             },
         )
         assert r.data["ok"] is True, f"agents_create_llm failed: {r.data}"

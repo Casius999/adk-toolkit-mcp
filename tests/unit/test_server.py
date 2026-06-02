@@ -1,14 +1,14 @@
-"""Tests du serveur racine : mode outils-directs (défaut) vs Code Mode (P6a), et tags par domaine.
+"""Root server tests: direct-tools mode (default) vs Code Mode (P6a), and per-domain tags.
 
-- ``build_server()`` (défaut) expose les 81 outils par leur nom ``<domaine>_<bare>`` (aucune
-  régression) et chaque outil porte son tag de domaine.
-- ``build_server(code_mode=True)`` applique le VRAI transform FastMCP 3.3.1 et effondre la surface
-  en outils de découverte + ``execute`` — démontrant la réduction de tokens (81 → poignée).
-- ``code_mode_enabled()`` lit la variable d'env ``ADK_TOOLKIT_CODE_MODE``.
+- ``build_server()`` (default) exposes the 81 tools by their ``<domain>_<bare>`` name (no
+  regression) and each tool carries its domain tag.
+- ``build_server(code_mode=True)`` applies the REAL FastMCP 3.3.1 transform and collapses the
+  surface into discovery tools + ``execute`` — demonstrating the token reduction (81 → a handful).
+- ``code_mode_enabled()`` reads the ``ADK_TOOLKIT_CODE_MODE`` env variable.
 
-Les listes server-side (``mcp.list_tools()``) renvoient des ``fastmcp.tools.Tool`` qui portent
-``.tags`` ; le read-through client (``fastmcp.Client``) confirme la surface exposée et le tag
-remonté via ``_meta.fastmcp.tags``.
+The server-side lists (``mcp.list_tools()``) return ``fastmcp.tools.Tool`` objects that carry
+``.tags``; the client read-through (``fastmcp.Client``) confirms the exposed surface and the tag
+surfaced via ``_meta.fastmcp.tags``.
 """
 
 from __future__ import annotations
@@ -20,10 +20,10 @@ from fastmcp import Client, FastMCP
 
 from adk_toolkit_mcp.server import build_server, code_mode_enabled, main
 
-#: Nombre exact d'outils exposés en mode outils-directs (contrat de non-régression).
+#: Exact number of tools exposed in direct-tools mode (non-regression contract).
 _EXPECTED_TOOL_COUNT = 81
 
-#: Les 15 domaines montés (préfixe de namespace -> tag attendu).
+#: The 15 mounted domains (namespace prefix -> expected tag).
 _DOMAINS = (
     "project",
     "agents",
@@ -42,7 +42,7 @@ _DOMAINS = (
     "observability",
 )
 
-#: Échantillon de noms d'outils qui DOIVENT exister en mode outils-directs (un par domaine clé).
+#: Sample of tool names that MUST exist in direct-tools mode (one per key domain).
 _SAMPLE_NAMES = {
     "project_create",
     "agents_create_llm",
@@ -64,14 +64,14 @@ _SAMPLE_NAMES = {
 
 
 def _domain_of(tool_name: str) -> str:
-    """Renvoie le domaine d'un nom d'outil exposé (gère le namespace composé ``mcp_bridge``)."""
+    """Return the domain of an exposed tool name (handles the compound ``mcp_bridge`` namespace)."""
     if tool_name.startswith("mcp_bridge_"):
         return "mcp_bridge"
     return tool_name.split("_", 1)[0]
 
 
 # --------------------------------------------------------------------------- #
-# Construction de base
+# Basic construction
 # --------------------------------------------------------------------------- #
 def test_build_server_returns_fastmcp() -> None:
     assert isinstance(build_server(), FastMCP)
@@ -86,20 +86,20 @@ def test_main_is_callable() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# Mode outils-directs (défaut) : 81 outils, noms stables, tags par domaine
+# Direct-tools mode (default): 81 tools, stable names, per-domain tags
 # --------------------------------------------------------------------------- #
 async def test_default_mode_exposes_all_81_tools_by_name() -> None:
-    """Défaut : 81 outils exposés par nom (aucune régression) + un échantillon présent."""
+    """Default: 81 tools exposed by name (no regression) + a sample present."""
     async with Client(build_server()) as client:
         names = {t.name for t in await client.list_tools()}
     assert len(names) == _EXPECTED_TOOL_COUNT
     assert _SAMPLE_NAMES <= names
-    # Pas de double-préfixe (ex. project_project_create).
+    # No double prefix (e.g. project_project_create).
     assert not any(n.startswith(f"{d}_{d}_") for d in _DOMAINS for n in names)
 
 
 async def test_every_tool_carries_its_domain_tag() -> None:
-    """Chaque outil porte exactement son tag de domaine (inspection server-side ``.tags``)."""
+    """Each tool carries exactly its domain tag (server-side ``.tags`` inspection)."""
     tools = await build_server().list_tools()
     assert len(tools) == _EXPECTED_TOOL_COUNT
     mismatched = [
@@ -109,7 +109,7 @@ async def test_every_tool_carries_its_domain_tag() -> None:
 
 
 async def test_domain_tags_surface_to_client_via_meta() -> None:
-    """Le tag de domaine remonte au client MCP via ``_meta.fastmcp.tags``."""
+    """The domain tag surfaces to the MCP client via ``_meta.fastmcp.tags``."""
     async with Client(build_server()) as client:
         tools = await client.list_tools()
     by_name = {t.name: t for t in tools}
@@ -118,48 +118,48 @@ async def test_domain_tags_surface_to_client_via_meta() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# Code Mode (opt-in) : surface effondrée + atteignable
+# Code Mode (opt-in): collapsed + reachable surface
 # --------------------------------------------------------------------------- #
 async def test_code_mode_collapses_surface_to_discovery_and_execute() -> None:
-    """code_mode=True : la surface passe des 81 outils à une poignée discovery + execute."""
+    """code_mode=True: the surface goes from 81 tools to a handful of discovery + execute."""
     async with Client(build_server(code_mode=True)) as client:
         names = {t.name for t in await client.list_tools()}
-    # Réduction franche de la surface (gros gain de tokens) — démontrée quantitativement.
+    # Sharp surface reduction (big token saving) — demonstrated quantitatively.
     assert len(names) < 10
-    # Outil d'exécution toujours présent + au moins un outil de découverte.
+    # Execution tool still present + at least one discovery tool.
     assert "execute" in names
     assert {"search", "get_schema"} <= names
-    # Les 81 noms directs ne sont PLUS exposés au top-level.
+    # The 81 direct names are NO LONGER exposed at the top level.
     assert "run_agent" not in names
     assert "project_create" not in names
 
 
 async def test_code_mode_reduces_tool_surface_vs_default() -> None:
-    """Démontre la réduction : surface Code Mode << surface outils-directs (81)."""
+    """Demonstrates the reduction: Code Mode surface << direct-tools surface (81)."""
     async with Client(build_server()) as direct_client:
         direct = {t.name for t in await direct_client.list_tools()}
     async with Client(build_server(code_mode=True)) as cm_client:
         code_mode = {t.name for t in await cm_client.list_tools()}
     assert len(direct) == _EXPECTED_TOOL_COUNT
-    # Au moins 90% d'outils en moins au top-level.
+    # At least 90% fewer tools at the top level.
     assert len(code_mode) <= len(direct) // 10
 
 
 async def test_code_mode_tags_discovery_tool_present() -> None:
-    """Comme on tague par domaine, le discovery ``tags`` est ajouté et atteignable en Code Mode."""
+    """Since we tag by domain, the ``tags`` discovery tool is added and reachable in Code Mode."""
     async with Client(build_server(code_mode=True)) as client:
         names = {t.name for t in await client.list_tools()}
         assert "tags" in names
-        # Le discovery ``tags`` liste les domaines tagués (lecture du catalogue, sans monty).
+        # The ``tags`` discovery lists the tagged domains (reads the catalog, without monty).
         result = await client.call_tool("tags", {"detail": "brief"})
     rendered = "\n".join(block.text for block in result.content if getattr(block, "text", None))
-    # Quelques domaines connus apparaissent dans le rendu des tags.
+    # A few known domains appear in the tags rendering.
     assert "agents" in rendered
     assert "deploy" in rendered
 
 
 # --------------------------------------------------------------------------- #
-# Bascule par variable d'environnement
+# Environment-variable toggle
 # --------------------------------------------------------------------------- #
 @pytest.mark.parametrize(
     ("value", "expected"),
@@ -178,14 +178,14 @@ async def test_code_mode_tags_discovery_tool_present() -> None:
 def test_code_mode_enabled_reads_env(
     monkeypatch: pytest.MonkeyPatch, value: str, expected: bool
 ) -> None:
-    """``code_mode_enabled`` reconnaît les valeurs vraies/fausses de ``ADK_TOOLKIT_CODE_MODE``."""
+    """``code_mode_enabled`` recognizes the truthy/falsy values of ``ADK_TOOLKIT_CODE_MODE``."""
     monkeypatch.setenv("ADK_TOOLKIT_CODE_MODE", value)
     assert code_mode_enabled() is expected
 
 
 def test_code_mode_enabled_false_when_unset(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Sans variable d'env, le Code Mode est désactivé (mode outils-directs par défaut)."""
+    """Without an env variable, Code Mode is disabled (direct-tools mode by default)."""
     monkeypatch.delenv("ADK_TOOLKIT_CODE_MODE", raising=False)
     assert code_mode_enabled() is False
-    # Sanity : l'env n'a pas fui d'un autre test.
+    # Sanity: the env did not leak from another test.
     assert os.getenv("ADK_TOOLKIT_CODE_MODE") is None

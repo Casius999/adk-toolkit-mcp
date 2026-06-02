@@ -1,22 +1,22 @@
-"""Tests du domaine ``a2a`` (P4b — interopérabilité Agent-to-Agent).
+"""Tests for the ``a2a`` domain (P4b — Agent-to-Agent interoperability).
 
-Stratégie (honnête sur ce qui est prouvé vs. gaté) :
+Strategy (honest about what is proven vs. gated):
 
-- ``consume`` est **fonctionnel sans extra** (codegen-only) : on prouve que le sidecar gagne un
-  agent ``remote_a2a`` et que ``agent.py`` régénéré contient
-  ``from google.adk.agents.remote_a2a_agent import RemoteA2aAgent`` + ``RemoteA2aAgent(...)``. Un
-  test **gaté** (``find_spec('a2a')``) lance un subprocess (``-W ignore::DeprecationWarning``) qui
-  importe réellement le ``root_agent`` et assert le **vrai type** ``RemoteA2aAgent`` — SKIP si
-  l'extra ``a2a`` est absent.
-- ``expose`` est **fonctionnel sans extra** : génère ``a2a_app.py`` (``to_a2a(root_agent,
-  port=PORT)``), ast valide, et renvoie le chemin + la commande de service ; ``execute=False`` par
-  défaut n'exécute rien. Un test **gaté** (``find_spec('a2a')`` ET ``ADK_TOOLKIT_TEST_A2A=1``)
-  boote un vrai ``uvicorn`` et GET ``/.well-known/agent-card.json`` puis l'arrête — SKIP bruyamment
-  sinon (lent/instable en CI ; nécessite l'extra).
-- ``agent_card`` est **gaté** : sans l'extra, renvoie un ``err`` actionnable (testé sans extra) ;
-  avec l'extra, construit une vraie ``AgentCard`` (test gaté).
+- ``consume`` is **functional without an extra** (codegen-only): we prove that the sidecar gains a
+  ``remote_a2a`` agent and that the regenerated ``agent.py`` contains
+  ``from google.adk.agents.remote_a2a_agent import RemoteA2aAgent`` + ``RemoteA2aAgent(...)``. A
+  **gated** test (``find_spec('a2a')``) launches a subprocess (``-W ignore::DeprecationWarning``)
+  that actually imports the ``root_agent`` and asserts the **real type** ``RemoteA2aAgent`` — SKIP
+  if the ``a2a`` extra is absent.
+- ``expose`` is **functional without an extra**: generates ``a2a_app.py`` (``to_a2a(root_agent,
+  port=PORT)``), ast-valid, and returns the path + the serve command; ``execute=False`` by default
+  runs nothing. A **gated** test (``find_spec('a2a')`` AND ``ADK_TOOLKIT_TEST_A2A=1``) boots a real
+  ``uvicorn`` and GETs ``/.well-known/agent-card.json`` then stops it — SKIP loudly otherwise
+  (slow/flaky in CI; requires the extra).
+- ``agent_card`` is **gated**: without the extra, returns an actionable ``err`` (tested without the
+  extra); with the extra, builds a real ``AgentCard`` (gated test).
 
-Aucun process/port laissé actif (fixture de nettoyage + stop systématique).
+No process/port left active (cleanup fixture + systematic stop).
 """
 
 from __future__ import annotations
@@ -41,23 +41,23 @@ from adk_toolkit_mcp import adk_cli
 from adk_toolkit_mcp.domains import a2a as A2A
 from adk_toolkit_mcp.server import build_server
 
-#: Vrai si l'extra ``a2a`` (paquet ``a2a-sdk``) est installé.
+#: True if the ``a2a`` extra (the ``a2a-sdk`` package) is installed.
 _A2A_PRESENT = find_spec("a2a") is not None
 
-#: Flag d'opt-in pour le boot RÉEL d'un serveur a2a uvicorn (lent/instable en CI sinon).
+#: Opt-in flag for the REAL boot of an a2a uvicorn server (slow/flaky in CI otherwise).
 _BOOT_FLAG = "ADK_TOOLKIT_TEST_A2A"
 
 
 @pytest.fixture(autouse=True)
 def _clear_registry() -> None:
-    """Termine tout process géré avant ET après chaque test (aucun orphelin / port lié)."""
+    """Terminate any managed process before AND after each test (no orphan / bound port)."""
     adk_cli.stop_all_processes()
     yield
     adk_cli.stop_all_processes()
 
 
 def _free_port() -> int:
-    """Renvoie un port TCP libre (bind éphémère puis relâché)."""
+    """Return a free TCP port (ephemeral bind then released)."""
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.bind(("127.0.0.1", 0))
         return int(s.getsockname()[1])
@@ -73,7 +73,7 @@ def _wait_until(predicate, timeout: float = 30.0, interval: float = 0.2) -> bool
 
 
 def _http_get(url: str, timeout: float = 2.0) -> tuple[int, str] | None:
-    """GET ``url`` → ``(status, body)`` ou None si erreur réseau."""
+    """GET ``url`` → ``(status, body)`` or None on a network error."""
     try:
         with urllib.request.urlopen(url, timeout=timeout) as resp:  # noqa: S310 - localhost test
             return resp.status, resp.read().decode("utf-8", errors="replace")
@@ -82,7 +82,7 @@ def _http_get(url: str, timeout: float = 2.0) -> tuple[int, str] | None:
 
 
 def _scaffold_app(tmp_path: Path, app_name: str = "myapp") -> str:
-    """Scaffolde une app ADK minimale (importable SANS clé API) + son sidecar ; renvoie le dir."""
+    """Scaffold a minimal ADK app (importable WITHOUT an API key) + its sidecar; return the dir."""
     app_dir = tmp_path / app_name
     app_dir.mkdir(parents=True, exist_ok=True)
     (app_dir / "__init__.py").write_text("from . import agent\n", encoding="utf-8")
@@ -115,7 +115,7 @@ def _scaffold_app(tmp_path: Path, app_name: str = "myapp") -> str:
 
 
 def _ruff_exe() -> str | None:
-    """Localise l'exécutable ruff dans l'environnement courant (venv ou PATH)."""
+    """Locate the ruff executable in the current environment (venv or PATH)."""
     venv_bin = Path(sys.executable).parent
     for candidate in (venv_bin / "ruff", venv_bin / "ruff.exe"):
         if candidate.exists():
@@ -124,10 +124,10 @@ def _ruff_exe() -> str | None:
 
 
 # --------------------------------------------------------------------------- #
-# consume — fonctionnel (codegen-only, no extra)
+# consume — functional (codegen-only, no extra)
 # --------------------------------------------------------------------------- #
 def test_consume_adds_remote_agent_and_regenerates(tmp_path: Path) -> None:
-    """``consume`` ajoute un remote_a2a au sidecar et régénère agent.py avec RemoteA2aAgent."""
+    """``consume`` adds a remote_a2a to the sidecar and regenerates agent.py with RemoteA2aAgent."""
     path = _scaffold_app(tmp_path)
     result = A2A.consume(
         path=path,
@@ -140,14 +140,14 @@ def test_consume_adds_remote_agent_and_regenerates(tmp_path: Path) -> None:
     assert result["data"]["remote_agent"]["name"] == "remote_helper"
 
     agent_txt = (tmp_path / "myapp" / "agent.py").read_text(encoding="utf-8")
-    # ⚠️ Import depuis le SOUS-MODULE (pas google.adk.agents) — cf. a2a-mcp-bridge.md.
+    # WARNING: import from the SUBMODULE (not google.adk.agents) — cf. a2a-mcp-bridge.md.
     assert "from google.adk.agents.remote_a2a_agent import RemoteA2aAgent" in agent_txt
     assert "remote_helper = RemoteA2aAgent(" in agent_txt
     assert 'agent_card="http://localhost:8002/.well-known/agent-card.json"' in agent_txt
 
 
 def test_consume_then_compose_as_sub_agent(tmp_path: Path) -> None:
-    """Le proxy remote_a2a se compose comme sub_agent d'un autre agent (via agents_compose)."""
+    """The remote_a2a proxy composes as a sub_agent of another agent (via agents_compose)."""
     from adk_toolkit_mcp.domains import agents as AGENTS
 
     path = _scaffold_app(tmp_path)
@@ -186,7 +186,7 @@ def test_consume_rejects_bad_app_name(tmp_path: Path) -> None:
 
 
 def test_consume_corrupted_sidecar_returns_err(tmp_path: Path) -> None:
-    """Un sidecar JSON corrompu → err propre (pas d'exception qui remonte)."""
+    """A corrupt JSON sidecar → clean err (no propagating exception)."""
     path = _scaffold_app(tmp_path)
     (tmp_path / "myapp" / ".adk_toolkit" / "agents.json").write_text("{not json", encoding="utf-8")
     result = A2A.consume(path=path, app_name="myapp", name="r", agent_card_url="http://h/a2a")
@@ -194,7 +194,7 @@ def test_consume_corrupted_sidecar_returns_err(tmp_path: Path) -> None:
 
 
 def test_consume_into_fresh_app_without_sidecar(tmp_path: Path) -> None:
-    """consume sur une app SANS sidecar préexistant : crée le modèle + le proxy (pas d'erreur)."""
+    """consume on an app WITHOUT a pre-existing sidecar: creates the model + proxy (no error)."""
     app_dir = tmp_path / "fresh"
     app_dir.mkdir()
     result = A2A.consume(
@@ -208,13 +208,13 @@ def test_consume_into_fresh_app_without_sidecar(tmp_path: Path) -> None:
 
 @pytest.mark.skipif(
     not _A2A_PRESENT,
-    reason="extra 'a2a' absent : la preuve d'instanciation réelle de RemoteA2aAgent est SKIP.",
+    reason="'a2a' extra absent: the real RemoteA2aAgent instantiation proof is SKIPped.",
 )
 def test_consume_generated_agent_imports_real_remote_a2a_type(tmp_path: Path) -> None:
-    """[GATÉ a2a] Le agent.py généré importe et instancie le VRAI RemoteA2aAgent (subprocess).
+    """[a2a-GATED] The generated agent.py imports + instantiates the REAL RemoteA2aAgent (subproc).
 
-    Lancé en subprocess avec ``-W ignore::DeprecationWarning`` (RemoteA2aAgent peut toucher des
-    surfaces dépréciées). Prouve que le code généré est exécutable AVEC l'extra présent.
+    Run in a subprocess with ``-W ignore::DeprecationWarning`` (RemoteA2aAgent may touch deprecated
+    surfaces). Proves the generated code is runnable WITH the extra present.
     """
     path = _scaffold_app(tmp_path)
     A2A.consume(
@@ -237,10 +237,10 @@ def test_consume_generated_agent_imports_real_remote_a2a_type(tmp_path: Path) ->
 
 
 # --------------------------------------------------------------------------- #
-# expose — fonctionnel (codegen-only, no extra) + gaté (live)
+# expose — functional (codegen-only, no extra) + gated (live)
 # --------------------------------------------------------------------------- #
 def test_expose_generates_app_file_no_execute(tmp_path: Path) -> None:
-    """``expose`` (execute=False) écrit a2a_app.py (ast valide) + renvoie la commande de service."""
+    """``expose`` (execute=False) writes a2a_app.py (ast-valid) + returns the serve command."""
     path = _scaffold_app(tmp_path)
     result = A2A.expose(path=path, app_name="myapp", port=8001, execute=False)
     assert result["ok"] is True, result
@@ -254,26 +254,26 @@ def test_expose_generates_app_file_no_execute(tmp_path: Path) -> None:
     assert "from google.adk.a2a.utils.agent_to_a2a import to_a2a" in src
     assert "from agent import root_agent" in src
     assert "a2a_app = to_a2a(root_agent, port=8001)" in src
-    ast.parse(src)  # lève SyntaxError si le rendu est cassé
+    ast.parse(src)  # raises SyntaxError if the rendering is broken
 
-    # Le fichier généré doit être isort-clean (un seul groupe tiers, trié, sans ligne vide entre
-    # ``agent`` et ``google.adk...``) — comme l'agent.py régénéré par ``consume``.
+    # The generated file must be isort-clean (a single third-party group, sorted, with no blank
+    # line between ``agent`` and ``google.adk...``) — like the agent.py regenerated by ``consume``.
     ruff = _ruff_exe()
     if ruff is None:
-        pytest.skip("ruff introuvable dans l'environnement — assertion isort ignorée")
+        pytest.skip("ruff not found in the environment — isort assertion ignored")
     isort = subprocess.run(
         [ruff, "check", "--select", "I", str(app_file)],
         capture_output=True,
         text=True,
     )
     assert isort.returncode == 0, (
-        f"ruff check --select I (isort) a échoué sur a2a_app.py.\n"
-        f"Stdout: {isort.stdout}\nStderr: {isort.stderr}\nSource :\n{src}"
+        f"ruff check --select I (isort) failed on a2a_app.py.\n"
+        f"Stdout: {isort.stdout}\nStderr: {isort.stderr}\nSource:\n{src}"
     )
 
 
 def test_expose_idempotent(tmp_path: Path) -> None:
-    """Réécrire le même a2a_app.py ne le modifie pas (changed=False au 2e appel)."""
+    """Rewriting the same a2a_app.py does not modify it (changed=False on the 2nd call)."""
     path = _scaffold_app(tmp_path)
     first = A2A.expose(path=path, app_name="myapp", port=8001)
     assert first["data"]["changed"] is True
@@ -289,7 +289,7 @@ def test_expose_rejects_bad_port(tmp_path: Path) -> None:
 
 
 def test_expose_missing_agent_py_returns_err(tmp_path: Path) -> None:
-    """Sans agent.py scaffoldé → err actionnable (pas de génération)."""
+    """Without a scaffolded agent.py → actionable err (no generation)."""
     (tmp_path / "empty").mkdir()
     result = A2A.expose(path=str(tmp_path), app_name="empty", port=8001)
     assert result["ok"] is False
@@ -302,17 +302,17 @@ def test_expose_rejects_bad_app_name(tmp_path: Path) -> None:
 
 
 def test_expose_missing_app_dir_returns_err(tmp_path: Path) -> None:
-    """Dossier d'app inexistant → err actionnable (jamais de génération hors-cible)."""
+    """Nonexistent app folder → actionable err (never off-target generation)."""
     result = A2A.expose(path=str(tmp_path), app_name="ghostapp", port=8001)
     assert result["ok"] is False
 
 
 def test_expose_execute_without_extra_returns_err(tmp_path: Path) -> None:
-    """``execute=True`` sans l'extra a2a → err actionnable (jamais de tentative de boot)."""
+    """``execute=True`` without the a2a extra → actionable err (never a boot attempt)."""
     path = _scaffold_app(tmp_path)
     result = A2A.expose(path=path, app_name="myapp", port=_free_port(), execute=True)
     if _A2A_PRESENT:
-        # Si l'extra est présent, un process a démarré : on l'arrête et on valide la forme.
+        # If the extra is present, a process started: we stop it and validate the shape.
         assert result["ok"] is True
         adk_cli.stop_process(result["data"]["key"])
     else:
@@ -323,12 +323,12 @@ def test_expose_execute_without_extra_returns_err(tmp_path: Path) -> None:
 @pytest.mark.skipif(
     not (_A2A_PRESENT and os.getenv(_BOOT_FLAG) == "1"),
     reason=(
-        f"Boot a2a uvicorn RÉEL gaté derrière l'extra 'a2a' ET {_BOOT_FLAG}=1 "
-        "(lent/instable en CI). La génération + la commande de service sont testées sans gate."
+        f"REAL a2a uvicorn boot gated behind the 'a2a' extra AND {_BOOT_FLAG}=1 "
+        "(slow/flaky in CI). The generation + the serve command are tested without a gate."
     ),
 )
 def test_expose_execute_boots_and_serves_agent_card(tmp_path: Path) -> None:
-    """[GATÉ a2a + flag] Boote un vrai uvicorn et GET /.well-known/agent-card.json puis stop."""
+    """[a2a-GATED + flag] Boots a real uvicorn and GETs /.well-known/agent-card.json then stops."""
     path = _scaffold_app(tmp_path)
     port = _free_port()
     started = A2A.expose(path=path, app_name="myapp", port=port, execute=True)
@@ -337,20 +337,20 @@ def test_expose_execute_boots_and_serves_agent_card(tmp_path: Path) -> None:
     url = started["data"]["agent_card_url"]
     try:
         booted = _wait_until(lambda: _http_get(url) is not None, timeout=60.0)
-        assert booted, f"a2a app n'a pas répondu sur {url}"
+        assert booted, f"the a2a app did not respond on {url}"
         status, body = _http_get(url)  # type: ignore[misc]
         assert status == 200
-        assert "myapp" in body  # la carte porte le nom de l'agent
+        assert "myapp" in body  # the card carries the agent name
     finally:
         adk_cli.stop_process(key)
     assert _wait_until(lambda: not adk_cli.process_status(key)["running"], timeout=15.0)
 
 
 # --------------------------------------------------------------------------- #
-# agent_card — gaté (clean err sans extra ; vraie carte avec extra)
+# agent_card — gated (clean err without extra; real card with extra)
 # --------------------------------------------------------------------------- #
 async def test_agent_card_without_extra_returns_actionable_err(tmp_path: Path) -> None:
-    """Sans l'extra a2a, agent_card renvoie un err actionnable (gate gracieuse)."""
+    """Without the a2a extra, agent_card returns an actionable err (graceful gate)."""
     path = _scaffold_app(tmp_path)
     result = await A2A.agent_card(path=path, app_name="myapp")
     if _A2A_PRESENT:
@@ -369,10 +369,10 @@ async def test_agent_card_bad_app_name_returns_err(tmp_path: Path) -> None:
 
 @pytest.mark.skipif(
     not _A2A_PRESENT,
-    reason="extra 'a2a' absent : la construction d'une vraie AgentCard est SKIP.",
+    reason="'a2a' extra absent: building a real AgentCard is SKIPped.",
 )
 async def test_agent_card_builds_real_card(tmp_path: Path) -> None:
-    """[GATÉ a2a] Construit une vraie AgentCard du root_agent (name/url présents)."""
+    """[a2a-GATED] Builds a real AgentCard of the root_agent (name/url present)."""
     path = _scaffold_app(tmp_path)
     result = await A2A.agent_card(path=path, app_name="myapp", port=8001)
     assert result["ok"] is True, result
@@ -382,10 +382,10 @@ async def test_agent_card_builds_real_card(tmp_path: Path) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# read-through fastmcp.Client (noms exposés + appel consume)
+# read-through fastmcp.Client (exposed names + consume call)
 # --------------------------------------------------------------------------- #
 async def test_client_exposed_names_and_consume(tmp_path: Path) -> None:
-    """Outils exposés a2a_<bare> (pas de double-préfixe) ; a2a_consume round-trip via le client."""
+    """Tools exposed as a2a_<bare> (no double prefix); a2a_consume round-trips via the client."""
     path = _scaffold_app(tmp_path)
     mcp = build_server()
     async with Client(mcp) as client:

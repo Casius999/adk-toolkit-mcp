@@ -1,26 +1,26 @@
-"""Cœur d'exécution d'agents ADK (P3a) — helpers testables hors-ligne.
+"""ADK agent execution core (P3a) — offline-testable helpers.
 
-Ce module factorise toute la mécanique d'exécution d'un agent ADK de façon à pouvoir la
-**prouver hors-ligne avec un FakeLlm** (aucune clé API requise). Le domaine ``run`` n'est qu'une
-fine couche d'outils MCP au-dessus de ces helpers.
+This module factors out all the machinery for running an ADK agent so it can be **proven
+offline with a FakeLlm** (no API key required). The ``run`` domain is just a thin layer of MCP
+tools on top of these helpers.
 
-Contenu (cf. ``docs/adk-api-notes/runtime-run.md`` pour les signatures ADK confirmées) :
+Contents (cf. ``docs/adk-api-notes/runtime-run.md`` for the confirmed ADK signatures):
 
-- :func:`build_runner` — câble un ``google.adk.runners.Runner`` sur les services
-  session/memory/artifacts issus de :mod:`adk_toolkit_mcp.runtime` (mêmes fabriques singleton).
-- :func:`collect_events` — garantit l'existence de la session (la crée au besoin), lance
-  ``run_async`` et collecte les ``Event`` ; un callback ``progress`` optionnel est *awaité* par
-  événement (support SSE).
-- :func:`serialize_event` — aplati un ``Event`` en dict simple ``{author, text,
+- :func:`build_runner` — wires a ``google.adk.runners.Runner`` onto the session/memory/artifacts
+  services from :mod:`adk_toolkit_mcp.runtime` (same singleton factories).
+- :func:`collect_events` — ensures the session exists (creates it as needed), runs
+  ``run_async`` and collects the ``Event`` objects; an optional ``progress`` callback is *awaited*
+  per event (SSE support).
+- :func:`serialize_event` — flattens an ``Event`` into a simple dict ``{author, text,
   function_calls, function_responses, state_delta, transfer_to_agent, is_final, partial}``.
-- :func:`import_root_agent` — importe ``<path>/<app_name>/agent.py`` et renvoie ``root_agent``
-  via ``importlib`` avec un nom de module UNIQUE à chaque appel (pas de cache ``sys.modules``
-  périmé : une édition d'``agent.py`` est reprise). Lève :class:`RootAgentImportError`.
-- :func:`build_run_config` — valide ``streaming_mode`` contre la vraie enum ``StreamingMode``
-  et construit un ``RunConfig``.
+- :func:`import_root_agent` — imports ``<path>/<app_name>/agent.py`` and returns ``root_agent``
+  via ``importlib`` with a UNIQUE module name on each call (no stale ``sys.modules`` cache: an
+  edit to ``agent.py`` is picked up). Raises :class:`RootAgentImportError`.
+- :func:`build_run_config` — validates ``streaming_mode`` against the real ``StreamingMode`` enum
+  and builds a ``RunConfig``.
 
-Aucun import ADK au chargement du module (tout est paresseux), pour rester cohérent avec le
-reste du toolkit et garder les tests rapides.
+No ADK import at module load (everything is lazy), to stay consistent with the rest of the
+toolkit and keep the tests fast.
 """
 
 from __future__ import annotations
@@ -38,126 +38,126 @@ from .runtime import (
     get_session_service,
 )
 
-if TYPE_CHECKING:  # pragma: no cover - hints seulement, imports réels paresseux
+if TYPE_CHECKING:  # pragma: no cover - hints only, real imports are lazy
     from google.adk.agents import BaseAgent, RunConfig
     from google.adk.events import Event
     from google.adk.runners import Runner
 
-#: Compteur monotone garantissant un nom de module unique par ``import_root_agent``.
+#: Monotonic counter guaranteeing a unique module name per ``import_root_agent``.
 _IMPORT_COUNTER = itertools.count()
 
-#: Compteur monotone pour un nom de module unique par ``import_project_plugins`` (même raison
-#: que pour ``import_root_agent`` : pas de cache ``sys.modules`` périmé après édition).
+#: Monotonic counter for a unique module name per ``import_project_plugins`` (same reason as
+#: for ``import_root_agent``: no stale ``sys.modules`` cache after an edit).
 _PLUGINS_IMPORT_COUNTER = itertools.count()
 
-#: Callback de progression : reçoit ``(index_1_based, serialized_event)`` et est awaité.
+#: Progress callback: receives ``(index_1_based, serialized_event)`` and is awaited.
 ProgressCallback = Callable[[int, dict[str, Any]], Awaitable[None]]
 
 
 class RootAgentImportError(Exception):
-    """Échec d'import de ``root_agent`` (fichier absent, erreur d'exécution, attribut manquant).
+    """Failure importing ``root_agent`` (missing file, execution error, missing attribute).
 
-    Le domaine ``run`` convertit cette exception en ``err(...)`` avec un message actionnable.
+    The ``run`` domain converts this exception into ``err(...)`` with an actionable message.
     """
 
 
 class PluginsImportError(Exception):
-    """Échec d'import des plugins de projet (``plugins.py`` absent/cassé, variable manquante).
+    """Failure importing the project plugins (``plugins.py`` missing/broken, missing variable).
 
-    Les domaines convertissent cette exception en ``err(...)`` avec un message actionnable.
+    The domains convert this exception into ``err(...)`` with an actionable message.
     """
 
 
 # --------------------------------------------------------------------------- #
-# Import de root_agent (nom de module unique → pas de cache périmé)
+# Import root_agent (unique module name → no stale cache)
 # --------------------------------------------------------------------------- #
 def import_root_agent(path: str, app_name: str) -> BaseAgent:
-    """Importe ``<path>/<app_name>/agent.py`` et renvoie son ``root_agent``.
+    """Import ``<path>/<app_name>/agent.py`` and return its ``root_agent``.
 
-    Utilise un nom de module **unique à chaque appel** (suffixe via un compteur monotone) afin
-    qu'une édition d'``agent.py`` entre deux appels soit bien reprise (jamais servie depuis un
-    ``sys.modules`` périmé). Le module n'est volontairement PAS inséré dans ``sys.modules``.
+    Uses a module name **unique on each call** (suffix via a monotonic counter) so that an edit
+    to ``agent.py`` between two calls is picked up (never served from a stale ``sys.modules``).
+    The module is intentionally NOT inserted into ``sys.modules``.
 
-    Lève :class:`RootAgentImportError` si le fichier est absent, si son exécution échoue, ou si
-    ``root_agent`` n'y est pas défini.
+    Raises :class:`RootAgentImportError` if the file is missing, if its execution fails, or if
+    ``root_agent`` is not defined in it.
     """
     agent_file = Path(path) / app_name / "agent.py"
     if not agent_file.is_file():
         raise RootAgentImportError(
-            f"agent.py introuvable : {agent_file}. Scaffolde d'abord l'app (project_create)."
+            f"agent.py not found: {agent_file}. Scaffold the app first (project_create)."
         )
 
     module_name = f"_adk_toolkit_root_agent_{app_name}_{next(_IMPORT_COUNTER)}"
     spec = importlib.util.spec_from_file_location(module_name, agent_file)
-    if spec is None:  # pragma: no cover - cas dégénéré d'importlib
-        raise RootAgentImportError(f"Impossible de préparer l'import de {agent_file}.")
+    if spec is None:  # pragma: no cover - degenerate importlib case
+        raise RootAgentImportError(f"Unable to prepare the import of {agent_file}.")
 
     module = importlib.util.module_from_spec(spec)
-    # On lit la source et on la COMPILE/EXÉCUTE directement plutôt que via
-    # ``spec.loader.exec_module`` : le ``SourceFileLoader`` met en cache le bytecode par
-    # (chemin, mtime), et sur Windows deux écritures dans le même tick de mtime renvoient une
-    # version PÉRIMÉE — une édition d'``agent.py`` ne serait alors pas reprise. Lire+compiler à
-    # chaque appel garantit la fraîcheur (en plus du nom de module unique).
+    # We read the source and COMPILE/EXECUTE it directly rather than via
+    # ``spec.loader.exec_module``: the ``SourceFileLoader`` caches bytecode by (path, mtime), and
+    # on Windows two writes within the same mtime tick return a STALE version — an edit to
+    # ``agent.py`` would then not be picked up. Reading+compiling on each call guarantees
+    # freshness (in addition to the unique module name).
     try:
         source = agent_file.read_text(encoding="utf-8")
         code = compile(source, str(agent_file), "exec")
-        exec(code, module.__dict__)  # noqa: S102 - exécution voulue du code utilisateur (agent.py)
-    except Exception as exc:  # noqa: BLE001 - on enveloppe toute erreur d'exécution du module
-        raise RootAgentImportError(f"Échec de l'import de {agent_file} : {exc}") from exc
+        exec(code, module.__dict__)  # noqa: S102 - intentional execution of user code (agent.py)
+    except Exception as exc:  # noqa: BLE001 - we wrap any module execution error
+        raise RootAgentImportError(f"Failed to import {agent_file}: {exc}") from exc
 
     root_agent = getattr(module, "root_agent", None)
     if root_agent is None:
         raise RootAgentImportError(
-            f"{agent_file} ne définit pas 'root_agent'. Définis un root_agent = LlmAgent(...)."
+            f"{agent_file} does not define 'root_agent'. Define a root_agent = LlmAgent(...)."
         )
     return root_agent
 
 
 def import_project_plugins(path: str, app_name: str, plugin_vars: list[str]) -> list[Any]:
-    """Importe ``<path>/<app_name>/plugins.py`` et renvoie les instances nommées dans la liste.
+    """Import ``<path>/<app_name>/plugins.py`` and return the instances named in the list.
 
-    ``plugin_vars`` est la liste des **noms de variables module-level** (issus du manifeste
-    ``runtime.json``). Chaque nom doit désigner une instance de plugin déclarée dans
-    ``plugins.py``. Renvoie les instances dans l'ordre de ``plugin_vars`` (vide si la liste est
-    vide — appelée seulement quand au moins un plugin est déclaré).
+    ``plugin_vars`` is the list of **module-level variable names** (from the ``runtime.json``
+    manifest). Each name must refer to a plugin instance declared in ``plugins.py``. Returns the
+    instances in the order of ``plugin_vars`` (empty if the list is empty — called only when at
+    least one plugin is declared).
 
-    Comme :func:`import_root_agent`, on lit+``compile()``+``exec()`` la source sous un nom de
-    module **unique** (pas de cache ``sys.modules`` périmé après édition). Lève
-    :class:`PluginsImportError` (fichier absent, exécution échouée, variable manquante).
+    Like :func:`import_root_agent`, we read+``compile()``+``exec()`` the source under a **unique**
+    module name (no stale ``sys.modules`` cache after an edit). Raises
+    :class:`PluginsImportError` (missing file, failed execution, missing variable).
     """
     plugins_file = Path(path) / app_name / "plugins.py"
     if not plugins_file.is_file():
         raise PluginsImportError(
-            f"plugins.py introuvable : {plugins_file}. Déclare un plugin (safety_add_plugin)."
+            f"plugins.py not found: {plugins_file}. Declare a plugin (safety_add_plugin)."
         )
 
     module_name = f"_adk_toolkit_plugins_{app_name}_{next(_PLUGINS_IMPORT_COUNTER)}"
     spec = importlib.util.spec_from_file_location(module_name, plugins_file)
-    if spec is None:  # pragma: no cover - cas dégénéré d'importlib
-        raise PluginsImportError(f"Impossible de préparer l'import de {plugins_file}.")
+    if spec is None:  # pragma: no cover - degenerate importlib case
+        raise PluginsImportError(f"Unable to prepare the import of {plugins_file}.")
 
     module = importlib.util.module_from_spec(spec)
     try:
         source = plugins_file.read_text(encoding="utf-8")
         code = compile(source, str(plugins_file), "exec")
-        exec(code, module.__dict__)  # noqa: S102 - exécution voulue du code utilisateur (plugins.py)
-    except Exception as exc:  # noqa: BLE001 - on enveloppe toute erreur d'exécution du module
-        raise PluginsImportError(f"Échec de l'import de {plugins_file} : {exc}") from exc
+        exec(code, module.__dict__)  # noqa: S102 - intentional execution of user code (plugins.py)
+    except Exception as exc:  # noqa: BLE001 - we wrap any module execution error
+        raise PluginsImportError(f"Failed to import {plugins_file}: {exc}") from exc
 
     instances: list[Any] = []
     for var in plugin_vars:
         instance = getattr(module, var, None)
         if instance is None:
             raise PluginsImportError(
-                f"{plugins_file} ne définit pas la variable de plugin {var!r}. "
-                "Vérifie le manifeste runtime.json (clé 'plugins')."
+                f"{plugins_file} does not define the plugin variable {var!r}. "
+                "Check the runtime.json manifest ('plugins' key)."
             )
         instances.append(instance)
     return instances
 
 
 # --------------------------------------------------------------------------- #
-# Construction du Runner (services issus de runtime.py)
+# Runner construction (services from runtime.py)
 # --------------------------------------------------------------------------- #
 def build_runner(
     app_name: str,
@@ -165,23 +165,22 @@ def build_runner(
     runtime_config: RuntimeConfig,
     plugins: list[Any] | None = None,
 ) -> Runner:
-    """Construit un ``Runner`` câblé sur les services de ``runtime_config``.
+    """Build a ``Runner`` wired onto the services of ``runtime_config``.
 
-    Le service de **sessions** est toujours requis (fabrique singleton ``get_session_service``).
-    Les services de **mémoire** et d'**artifacts** ne sont passés que si un backend est
-    configuré (sinon omis : ADK tolère ``None``). On utilise ``Runner`` (et NON
-    ``InMemoryRunner``, qui recréerait ses propres services et court-circuiterait la config et
-    le cache singleton du toolkit).
+    The **sessions** service is always required (singleton factory ``get_session_service``). The
+    **memory** and **artifacts** services are only passed if a backend is configured (otherwise
+    omitted: ADK tolerates ``None``). We use ``Runner`` (and NOT ``InMemoryRunner``, which would
+    recreate its own services and bypass the toolkit's config and singleton cache).
 
-    **Plugins (P4c)** : si ``plugins`` est non vide, on emprunte le chemin NON déprécié
-    ``Runner(app=App(name=app_name, root_agent=root_agent, plugins=[...]), ...)`` — l'argument
-    ``plugins=`` direct de ``Runner`` est DÉPRÉCIÉ en 2.1.0 (``DeprecationWarning``), tandis que
-    ``App`` ne déclenche aucun warning (vérifié par introspection). Sans plugin (défaut), on
-    garde le chemin historique ``Runner(app_name=, agent=, ...)`` — comportement strictement
-    inchangé (compat ascendante).
+    **Plugins (P4c)**: if ``plugins`` is non-empty, we take the NON-deprecated path
+    ``Runner(app=App(name=app_name, root_agent=root_agent, plugins=[...]), ...)`` — ``Runner``'s
+    direct ``plugins=`` argument is DEPRECATED in 2.1.0 (``DeprecationWarning``), whereas ``App``
+    triggers no warning (verified by introspection). Without a plugin (default), we keep the
+    historical path ``Runner(app_name=, agent=, ...)`` — strictly unchanged behavior (backward
+    compatible).
 
-    Les erreurs de backend (``ValueError`` : champ requis manquant / extra absent) remontent à
-    l'appelant, qui les convertit en ``err(...)``.
+    Backend errors (``ValueError``: missing required field / missing extra) propagate to the
+    caller, which converts them into ``err(...)``.
     """
     from google.adk.runners import Runner
 
@@ -193,7 +192,7 @@ def build_runner(
         kwargs["artifact_service"] = get_artifact_service(runtime_config.artifacts)
 
     if plugins:
-        # Chemin non déprécié : App porte name/root_agent/plugins ; Runner en dérive app_name.
+        # Non-deprecated path: App carries name/root_agent/plugins; Runner derives app_name from it.
         from google.adk.apps import App
 
         app = App(name=app_name, root_agent=root_agent, plugins=list(plugins))
@@ -205,19 +204,19 @@ def build_runner(
 
 
 # --------------------------------------------------------------------------- #
-# RunConfig (validation du streaming_mode contre la vraie enum)
+# RunConfig (streaming_mode validation against the real enum)
 # --------------------------------------------------------------------------- #
 def build_run_config(
     streaming_mode: str = "NONE",
     max_llm_calls: int | None = None,
     response_modalities: list[str] | None = None,
 ) -> RunConfig:
-    """Construit un ``RunConfig`` ; valide ``streaming_mode`` contre l'enum ``StreamingMode``.
+    """Build a ``RunConfig``; validate ``streaming_mode`` against the ``StreamingMode`` enum.
 
-    ``streaming_mode`` est résolu **par nom** (insensible à la casse) :
-    ``NONE`` / ``SSE`` / ``BIDI``. Un nom inconnu lève ``ValueError`` (message actionnable).
-    ``max_llm_calls=None`` laisse le défaut ADK (500) en place ; un entier est transmis tel
-    quel. ``response_modalities`` (ex. ``["TEXT"]``) n'est passé que s'il est fourni.
+    ``streaming_mode`` is resolved **by name** (case-insensitive): ``NONE`` / ``SSE`` / ``BIDI``.
+    An unknown name raises ``ValueError`` (actionable message). ``max_llm_calls=None`` leaves the
+    ADK default (500) in place; an integer is passed through as-is. ``response_modalities`` (e.g.
+    ``["TEXT"]``) is only passed if provided.
     """
     from google.adk.agents import RunConfig
 
@@ -231,16 +230,16 @@ def build_run_config(
 
 
 def streaming_mode_names() -> list[str]:
-    """Renvoie les noms valides de ``StreamingMode`` (pour les descripteurs/erreurs)."""
+    """Return the valid ``StreamingMode`` names (for descriptors/errors)."""
     from google.adk.agents.run_config import StreamingMode
 
     return [m.name for m in StreamingMode]
 
 
 def _resolve_streaming_mode(streaming_mode: str) -> Any:
-    """Résout un nom de mode (insensible à la casse) en membre ``StreamingMode``.
+    """Resolve a mode name (case-insensitive) to a ``StreamingMode`` member.
 
-    Lève ``ValueError`` avec la liste des noms valides si le mode est inconnu.
+    Raises ``ValueError`` with the list of valid names if the mode is unknown.
     """
     from google.adk.agents.run_config import StreamingMode
 
@@ -249,20 +248,20 @@ def _resolve_streaming_mode(streaming_mode: str) -> Any:
     except KeyError as exc:
         valid = ", ".join(m.name for m in StreamingMode)
         raise ValueError(
-            f"streaming_mode invalide : {streaming_mode!r}. Attendu l'un de : {valid}."
+            f"invalid streaming_mode: {streaming_mode!r}. Expected one of: {valid}."
         ) from exc
 
 
 # --------------------------------------------------------------------------- #
-# Sérialisation d'un Event
+# Event serialization
 # --------------------------------------------------------------------------- #
 def serialize_event(event: Event) -> dict[str, Any]:
-    """Aplati un ``Event`` ADK en dict simple sérialisable JSON.
+    """Flatten an ADK ``Event`` into a simple JSON-serializable dict.
 
-    Champs : ``author`` ; ``text`` (concaténation des parts textuelles, ``None`` si aucune) ;
-    ``function_calls`` (``[{name, args}]``) ; ``function_responses`` (``[{name, response}]``) ;
-    ``state_delta`` (``event.actions.state_delta``) ; ``transfer_to_agent`` ; ``is_final``
-    (``event.is_final_response()``) ; ``partial``.
+    Fields: ``author``; ``text`` (concatenation of the text parts, ``None`` if none);
+    ``function_calls`` (``[{name, args}]``); ``function_responses`` (``[{name, response}]``);
+    ``state_delta`` (``event.actions.state_delta``); ``transfer_to_agent``; ``is_final``
+    (``event.is_final_response()``); ``partial``.
     """
     content = event.content
     parts = list(content.parts or []) if content is not None else []
@@ -292,7 +291,7 @@ def serialize_event(event: Event) -> dict[str, Any]:
 
 
 # --------------------------------------------------------------------------- #
-# Exécution + collecte des événements
+# Run + event collection
 # --------------------------------------------------------------------------- #
 async def collect_events(
     runner: Runner,
@@ -303,15 +302,15 @@ async def collect_events(
     run_config: RunConfig | None = None,
     progress: ProgressCallback | None = None,
 ) -> list[Event]:
-    """Lance l'agent et collecte tous les ``Event`` produits.
+    """Run the agent and collect all the ``Event`` objects produced.
 
-    Garantit d'abord l'existence de la session (la crée si ``get_session`` renvoie ``None`` —
-    ``Runner.auto_create_session`` vaut ``False`` par défaut). Construit ``new_message`` comme
-    un ``types.Content`` rôle ``"user"`` portant ``new_message_text``, puis itère
-    ``run_async``. Si ``progress`` est fourni, il est **awaité** par événement (avec l'index
-    1-based et l'événement sérialisé) — utilisé pour la progression SSE de ``run_stream``.
+    First ensures the session exists (creates it if ``get_session`` returns ``None`` —
+    ``Runner.auto_create_session`` is ``False`` by default). Builds ``new_message`` as a
+    ``types.Content`` with role ``"user"`` carrying ``new_message_text``, then iterates
+    ``run_async``. If ``progress`` is provided, it is **awaited** per event (with the 1-based
+    index and the serialized event) — used for the SSE progress of ``run_stream``.
 
-    Renvoie la liste des ``Event`` bruts (l'appelant sérialise via :func:`serialize_event`).
+    Returns the list of raw ``Event`` objects (the caller serializes via :func:`serialize_event`).
     """
     from google.genai import types
 

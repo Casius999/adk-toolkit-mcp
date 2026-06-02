@@ -1,22 +1,22 @@
-"""Tests unitaires du domaine ``run`` (P3a — exécution d'agents ADK).
+"""Unit tests for the ``run`` domain (P3a — ADK agent execution).
 
-Les outils sont **async** (``asyncio_mode=auto``). On appelle les fonctions bare directement
-et, pour le read-through, via un ``fastmcp.Client`` in-memory.
+The tools are **async** (``asyncio_mode=auto``). We call the bare functions directly and, for the
+read-through, via an in-memory ``fastmcp.Client``.
 
-PREUVE FONCTIONNELLE (sans clé API) : on scaffolde une app dont ``agent.py`` importe un
-``FakeLlm`` de la fixture (via ``sys.path``) et construit un ``LlmAgent``. ``run_agent`` exécute
-alors une vraie boucle d'agent hors-ligne et renvoie le texte final canned — prouvant que
-l'outil monté exécute un agent de bout en bout sans réseau.
+FUNCTIONAL PROOF (without an API key): we scaffold an app whose ``agent.py`` imports a ``FakeLlm``
+from the fixture (via ``sys.path``) and builds an ``LlmAgent``. ``run_agent`` then runs a real
+agent loop offline and returns the canned final text — proving the mounted tool runs an agent end
+to end without network.
 
-Couverture complémentaire :
-- validations (user_id/session_id/message vides) et erreurs propres (agent.py absent →
-  RootAgentImportError convertie en err ; config corrompue → err).
-- ``run_config_build`` : modes valides + invalide.
-- ``run_inspect_events`` (PUR) : résumé d'événements synthétiques + invalides.
-- ``run_stream`` : le callback de progression est invoqué par événement (prouvé via
-  ``collect_events`` avec un callback, et via un ``fastmcp.Client`` qui capte ctx.report_progress).
-- ``run_live`` : renvoie un err actionnable quand la capacité/clé Live est absente (pas de blocage).
-- read-through ``fastmcp.Client`` pour ``run_agent`` contre un agent FakeLlm.
+Complementary coverage:
+- validations (empty user_id/session_id/message) and clean errors (missing agent.py →
+  RootAgentImportError converted to err; corrupt config → err).
+- ``run_config_build``: valid + invalid modes.
+- ``run_inspect_events`` (PURE): summary of synthetic + invalid events.
+- ``run_stream``: the progress callback is invoked per event (proven via ``collect_events`` with a
+  callback, and via a ``fastmcp.Client`` that captures ctx.report_progress).
+- ``run_live``: returns an actionable err when the Live capability/key is absent (no blocking).
+- ``fastmcp.Client`` read-through for ``run_agent`` against a FakeLlm agent.
 """
 
 from __future__ import annotations
@@ -30,13 +30,13 @@ from adk_toolkit_mcp.domains import run as R
 from adk_toolkit_mcp.runtime import reset_service_cache
 from adk_toolkit_mcp.server import build_server
 
-#: Dossier des fixtures de test (contient ``fake_llm.py``) — injecté dans le agent.py généré.
+#: Test fixtures folder (contains ``fake_llm.py``) — injected into the generated agent.py.
 _FIXTURE_DIR = str(Path(__file__).parent)
 
 
 @pytest.fixture(autouse=True)
 def _clear_cache() -> None:
-    """Isole les tests : vide le cache singleton de services avant/après chacun."""
+    """Isolate the tests: clear the singleton service cache before/after each."""
     reset_service_cache()
     yield
     reset_service_cache()
@@ -45,7 +45,7 @@ def _clear_cache() -> None:
 def _scaffold_fake_agent(
     root: Path, app_name: str = "myapp", answer: str = "Hello offline!"
 ) -> str:
-    """Écrit une app dont ``agent.py`` construit un LlmAgent + FakeLlm (offline). Renvoie path."""
+    """Write an app whose ``agent.py`` builds an LlmAgent + FakeLlm (offline). Returns path."""
     app_dir = root / app_name
     app_dir.mkdir(parents=True, exist_ok=True)
     body = (
@@ -62,7 +62,7 @@ def _scaffold_fake_agent(
 
 
 def _scaffold_tool_agent(root: Path, app_name: str = "calc") -> str:
-    """Écrit une app dont ``agent.py`` construit un agent ScriptedLlm + outil (offline)."""
+    """Write an app whose ``agent.py`` builds a ScriptedLlm agent + tool (offline)."""
     app_dir = root / app_name
     app_dir.mkdir(parents=True, exist_ok=True)
     body = (
@@ -79,13 +79,13 @@ def _scaffold_tool_agent(root: Path, app_name: str = "calc") -> str:
 
 
 def _persist_max_llm_calls(path: str, app_name: str, value: int) -> None:
-    """Persiste ``max_llm_calls=value`` sur l'agent ROOT via le VRAI outil ``safety_settings``.
+    """Persist ``max_llm_calls=value`` on the ROOT agent via the REAL ``safety_settings`` tool.
 
-    On crée d'abord l'agent root dans le sidecar (``agents_create_llm`` + ``agents_set_root``),
-    puis on appelle ``safety_settings(max_llm_calls=value)`` — exactement le chemin utilisateur.
-    ``safety_settings`` régénère ``agent.py`` (modèle Gemini), donc l'appelant le RÉÉCRIT ensuite
-    avec un FakeLlm pour rester exécutable hors-ligne (le sidecar ``agents.json`` — d'où la valeur
-    persistée est relue — n'est pas affecté par cette réécriture d'``agent.py``).
+    We first create the root agent in the sidecar (``agents_create_llm`` + ``agents_set_root``),
+    then call ``safety_settings(max_llm_calls=value)`` — exactly the user path. ``safety_settings``
+    regenerates ``agent.py`` (Gemini model), so the caller then REWRITES it with a FakeLlm to stay
+    runnable offline (the ``agents.json`` sidecar — from which the persisted value is re-read — is
+    not affected by this ``agent.py`` rewrite).
     """
     from adk_toolkit_mcp.domains import agents as AGENTS
     from adk_toolkit_mcp.domains import safety as SAFETY
@@ -100,10 +100,10 @@ def _persist_max_llm_calls(path: str, app_name: str, value: int) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# FUNCTIONAL — run_agent exécute un agent FakeLlm hors-ligne
+# FUNCTIONAL — run_agent runs a FakeLlm agent offline
 # --------------------------------------------------------------------------- #
 async def test_run_agent_functional_offline(tmp_path: Path) -> None:
-    """run_agent (outil monté) exécute un agent FakeLlm chargé depuis agent.py → texte final."""
+    """run_agent (mounted tool) runs a FakeLlm agent loaded from agent.py → final text."""
     path = _scaffold_fake_agent(tmp_path, "myapp", answer="42 is the answer")
     result = await R.agent(
         path=path,
@@ -115,13 +115,13 @@ async def test_run_agent_functional_offline(tmp_path: Path) -> None:
     assert result["ok"] is True, result
     assert result["data"]["final_text"] == "42 is the answer"
     assert result["data"]["event_count"] >= 1
-    # Les événements sont sérialisés (clés attendues).
+    # The events are serialized (expected keys).
     ev = result["data"]["events"][0]
     assert {"author", "text", "is_final", "function_calls"} <= set(ev)
 
 
 async def test_run_agent_functional_tool_loop_offline(tmp_path: Path) -> None:
-    """run_agent prouve une boucle tool-call complète offline : call → response → final."""
+    """run_agent proves a complete tool-call loop offline: call → response → final."""
     path = _scaffold_tool_agent(tmp_path, "calc")
     result = await R.agent(
         path=path, app_name="calc", user_id="u1", session_id="s1", message="2+3?"
@@ -134,13 +134,13 @@ async def test_run_agent_functional_tool_loop_offline(tmp_path: Path) -> None:
 
 
 async def test_run_agent_reuses_session_across_calls(tmp_path: Path) -> None:
-    """Deux run_agent sur le même session_id : le second voit les événements du premier."""
+    """Two run_agent on the same session_id: the second sees the first's events."""
     path = _scaffold_fake_agent(tmp_path, "myapp")
     first = await R.agent(path=path, app_name="myapp", user_id="u1", session_id="s1", message="hi")
     assert first["ok"] is True
     first_count = first["data"]["event_count"]
 
-    # Vérifie via le domaine sessions que la session accumule des événements.
+    # Check via the sessions domain that the session accumulates events.
     from adk_toolkit_mcp.domains import sessions as S
 
     got = await S.get(path=path, app_name="myapp", user_id="u1", session_id="s1")
@@ -154,22 +154,22 @@ async def test_run_agent_reuses_session_across_calls(tmp_path: Path) -> None:
 async def test_run_agent_uses_persisted_max_llm_calls(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """run_agent SANS max_llm_calls explicite applique le plafond PERSISTÉ (=7) du root agent.
+    """run_agent WITHOUT an explicit max_llm_calls applies the root agent's PERSISTED cap (=7).
 
-    On persiste ``safety_settings(..., max_llm_calls=7)`` sur le root (vrai chemin utilisateur),
-    on réécrit ``agent.py`` en FakeLlm (offline), puis on appelle ``run_agent`` SANS passer
-    ``max_llm_calls``. On capte la ``RunConfig`` réellement construite via un seam : on monkeypatch
-    ``R.build_run_config`` pour enregistrer l'argument ``max_llm_calls`` reçu et le ``RunConfig``
-    renvoyé (en déléguant à la vraie fabrique pour que le run aboutisse).
+    We persist ``safety_settings(..., max_llm_calls=7)`` on the root (real user path), rewrite
+    ``agent.py`` to a FakeLlm (offline), then call ``run_agent`` WITHOUT passing ``max_llm_calls``.
+    We capture the ``RunConfig`` actually built via a seam: we monkeypatch ``R.build_run_config``
+    to record the received ``max_llm_calls`` argument and the returned ``RunConfig`` (delegating to
+    the real factory so the run succeeds).
 
-    Ce test ÉCHOUE avant le correctif (run_* ignorait la valeur persistée → build_run_config
-    recevait ``None`` au lieu de 7).
+    This test FAILS before the fix (run_* ignored the persisted value → build_run_config received
+    ``None`` instead of 7).
     """
     from adk_toolkit_mcp import run_core
 
     path = _scaffold_fake_agent(tmp_path, "myapp", answer="capped")
     _persist_max_llm_calls(path, "myapp", 7)
-    # safety_settings a régénéré agent.py (Gemini) : on le remet en FakeLlm (exécution offline).
+    # safety_settings regenerated agent.py (Gemini): we put it back to FakeLlm (offline run).
     _scaffold_fake_agent(tmp_path, "myapp", answer="capped")
 
     seen: dict[str, object] = {}
@@ -185,16 +185,16 @@ async def test_run_agent_uses_persisted_max_llm_calls(
 
     result = await R.agent(path=path, app_name="myapp", user_id="u1", session_id="s1", message="hi")
     assert result["ok"] is True, result
-    # Le plafond persisté (7) a été résolu et passé à build_run_config…
+    # The persisted cap (7) was resolved and passed to build_run_config…
     assert seen["max_llm_calls"] == 7
-    # …et le RunConfig réellement utilisé par le runner porte bien max_llm_calls == 7.
+    # …and the RunConfig actually used by the runner indeed carries max_llm_calls == 7.
     assert seen["run_config"].max_llm_calls == 7  # type: ignore[attr-defined]
 
 
 async def test_run_agent_explicit_max_llm_calls_overrides_persisted(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Une valeur d'appelant explicite PRIME sur le persisté (7 persisté, 3 explicite → 3)."""
+    """An explicit caller value WINS over the persisted one (7 persisted, 3 explicit → 3)."""
     from adk_toolkit_mcp import run_core
 
     path = _scaffold_fake_agent(tmp_path, "myapp", answer="capped")
@@ -219,17 +219,18 @@ async def test_run_agent_explicit_max_llm_calls_overrides_persisted(
         max_llm_calls=3,
     )
     assert result["ok"] is True, result
-    # L'explicite (3) écrase le persisté (7).
+    # The explicit (3) overrides the persisted (7).
     assert seen["max_llm_calls"] == 3
 
 
 async def test_run_agent_without_sidecar_uses_adk_default(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Sans sidecar ni valeur explicite, max_llm_calls reste None → défaut ADK (pas de régression).
+    """Without a sidecar or explicit value, max_llm_calls stays None → ADK default (no regression).
 
-    Garantit que l'enrichissement par valeur persistée est best-effort : une app scaffoldée sans
-    sidecar ``agents.json`` (cas historique de ces tests) garde le comportement d'avant (``None``).
+    Guarantees that the persisted-value enrichment is best-effort: an app scaffolded without a
+    sidecar ``agents.json`` (historical case for these tests) keeps the previous behavior
+    (``None``).
     """
     from adk_toolkit_mcp import run_core
 
@@ -278,7 +279,7 @@ async def test_run_agent_missing_agent_py_returns_err(tmp_path: Path) -> None:
         path=str(tmp_path), app_name="ghost", user_id="u1", session_id="s1", message="hi"
     )
     assert result["ok"] is False
-    assert "introuvable" in result["error"].lower()
+    assert "not found" in result["error"].lower()
 
 
 async def test_run_agent_broken_agent_py_returns_err(tmp_path: Path) -> None:
@@ -307,7 +308,7 @@ async def test_run_agent_invalid_streaming_mode_returns_err(tmp_path: Path) -> N
 
 
 async def test_run_agent_corrupt_config_returns_err(tmp_path: Path) -> None:
-    """runtime.json corrompue → err propre (la config se charge avant l'import de l'agent)."""
+    """corrupt runtime.json → clean err (the config loads before the agent import)."""
     path = _scaffold_fake_agent(tmp_path, "myapp")
     cfg_dir = tmp_path / "myapp" / ".adk_toolkit"
     cfg_dir.mkdir(parents=True, exist_ok=True)
@@ -318,10 +319,10 @@ async def test_run_agent_corrupt_config_returns_err(tmp_path: Path) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# run_stream — progression par événement
+# run_stream — per-event progress
 # --------------------------------------------------------------------------- #
 async def test_run_stream_offline_no_ctx(tmp_path: Path) -> None:
-    """run_stream fonctionne sans ctx (progression no-op) et renvoie le texte final."""
+    """run_stream works without ctx (no-op progress) and returns the final text."""
     path = _scaffold_fake_agent(tmp_path, "myapp", answer="streamed!")
     result = await R.stream(
         path=path, app_name="myapp", user_id="u1", session_id="s1", message="go", ctx=None
@@ -358,7 +359,7 @@ async def test_run_stream_rejects_empty_session_id(tmp_path: Path) -> None:
 
 
 async def test_run_stream_missing_agent_returns_err(tmp_path: Path) -> None:
-    """run_stream sur une app sans agent.py → err (import échoué), pas d'exception."""
+    """run_stream on an app without agent.py → err (import failed), no exception."""
     result = await R.stream(
         path=str(tmp_path), app_name="ghost", user_id="u1", session_id="s1", message="hi", ctx=None
     )
@@ -367,10 +368,10 @@ async def test_run_stream_missing_agent_returns_err(tmp_path: Path) -> None:
 
 
 async def test_run_stream_invalid_backend_returns_err(tmp_path: Path) -> None:
-    """Backend invalide (database sans db_url, édité à la main) → err propre via run_stream.
+    """Invalid backend (database without db_url, hand-edited) → clean err via run_stream.
 
-    Couvre la branche ValueError de run_stream (backend non instanciable). run_stream force
-    streaming_mode='SSE', donc l'unique ValueError vient ici du backend.
+    Covers the ValueError branch of run_stream (non-instantiable backend). run_stream forces
+    streaming_mode='SSE', so the only ValueError here comes from the backend.
     """
     path = _scaffold_fake_agent(tmp_path, "myapp")
     cfg_dir = tmp_path / "myapp" / ".adk_toolkit"
@@ -386,7 +387,7 @@ async def test_run_stream_invalid_backend_returns_err(tmp_path: Path) -> None:
 
 
 async def test_run_agent_invalid_backend_returns_err(tmp_path: Path) -> None:
-    """run_agent sur un backend non instanciable (database sans db_url) → err propre."""
+    """run_agent on a non-instantiable backend (database without db_url) → clean err."""
     path = _scaffold_fake_agent(tmp_path, "myapp")
     cfg_dir = tmp_path / "myapp" / ".adk_toolkit"
     cfg_dir.mkdir(parents=True, exist_ok=True)
@@ -399,10 +400,10 @@ async def test_run_agent_invalid_backend_returns_err(tmp_path: Path) -> None:
 
 
 async def test_run_stream_progress_via_client(tmp_path: Path) -> None:
-    """Via un fastmcp.Client, run_stream rapporte la progression : le handler reçoit des appels.
+    """Via a fastmcp.Client, run_stream reports progress: the handler receives calls.
 
-    On capte ``progress`` côté client (FastMCP injecte le Context et relaie report_progress).
-    Au moins un événement → au moins un appel de progression.
+    We capture ``progress`` on the client side (FastMCP injects the Context and relays
+    report_progress). At least one event → at least one progress call.
     """
     path = _scaffold_fake_agent(tmp_path, "myapp", answer="progress proof")
     mcp = build_server()
@@ -426,18 +427,18 @@ async def test_run_stream_progress_via_client(tmp_path: Path) -> None:
         assert res.data["ok"] is True
         assert res.data["data"]["final_text"] == "progress proof"
 
-    # Le handler de progression a été invoqué au moins une fois (un event final au minimum).
-    assert progress_calls, "report_progress aurait dû être relayé au client"
+    # The progress handler was invoked at least once (one final event at minimum).
+    assert progress_calls, "report_progress should have been relayed to the client"
 
 
 # --------------------------------------------------------------------------- #
-# run_live — dégradation actionnable sans clé/capacité (pas de blocage)
+# run_live — actionable degradation without key/capability (no blocking)
 # --------------------------------------------------------------------------- #
 async def test_run_live_without_credentials_returns_actionable_err(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Sans clé Live, run_live renvoie un err actionnable immédiat (jamais de hang)."""
-    # Neutralise toute creds Live éventuellement présente dans l'environnement.
+    """Without a Live key, run_live returns an immediate actionable err (never a hang)."""
+    # Neutralize any Live creds possibly present in the environment.
     monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
     monkeypatch.delenv("GOOGLE_GENAI_USE_VERTEXAI", raising=False)
@@ -452,10 +453,10 @@ async def test_run_live_without_credentials_returns_actionable_err(
 async def test_run_live_with_key_but_non_live_model_returns_err(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Avec une clé mais un modèle non live-capable (FakeLlm), run_live renvoie un err clair.
+    """With a key but a non-live-capable model (FakeLlm), run_live returns a clear err.
 
-    Prouve la seconde garde : même avec des creds, un FakeLlm (connect non surchargé) ne peut pas
-    streamer en Live → err actionnable, toujours sans blocage réseau.
+    Proves the second guard: even with creds, a FakeLlm (connect not overridden) cannot stream in
+    Live → actionable err, still without network blocking.
     """
     monkeypatch.setenv("GOOGLE_API_KEY", "fake-key-not-used")
     path = _scaffold_fake_agent(tmp_path, "myapp")
@@ -467,11 +468,11 @@ async def test_run_live_with_key_but_non_live_model_returns_err(
 async def test_run_live_vertex_credentials_recognized(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Des creds Vertex (USE_VERTEXAI=TRUE + PROJECT) passent la 1re garde ; échec sur le modèle.
+    """Vertex creds (USE_VERTEXAI=TRUE + PROJECT) pass the 1st guard; failure on the model.
 
-    Couvre la branche Vertex de _has_live_credentials : sans clé AI Studio mais avec Vertex
-    configuré, la détection de creds réussit → on tombe sur la garde de capacité du modèle
-    (FakeLlm non live-capable) → err ``Live``, toujours sans blocage.
+    Covers the Vertex branch of _has_live_credentials: without an AI Studio key but with Vertex
+    configured, creds detection succeeds → we hit the model capability guard
+    (FakeLlm not live-capable) → err ``Live``, still without a hang.
     """
     monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
@@ -481,12 +482,12 @@ async def test_run_live_vertex_credentials_recognized(
     path = _scaffold_fake_agent(tmp_path, "myapp")
     result = await R.live(path=path, app_name="myapp", user_id="u1", session_id="s1", message="hi")
     assert result["ok"] is False
-    # 1re garde franchie (creds Vertex reconnues) → on bute sur la garde modèle (Live).
+    # 1st guard passed (Vertex creds recognized) → we hit the model guard (Live).
     assert "Live" in result["error"]
 
 
 def test_model_supports_live_handles_missing_canonical_model() -> None:
-    """_model_supports_live renvoie False (sans lever) si l'agent n'a pas de canonical_model."""
+    """_model_supports_live returns False (without raising) if the agent has no canonical_model."""
 
     class _Bare:
         pass
@@ -495,7 +496,7 @@ def test_model_supports_live_handles_missing_canonical_model() -> None:
 
 
 def test_model_supports_live_swallows_exceptions() -> None:
-    """Une erreur en accédant au modèle → False (détection défensive, jamais de raise)."""
+    """An error while accessing the model → False (defensive detection, never a raise)."""
 
     class _Exploding:
         @property
@@ -538,7 +539,7 @@ def test_config_build_valid() -> None:
 
 
 def test_config_build_default_max_llm_calls() -> None:
-    """max_llm_calls None → défaut ADK (500) reflété dans le descripteur."""
+    """max_llm_calls None → ADK default (500) reflected in the descriptor."""
     result = R.config_build(streaming_mode="NONE")
     assert result["ok"] is True
     assert result["data"]["max_llm_calls"] == 500
@@ -560,7 +561,7 @@ def test_config_build_response_modalities() -> None:
 # run_inspect_events (PUR)
 # --------------------------------------------------------------------------- #
 def _synthetic_events() -> list[dict]:
-    """Liste d'événements sérialisés synthétiques pour tester le résumé."""
+    """List of synthetic serialized events to test the summary."""
     return [
         {
             "author": "planner",
@@ -602,7 +603,7 @@ def test_inspect_events_summary() -> None:
     assert data["event_count"] == 3
     assert data["function_call_count"] == 3
     assert data["function_response_count"] == 1
-    # Outils uniques, ordre de première apparition préservé.
+    # Unique tools, first-appearance order preserved.
     assert data["tool_names"] == ["search", "fetch"]
     assert data["transfers"] == ["worker"]
     assert data["state_delta_keys"] == ["app:hits", "user:seen"]
@@ -628,7 +629,7 @@ def test_inspect_events_rejects_non_dict_item() -> None:
 
 
 async def test_inspect_events_consumes_run_agent_output(tmp_path: Path) -> None:
-    """Bout-en-bout : la sortie events de run_agent est résumable par run_inspect_events."""
+    """End-to-end: run_agent's events output is summarizable by run_inspect_events."""
     path = _scaffold_tool_agent(tmp_path, "calc")
     run = await R.agent(path=path, app_name="calc", user_id="u1", session_id="s1", message="2+3?")
     assert run["ok"] is True
@@ -642,7 +643,7 @@ async def test_inspect_events_consumes_run_agent_output(tmp_path: Path) -> None:
 # In-memory fastmcp.Client read-through (exposed names + double-prefix guard)
 # --------------------------------------------------------------------------- #
 async def test_client_exposed_names_and_run_agent(tmp_path: Path) -> None:
-    """Les outils sont exposés run_<bare> (pas de double-préfixe) et run_agent s'exécute."""
+    """The tools are exposed as run_<bare> (no double prefix) and run_agent runs."""
     path = _scaffold_fake_agent(tmp_path, "myapp", answer="client says hi")
     mcp = build_server()
     async with Client(mcp) as client:
@@ -667,7 +668,7 @@ async def test_client_exposed_names_and_run_agent(tmp_path: Path) -> None:
 
 
 async def test_client_run_config_build(tmp_path: Path) -> None:
-    """run_config_build accessible via le client (validation pure)."""
+    """run_config_build accessible via the client (pure validation)."""
     mcp = build_server()
     async with Client(mcp) as client:
         res = await client.call_tool("run_config_build", {"streaming_mode": "SSE"})

@@ -1,19 +1,18 @@
-"""Primitives de génération de code ruff-stable + rendu des outils (interne).
+"""Ruff-stable code generation primitives + tool rendering (internal).
 
-Module **privé** (préfixe ``_``) : il n'expose aucune API publique stable hormis
-:func:`render_tool_ref`, lui-même ré-exporté via :mod:`adk_toolkit_mcp.project_model`. Il
-regroupe :
+A **private** module (``_`` prefix): it exposes no stable public API except
+:func:`render_tool_ref`, itself re-exported via :mod:`adk_toolkit_mcp.project_model`. It groups:
 
-- les primitives bas-niveau **stables pour ``ruff format``** : :class:`_Call` + ``_render_call``
-  / ``_call_inline`` / ``_kwarg_call`` (éclatement « un argument par ligne » reproduisant
-  exactement la sortie de ``ruff format``), ``_py_str`` / ``_py_bool`` (littéraux), et le rendu
-  des ``def`` de function-tools ;
-- le rendu de chaque genre d'outil (:func:`render_tool_ref`) et de l'auth associée
-  (``AuthCredential(...)``), y compris les toolsets 3b (openapi/bigquery/spanner/mcp/apihub/
+- the low-level primitives **stable for ``ruff format``**: :class:`_Call` + ``_render_call`` /
+  ``_call_inline`` / ``_kwarg_call`` (the "one argument per line" splitting that exactly
+  reproduces ``ruff format``'s output), ``_py_str`` / ``_py_bool`` (literals), and the rendering
+  of function-tool ``def`` blocks;
+- the rendering of each tool kind (:func:`render_tool_ref`) and of the associated auth
+  (``AuthCredential(...)``), including the 3b toolsets (openapi/bigquery/spanner/mcp/apihub/
   langchain/crewai).
 
-Consommé par :mod:`adk_toolkit_mcp.project_model.render`, qui assemble le module ``agent.py``
-complet (agents, ordre d'import, espacement PEP 8).
+Consumed by :mod:`adk_toolkit_mcp.project_model.render`, which assembles the complete
+``agent.py`` module (agents, import order, PEP 8 spacing).
 """
 
 from __future__ import annotations
@@ -46,52 +45,52 @@ from .specs import (
     ToolSpec,
 )
 
-#: Imports requis par les corps de garde-fou ``before_model`` (refus = ``LlmResponse``/``Content``).
+#: Imports required by ``before_model`` guardrail bodies (refusal = ``LlmResponse``/``Content``).
 _LLM_RESPONSE_IMPORT = "from google.adk.models import LlmResponse"
 _GENAI_TYPES_IMPORT = "from google.genai import types"
 
 
 # --------------------------------------------------------------------------- #
-# Rendu de source — helpers bas-niveau
+# Source rendering — low-level helpers
 # --------------------------------------------------------------------------- #
 def _py_str(value: str) -> str:
-    """Littéral chaîne Python **stable pour ``ruff format``**.
+    """Python string literal **stable for ``ruff format``**.
 
-    ``ruff format`` (comme Black) préfère les guillemets doubles, **sauf** si la valeur
-    contient un ``"`` mais pas de ``'`` — auquel cas il bascule sur les guillemets simples
-    pour éviter d'échapper. On reproduit exactement ce choix pour que la sortie générée soit
-    déjà dans la forme que ruff écrirait (idempotence de ``format --check``).
+    ``ruff format`` (like Black) prefers double quotes, **except** if the value contains a ``"``
+    but no ``'`` — in which case it switches to single quotes to avoid escaping. We reproduce that
+    choice exactly so the generated output is already in the form ruff would write (idempotence of
+    ``format --check``).
     """
     has_double = '"' in value
     has_single = "'" in value
     if has_double and not has_single:
-        # Guillemets simples : seul le backslash doit être échappé.
+        # Single quotes: only the backslash needs escaping.
         escaped = value.replace("\\", "\\\\")
         return f"'{escaped}'"
-    # Guillemets doubles par défaut : échapper backslash puis guillemet double.
+    # Double quotes by default: escape backslash then double quote.
     escaped = value.replace("\\", "\\\\").replace('"', '\\"')
     return f'"{escaped}"'
 
 
 def _render_param(name: str, ptype: str, default: str | None) -> str:
-    """Rend un paramètre de signature : ``name: type`` ou ``name: type = default``.
+    """Render a signature parameter: ``name: type`` or ``name: type = default``.
 
-    ``default`` est un **littéral source déjà rendu** (ex. ``"x"``, ``0``, ``None``).
-    Quand ``default`` est ``None`` (au sens Python), le paramètre n'a pas de défaut.
+    ``default`` is an **already-rendered source literal** (e.g. ``"x"``, ``0``, ``None``). When
+    ``default`` is ``None`` (in the Python sense), the parameter has no default.
     """
     base = f"{name}: {ptype}"
     return base if default is None else f"{base} = {default}"
 
 
 def _render_function_def(spec: ToolSpec) -> str:
-    """Rend un bloc ``def`` top-level : signature typée, docstring 1-ligne, puis le corps.
+    """Render a top-level ``def`` block: typed signature, 1-line docstring, then the body.
 
-    Le corps et la docstring sont indentés de 4 espaces ; le bloc se termine par un seul
-    ``\\n`` (le renderer de module gère l'espacement inter-blocs façon ruff).
+    The body and the docstring are indented by 4 spaces; the block ends with a single ``\\n`` (the
+    module renderer handles the inter-block spacing ruff-style).
     """
     params = ", ".join(_render_param(n, t, d) for (n, t, d) in spec.params)
     doc = (spec.docstring or spec.name).replace("\\", "\\\\").replace('"', '\\"')
-    # docstring sur une ligne, échappée (guillemets triples).
+    # single-line docstring, escaped (triple quotes).
     doc_line = f'    """{doc}"""\n'
     body_lines = spec.body.splitlines() or ["return {}"]
     body = "".join(f"    {line}\n" for line in body_lines)
@@ -99,7 +98,7 @@ def _render_function_def(spec: ToolSpec) -> str:
 
 
 def _render_builtin_ref(spec: ToolSpec) -> ToolRender:
-    """Rend la référence d'un builtin (core -> nom bare ; ``vertex_ai_search`` -> appel)."""
+    """Render a builtin's reference (core -> bare name; ``vertex_ai_search`` -> call)."""
     if spec.builtin_kind in CORE_BUILTINS:
         imp = f"from {_TOOLS_IMPORT_MODULE} import {spec.builtin_kind}"
         return ToolRender(imports=(imp,), helpers=(), ref=spec.builtin_kind)
@@ -108,47 +107,47 @@ def _render_builtin_ref(spec: ToolSpec) -> ToolRender:
         imp = f"from {_TOOLS_IMPORT_MODULE} import {class_name}"
         kwargs = ", ".join(f"{k}={_py_str(v)}" for k, v in spec.args)
         return ToolRender(imports=(imp,), helpers=(), ref=f"{class_name}({kwargs})")
-    # builtin_kind inconnu : on rend tel quel (la validation amont l'aura rejeté).
+    # unknown builtin_kind: render as-is (upstream validation will have rejected it).
     return ToolRender(imports=(), helpers=(), ref=spec.builtin_kind)  # pragma: no cover
 
 
 def render_tool_ref(tool: ToolSpec | str) -> ToolRender:
-    """Rendu d'une entrée ``tools`` -> :class:`ToolRender` (imports, helpers, ref).
+    """Render a ``tools`` entry -> :class:`ToolRender` (imports, helpers, ref).
 
-    POINT D'EXTENSION implémenté en passes 3a + 3b. Genres gérés :
+    EXTENSION POINT implemented in passes 3a + 3b. Handled kinds:
 
-    Passe 3a (sans dépendance) :
+    Pass 3a (no dependency):
 
-    - ``function`` : helper = un ``def`` rendu ; ``ref`` = ``<name>`` (ADK auto-wrappe la
-      fonction en ``FunctionTool`` via ``canonical_tools`` — cf. ``docs/adk-api-notes/tools.md``).
-    - ``long_running`` : même helper ; import ``LongRunningFunctionTool`` ;
+    - ``function``: helper = a rendered ``def``; ``ref`` = ``<name>`` (ADK auto-wraps the function
+      in a ``FunctionTool`` via ``canonical_tools`` — cf. ``docs/adk-api-notes/tools.md``).
+    - ``long_running``: same helper; import ``LongRunningFunctionTool``;
       ``ref`` = ``LongRunningFunctionTool(func=<name>)``.
-    - ``builtin`` : ``ref`` = nom du builtin (ex. ``google_search``) importé ;
+    - ``builtin``: ``ref`` = the builtin's name (e.g. ``google_search``) imported;
       ``vertex_ai_search`` -> ``VertexAiSearchTool(data_store_id="...")``.
-    - ``agent_tool`` : import ``AgentTool`` ; ``ref`` = ``AgentTool(agent=<target>)``.
-    - ``openapi`` : import ``OpenAPIToolset`` ; helper = ``<id> = OpenAPIToolset(spec_str=..., \
-      spec_str_type="json")`` ; ``ref`` = ``<id>`` (le toolset entre **directement** dans
-      ``tools=[...]`` — confirmé par introspection, pas de ``.get_tools()``).
+    - ``agent_tool``: import ``AgentTool``; ``ref`` = ``AgentTool(agent=<target>)``.
+    - ``openapi``: import ``OpenAPIToolset``; helper = ``<id> = OpenAPIToolset(spec_str=..., \
+      spec_str_type="json")``; ``ref`` = ``<id>`` (the toolset goes **directly** into
+      ``tools=[...]`` — confirmed by introspection, no ``.get_tools()``).
 
-    Passe 3b (dépendance optionnelle ; **codegen-only** — le toolkit n'importe jamais ces extras) :
+    Pass 3b (optional dependency; **codegen-only** — the toolkit never imports these extras):
 
-    - ``bigquery`` / ``spanner`` : import du toolset ; helper ``<id> = BigQueryToolset(<args>)`` /
-      ``SpannerToolset(<args>)`` ; ``ref`` = ``<id>``.
-    - ``mcp_toolset`` : import ``McpToolset`` + classe de connection-params du transport
-      (+ ``StdioServerParameters`` pour stdio) ; helper
-      ``<id> = McpToolset(connection_params=..., tool_filter=[...])`` ; ``ref`` = ``<id>``.
-    - ``apihub`` : import ``APIHubToolset`` ; helper
-      ``<id> = APIHubToolset(apihub_resource_name="...")`` ; ``ref`` = ``<id>``.
-    - ``langchain`` : import ``LangchainTool`` + la ligne d'import utilisateur (verbatim) ;
-      ``ref`` = ``LangchainTool(tool=<tool_expr>)`` (pas de helper).
-    - ``crewai`` : import ``CrewaiTool`` + ligne d'import utilisateur ;
+    - ``bigquery`` / ``spanner``: import the toolset; helper ``<id> = BigQueryToolset(<args>)`` /
+      ``SpannerToolset(<args>)``; ``ref`` = ``<id>``.
+    - ``mcp_toolset``: import ``McpToolset`` + the transport's connection-params class
+      (+ ``StdioServerParameters`` for stdio); helper
+      ``<id> = McpToolset(connection_params=..., tool_filter=[...])``; ``ref`` = ``<id>``.
+    - ``apihub``: import ``APIHubToolset``; helper
+      ``<id> = APIHubToolset(apihub_resource_name="...")``; ``ref`` = ``<id>``.
+    - ``langchain``: import ``LangchainTool`` + the user's import line (verbatim);
+      ``ref`` = ``LangchainTool(tool=<tool_expr>)`` (no helper).
+    - ``crewai``: import ``CrewaiTool`` + the user's import line;
       ``ref`` = ``CrewaiTool(tool=<tool_expr>, name=..., description=...)``.
 
-    Auth (openapi/apihub/mcp_toolset) : si ``tool.auth`` est défini, ``auth_credential=\
-    AuthCredential(...)`` est ajouté aux kwargs du helper + imports ``google.adk.auth``.
+    Auth (openapi/apihub/mcp_toolset): if ``tool.auth`` is set, ``auth_credential=\
+    AuthCredential(...)`` is added to the helper's kwargs + the ``google.adk.auth`` imports.
 
-    Forme héritée (``str``) : rendue **telle quelle** (référence bare déjà importée), sans
-    import ni helper, pour compat ascendante avec le modèle P1.
+    Legacy form (``str``): rendered **as-is** (a bare reference already imported), with no import
+    or helper, for backward compatibility with the P1 model.
     """
     if isinstance(tool, str):
         return ToolRender(imports=(), helpers=(), ref=tool)
@@ -198,20 +197,20 @@ def render_tool_ref(tool: ToolSpec | str) -> ToolRender:
         )
         return ToolRender(imports=imports, helpers=(), ref=ref)
 
-    raise ValueError(f"Genre d'outil non rendu : {tool.kind!r}")  # pragma: no cover
+    raise ValueError(f"Unrendered tool kind: {tool.kind!r}")  # pragma: no cover
 
 
 # --------------------------------------------------------------------------- #
-# Rendu de l'auth (set_auth) — ``auth_credential=AuthCredential(...)`` + imports
+# Auth rendering (set_auth) — ``auth_credential=AuthCredential(...)`` + imports
 # --------------------------------------------------------------------------- #
 def _auth_credential_call(auth: AuthSpec) -> tuple[_Call, tuple[str, ...]]:
-    """Construit le :class:`_Call` ``AuthCredential(...)`` + les imports ``google.adk.auth`` requis.
+    """Build the ``AuthCredential(...)`` :class:`_Call` + the required ``google.adk.auth`` imports.
 
-    Le schéma dicte ``auth_type`` et le sous-objet porté :
+    The scheme dictates ``auth_type`` and the carried sub-object:
 
-    - ``apikey`` -> ``api_key="..."`` ;
-    - ``bearer`` -> ``http=HttpAuth(scheme="bearer", credentials=HttpCredentials(token="..."))`` ;
-    - ``oauth2`` -> ``oauth2=OAuth2Auth(client_id=..., client_secret=..., [access_token=...])`` ;
+    - ``apikey`` -> ``api_key="..."``;
+    - ``bearer`` -> ``http=HttpAuth(scheme="bearer", credentials=HttpCredentials(token="..."))``;
+    - ``oauth2`` -> ``oauth2=OAuth2Auth(client_id=..., client_secret=..., [access_token=...])``;
     - ``service_account`` -> ``service_account=ServiceAccount(use_default_credential=True |
       scopes=[...])``.
     """
@@ -241,10 +240,10 @@ def _auth_credential_call(auth: AuthSpec) -> tuple[_Call, tuple[str, ...]]:
 
 
 def _service_account_kwargs(cred: dict[str, str]) -> list[str]:
-    """Liste des kwargs d'un ``ServiceAccount`` depuis le dict credential (booléens/listes gérés).
+    """List of a ``ServiceAccount``'s kwargs from the credential dict (booleans/lists handled).
 
-    ``use_default_credential`` : valeur ``"true"``/``"false"`` -> littéral booléen Python.
-    ``scopes`` : valeur séparée par des virgules -> liste de chaînes.
+    ``use_default_credential``: value ``"true"``/``"false"`` -> Python boolean literal.
+    ``scopes``: comma-separated value -> list of strings.
     """
     parts: list[str] = []
     for key, value in cred.items():
@@ -259,18 +258,18 @@ def _service_account_kwargs(cred: dict[str, str]) -> list[str]:
 
 
 def _py_bool(value: str) -> str:
-    """``"true"``/``"1"``/``"yes"`` -> ``True`` (sinon ``False``) — littéral source Python."""
+    """``"true"``/``"1"``/``"yes"`` -> ``True`` (otherwise ``False``) — Python source literal."""
     return "True" if value.strip().lower() in ("true", "1", "yes") else "False"
 
 
 @dataclass(frozen=True)
 class _Call:
-    """Représentation structurée d'un appel ``Callee(arg1, arg2, ...)`` pour le rendu ruff-stable.
+    """Structured representation of a ``Callee(arg1, arg2, ...)`` call for ruff-stable rendering.
 
-    Chaque argument est soit une **chaîne atomique** déjà rendue (``"key=value"``, un littéral,
-    une liste/dict inline), soit un :class:`_Call` imbriqué (rendu récursivement). On ne replie
-    jamais l'intérieur d'un littéral atomique — seuls les ``_Call`` sont éclatés récursivement,
-    ce qui suffit pour reproduire la sortie ``ruff format`` de nos constructions.
+    Each argument is either an already-rendered **atomic string** (``"key=value"``, a literal, an
+    inline list/dict) or a nested :class:`_Call` (rendered recursively). We never fold the inside
+    of an atomic literal — only ``_Call`` objects are split recursively, which is enough to
+    reproduce the ``ruff format`` output of our constructs.
     """
 
     callee: str
@@ -278,19 +277,19 @@ class _Call:
 
 
 def _render_call(call: _Call, col: int, base_indent: int) -> str:
-    """Rend un :class:`_Call` **stable pour ``ruff format``**.
+    """Render a :class:`_Call` **stable for ``ruff format``**.
 
-    ``col`` = colonne où débute ce rendu (budget de largeur inline) ; ``base_indent`` =
-    indentation de la **ligne logique** propriétaire (le corps éclaté est indenté de
-    ``base_indent + 4``, comme ``ruff format``). Algorithme reproduit :
+    ``col`` = the column where this rendering starts (inline width budget); ``base_indent`` = the
+    indentation of the owning **logical line** (the split body is indented by ``base_indent + 4``,
+    like ``ruff format``). Reproduced algorithm:
 
-    - forme inline si elle tient dans :data:`LINE_LENGTH` à partir de ``col`` ;
-    - sinon, éclatement **un argument par ligne** (indent ``base_indent+4``). La virgule finale
-      (« magic trailing comma ») n'est ajoutée **que** si le call a **≥ 2 arguments** : un call à
-      argument unique qui doit être replié met cet argument seul sur sa ligne **sans** virgule
-      finale (comportement exact de ``ruff format`` — vérifié par introspection).
+    - inline form if it fits in :data:`LINE_LENGTH` starting from ``col``;
+    - otherwise, split **one argument per line** (indent ``base_indent+4``). The trailing comma
+      ("magic trailing comma") is added **only** if the call has **≥ 2 arguments**: a
+      single-argument call that must be folded puts that argument alone on its line **without** a
+      trailing comma (exact ``ruff format`` behavior — verified by introspection).
 
-    Ne termine **pas** par ``\\n`` (l'appelant gère sauts de ligne / suffixe ``= var``).
+    Does **not** end with ``\\n`` (the caller handles line breaks / the ``= var`` suffix).
     """
     inline = _call_inline(call)
     if col + len(inline) <= LINE_LENGTH:
@@ -311,35 +310,35 @@ def _render_call(call: _Call, col: int, base_indent: int) -> str:
 
 
 def _call_inline(call: _Call) -> str:
-    """Forme inline complète d'un :class:`_Call` (récursive, sans sauts de ligne)."""
+    """Full inline form of a :class:`_Call` (recursive, no line breaks)."""
     parts = [a if isinstance(a, str) else _call_inline(a) for a in call.args]
     return f"{call.callee}({', '.join(parts)})"
 
 
 def _kwarg_call(key: str, call: _Call) -> _Call:
-    """Combine ``key=`` + un :class:`_Call` en un :class:`_Call` repliable (``callee=key=Callee``).
+    """Combine ``key=`` + a :class:`_Call` into a foldable :class:`_Call` (``callee=key=Callee``).
 
-    :func:`_render_call` choisit ensuite inline (``key=Callee(...)``) ou éclaté
-    (``key=Callee(\\n ... \\n)``) selon la largeur — exactement la forme ``ruff format``.
+    :func:`_render_call` then chooses inline (``key=Callee(...)``) or split
+    (``key=Callee(\\n ... \\n)``) depending on the width — exactly the ``ruff format`` form.
     """
     return _Call(callee=f"{key}={call.callee}", args=call.args)
 
 
 def _render_toolset_helper(var: str, call: _Call) -> str:
-    """Rend ``<var> = <Call>`` (récursivement replié) terminé par un seul ``\\n``.
+    """Render ``<var> = <Call>`` (recursively folded) ending with a single ``\\n``.
 
-    Le call débute à la colonne ``len(var) + 3`` (``"<var> = "``) ; le corps éclaté est indenté
-    depuis ``base_indent=0`` (statement top-level) -> +4, conforme à ``ruff format``.
+    The call starts at column ``len(var) + 3`` (``"<var> = "``); the split body is indented from
+    ``base_indent=0`` (top-level statement) -> +4, matching ``ruff format``.
     """
     return f"{var} = {_render_call(call, col=len(var) + 3, base_indent=0)}\n"
 
 
 def _maybe_auth_arg(tool: ToolSpec) -> tuple[list[str | _Call], tuple[str, ...]]:
-    """Renvoie ``([auth_credential=...] | [], imports)`` pour un toolset auth-capable.
+    """Return ``([auth_credential=...] | [], imports)`` for an auth-capable toolset.
 
-    Si ``tool.auth`` est défini, rend ``auth_credential=AuthCredential(...)`` (repliable) + les
-    imports d'auth requis ; sinon, listes vides. (La validation garantit que seuls les genres
-    auth-capables portent un ``auth``.)
+    If ``tool.auth`` is set, render ``auth_credential=AuthCredential(...)`` (foldable) + the
+    required auth imports; otherwise, empty lists. (Validation guarantees that only auth-capable
+    kinds carry an ``auth``.)
     """
     if tool.auth is None:
         return [], ()
@@ -359,9 +358,9 @@ def _render_openapi(tool: ToolSpec) -> ToolRender:
 def _render_gcp_toolset(tool: ToolSpec, class_name: str, import_stmt: str) -> ToolRender:
     """``<id> = BigQueryToolset(<args>)`` / ``SpannerToolset(<args>)``.
 
-    Les ``args`` sont des **expressions source** (pas des littéraux chaîne) : un utilisateur
-    fournit p.ex. ``{"bigquery_tool_config": "my_cfg"}`` pour référencer une variable/objet
-    construit ailleurs. Pas d'auth ici (ces toolsets utilisent ``credentials_config``).
+    The ``args`` are **source expressions** (not string literals): a user provides e.g.
+    ``{"bigquery_tool_config": "my_cfg"}`` to reference a variable/object built elsewhere. No auth
+    here (these toolsets use ``credentials_config``).
     """
     args: tuple[str | _Call, ...] = tuple(f"{k}={v}" for k, v in tool.args)
     helper = _render_toolset_helper(tool.name, _Call(class_name, args))
@@ -378,11 +377,11 @@ def _render_apihub(tool: ToolSpec) -> ToolRender:
 
 
 def _mcp_connection_params_call(tool: ToolSpec) -> tuple[_Call, tuple[str, ...]]:
-    """Construit le :class:`_Call` ``connection_params=...`` selon le transport + imports requis.
+    """Build the ``connection_params=...`` :class:`_Call` per transport + required imports.
 
     - ``stdio`` -> ``StdioConnectionParams(server_params=StdioServerParameters(command=...,
-      args=[...]))`` (importe aussi ``StdioServerParameters`` depuis ``mcp``) ;
-    - ``sse`` -> ``SseConnectionParams(url="..."[, headers={...}])`` ;
+      args=[...]))`` (also imports ``StdioServerParameters`` from ``mcp``);
+    - ``sse`` -> ``SseConnectionParams(url="..."[, headers={...}])``;
     - ``http`` -> ``StreamableHTTPConnectionParams(url="..."[, headers={...}])``.
     """
     params_cls = _MCP_TRANSPORTS[tool.transport]
@@ -395,7 +394,7 @@ def _mcp_connection_params_call(tool: ToolSpec) -> tuple[_Call, tuple[str, ...]]
         )
         conn = _Call(params_cls, (_kwarg_call("server_params", server),))
         return conn, tuple(imports)
-    # sse / http : url + headers optionnels.
+    # sse / http: url + optional headers.
     inner: list[str] = [f"url={_py_str(tool.url)}"]
     if tool.headers:
         headers = ", ".join(f"{_py_str(k)}: {_py_str(v)}" for k, v in tool.headers)
@@ -418,34 +417,34 @@ def _render_mcp_toolset(tool: ToolSpec) -> ToolRender:
 
 
 # --------------------------------------------------------------------------- #
-# Rendu des callbacks (garde-fous) — domaine `safety`, P4c
+# Callback rendering (guardrails) — `safety` domain, P4c
 # --------------------------------------------------------------------------- #
 def _guard_fn_name(agent_name: str, hook: str) -> str:
-    """Nom stable de la fonction de garde-fou générée (unique par agent + hook).
+    """Stable name of the generated guardrail function (unique per agent + hook).
 
-    Ex. ``_guard_before_model_my_agent``. Stable (déterministe) afin que la régénération soit
-    idempotente et que le kwarg de l'agent référence exactement cette fonction.
+    E.g. ``_guard_before_model_my_agent``. Stable (deterministic) so that regeneration is
+    idempotent and the agent's kwarg references exactly this function.
     """
     return f"{_GUARD_FN_PREFIX}_{hook}_{agent_name}"
 
 
 def _py_str_list(values: list[str]) -> str:
-    """Rend ``[ "a", "b" ]`` (littéral liste de chaînes) inline et ruff-stable."""
+    """Render ``[ "a", "b" ]`` (string list literal) inline and ruff-stable."""
     return "[" + ", ".join(_py_str(v) for v in values) + "]"
 
 
 def _split_csv(raw: str) -> list[str]:
-    """Découpe une valeur ``"a, b ,c"`` en ``["a", "b", "c"]`` (vides ignorés)."""
+    """Split a value ``"a, b ,c"`` into ``["a", "b", "c"]`` (empties ignored)."""
     return [s.strip() for s in raw.split(",") if s.strip()]
 
 
 def _refusal_response_lines(refusal: str, indent: str) -> list[str]:
-    """Ligne ``return _refuse("<refusal>")`` (before_model) — via le helper partagé ``_refuse``.
+    """Line ``return _refuse("<refusal>")`` (before_model) — via the shared helper ``_refuse``.
 
-    On délègue la construction du ``LlmResponse`` au helper top-level :data:`_REFUSE_HELPER`
-    (émis une seule fois). Le corps du garde-fou ne porte donc qu'un appel à argument unique
-    (une chaîne) : stable pour ``ruff format`` quelle que soit la longueur du message (un long
-    littéral reste seul sur sa ligne, sans virgule finale — comportement exact de ruff).
+    We delegate the construction of the ``LlmResponse`` to the top-level helper
+    :data:`_REFUSE_HELPER` (emitted once). The guardrail body therefore only carries a
+    single-argument call (a string): stable for ``ruff format`` whatever the message length (a
+    long literal stays alone on its line, without a trailing comma — exact ruff behavior).
     """
     call = _Call("_refuse", (_py_str(refusal),))
     rendered = _render_call(call, col=len(indent) + len("return "), base_indent=len(indent))
@@ -453,11 +452,11 @@ def _refusal_response_lines(refusal: str, indent: str) -> list[str]:
 
 
 def _block_keywords_body(spec: CallbackSpec) -> tuple[list[str], tuple[str, ...]]:
-    """Corps de ``before_model`` : refuse si un terme bloqué apparaît dans le texte utilisateur.
+    """Body of ``before_model``: refuses if a blocked term appears in the user text.
 
-    Lit ``llm_request.contents`` (list[Content]), concatène le texte des parts du DERNIER tour
-    utilisateur, compare en minuscules à la liste de mots bloqués ; si match -> renvoie un
-    ``LlmResponse`` de refus (court-circuite le LLM). Sinon ``return None`` (poursuite normale).
+    Reads ``llm_request.contents`` (list[Content]), concatenates the text of the LAST user turn's
+    parts, compares it in lowercase against the list of blocked words; on a match -> returns a
+    refusal ``LlmResponse`` (short-circuits the LLM). Otherwise ``return None`` (normal flow).
     """
     keywords = _split_csv(spec.param("keywords"))
     refusal = spec.param("refusal") or _DEFAULT_REFUSAL
@@ -468,15 +467,15 @@ def _block_keywords_body(spec: CallbackSpec) -> tuple[list[str], tuple[str, ...]
         *_refusal_response_lines(refusal, indent="        "),
         "    return None",
     ]
-    # Imports (LlmResponse/types) portés par le helper partagé ``_refuse`` -> aucun import ici.
+    # Imports (LlmResponse/types) carried by the shared helper ``_refuse`` -> no import here.
     return lines, ()
 
 
 def _max_input_chars_body(spec: CallbackSpec) -> tuple[list[str], tuple[str, ...]]:
-    """Corps de ``before_model`` : refuse si le texte utilisateur dépasse ``max_chars``."""
+    """Body of ``before_model``: refuses if the user text exceeds ``max_chars``."""
     try:
         max_chars = int(spec.param("max_chars", "0"))
-    except ValueError:  # pragma: no cover - validé en amont par le domaine safety
+    except ValueError:  # pragma: no cover - validated upstream by the safety domain
         max_chars = 0
     refusal = spec.param("refusal") or _DEFAULT_REFUSAL
     lines = [
@@ -485,14 +484,14 @@ def _max_input_chars_body(spec: CallbackSpec) -> tuple[list[str], tuple[str, ...
         *_refusal_response_lines(refusal, indent="        "),
         "    return None",
     ]
-    # Imports (LlmResponse/types) portés par le helper partagé ``_refuse`` -> aucun import ici.
+    # Imports (LlmResponse/types) carried by the shared helper ``_refuse`` -> no import here.
     return lines, ()
 
 
 def _block_tool_body(spec: CallbackSpec) -> tuple[list[str], tuple[str, ...]]:
-    """Corps de ``before_tool`` : court-circuite l'outil si son nom est dans la denylist.
+    """Body of ``before_tool``: short-circuits the tool if its name is in the denylist.
 
-    Renvoie un ``dict`` (utilisé comme résultat de l'outil), ce qui empêche son exécution.
+    Returns a ``dict`` (used as the tool's result), which prevents its execution.
     """
     denylist = _split_csv(spec.param("denylist"))
     message = spec.param("message") or "Tool call blocked by safety policy."
@@ -505,78 +504,78 @@ def _block_tool_body(spec: CallbackSpec) -> tuple[list[str], tuple[str, ...]]:
     return lines, ()
 
 
-#: Corps de chaque politique -> (lignes de corps, imports requis).
+#: Body of each policy -> (body lines, required imports).
 _POLICY_BODY = {
     "block_keywords": _block_keywords_body,
     "max_input_chars": _max_input_chars_body,
     "block_tool": _block_tool_body,
 }
 
-#: Signature (paramètres positionnels) de chaque hook (cf. introspection 2.1.0).
+#: Signature (positional parameters) of each hook (cf. 2.1.0 introspection).
 _HOOK_SIGNATURE: dict[str, str] = {
     "before_model": "callback_context, llm_request",
     "before_tool": "tool, args, tool_context",
 }
 
-#: Helper top-level partagé : extrait le texte du dernier tour utilisateur d'un ``LlmRequest``.
-#: Émis UNE seule fois si au moins un garde-fou ``before_model`` (keywords / max_chars) l'utilise.
+#: Shared top-level helper: extracts the text of the last user turn from an ``LlmRequest``.
+#: Emitted ONCE if at least one ``before_model`` guardrail (keywords / max_chars) uses it.
 _USER_TEXT_HELPER = (
     "def _user_text(llm_request) -> str:\n"
-    '    """Concatène le texte des parts du dernier tour utilisateur d\'un LlmRequest."""\n'
+    '    """Concatenate the text of an LlmRequest\'s last user turn parts."""\n'
     "    for content in reversed(llm_request.contents or []):\n"
     '        if getattr(content, "role", None) == "user":\n'
     '            return "".join(p.text for p in (content.parts or []) if p.text)\n'
     '    return ""\n'
 )
 
-#: Helper top-level partagé : construit un ``LlmResponse`` de refus à partir d'un message texte.
-#: Émis UNE seule fois si au moins un garde-fou ``before_model`` court-circuite le LLM. Centralise
-#: la construction (un appel à argument unique côté garde-fou -> rendu ruff-stable, même pour un
-#: message long) et les imports ``LlmResponse``/``types``.
+#: Shared top-level helper: builds a refusal ``LlmResponse`` from a text message.
+#: Emitted ONCE if at least one ``before_model`` guardrail short-circuits the LLM. Centralizes the
+#: construction (a single-argument call on the guardrail side -> ruff-stable rendering, even for a
+#: long message) and the ``LlmResponse``/``types`` imports.
 _REFUSE_HELPER = (
     "def _refuse(message: str) -> LlmResponse:\n"
-    '    """Construit une réponse de refus (court-circuite le LLM) portant ``message``."""\n'
+    '    """Build a refusal response (short-circuits the LLM) carrying ``message``."""\n'
     "    return LlmResponse(\n"
     '        content=types.Content(role="model", parts=[types.Part.from_text(text=message)])\n'
     "    )\n"
 )
 
-#: Politiques qui requièrent le helper ``_user_text`` (garde-fous ``before_model``).
+#: Policies that require the ``_user_text`` helper (``before_model`` guardrails).
 _NEEDS_USER_TEXT: frozenset[str] = frozenset({"block_keywords", "max_input_chars"})
 
-#: Politiques qui court-circuitent le LLM via ``_refuse`` (garde-fous ``before_model``).
+#: Policies that short-circuit the LLM via ``_refuse`` (``before_model`` guardrails).
 _NEEDS_REFUSE: frozenset[str] = frozenset({"block_keywords", "max_input_chars"})
 
 
 def render_callback(spec: CallbackSpec, agent_name: str) -> ToolRender:
-    """Rend un garde-fou -> :class:`ToolRender` (imports, def helper, ``ref`` = nom de la fonction).
+    """Render a guardrail -> :class:`ToolRender` (imports, helper def, ``ref`` = function name).
 
-    La ``ref`` est le nom de la fonction générée (à placer comme valeur du kwarg réel de l'agent,
-    ex. ``before_model_callback=_guard_before_model_<agent>``). Le helper est un ``def`` top-level
-    **fonctionnel** (corps réel selon la politique). Les imports nécessaires (``LlmResponse`` /
-    ``types``) sont remontés à la section d'imports du module par le renderer.
+    The ``ref`` is the name of the generated function (to place as the value of the agent's real
+    kwarg, e.g. ``before_model_callback=_guard_before_model_<agent>``). The helper is a
+    **functional** top-level ``def`` (real body per policy). The required imports (``LlmResponse``
+    / ``types``) are lifted to the module's import section by the renderer.
     """
     fn_name = _guard_fn_name(agent_name, spec.hook)
     params = _HOOK_SIGNATURE[spec.hook]
     body_lines, imports = _POLICY_BODY[spec.policy](spec)
-    doc = f'    """Garde-fou {spec.policy} ({spec.hook}) généré par adk-toolkit-mcp."""'
+    doc = f'    """{spec.policy} guardrail ({spec.hook}) generated by adk-toolkit-mcp."""'
     body = "\n".join(body_lines)
     helper = f"def {fn_name}({params}):\n{doc}\n{body}\n"
     return ToolRender(imports=imports, helpers=(helper,), ref=fn_name)
 
 
 def callback_needs_user_text(spec: CallbackSpec) -> bool:
-    """Vrai si la politique du callback requiert le helper top-level ``_user_text``."""
+    """True if the callback's policy requires the top-level helper ``_user_text``."""
     return spec.policy in _NEEDS_USER_TEXT
 
 
 def callback_needs_refuse(spec: CallbackSpec) -> bool:
-    """Vrai si la politique du callback court-circuite le LLM via le helper ``_refuse``."""
+    """True if the callback's policy short-circuits the LLM via the ``_refuse`` helper."""
     return spec.policy in _NEEDS_REFUSE
 
 
 def refuse_helper_render() -> ToolRender:
-    """``ToolRender`` du helper partagé ``_refuse`` (def + imports ``LlmResponse``/``types``)."""
+    """``ToolRender`` of the shared ``_refuse`` helper (def + ``LlmResponse``/``types`` imports)."""
     return ToolRender(
         imports=(_LLM_RESPONSE_IMPORT, _GENAI_TYPES_IMPORT),
         helpers=(_REFUSE_HELPER,),
@@ -585,5 +584,5 @@ def refuse_helper_render() -> ToolRender:
 
 
 def user_text_helper_render() -> ToolRender:
-    """``ToolRender`` du helper partagé ``_user_text`` (def, sans import)."""
+    """``ToolRender`` of the shared ``_user_text`` helper (def, no import)."""
     return ToolRender(imports=(), helpers=(_USER_TEXT_HELPER,), ref="_user_text")

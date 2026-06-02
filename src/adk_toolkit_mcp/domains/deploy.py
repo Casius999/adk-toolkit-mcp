@@ -1,22 +1,22 @@
-"""Domaine `deploy` : construit (et, sur demande, exécute) les commandes ``adk deploy`` (P4a).
+"""`deploy` domain: builds (and, on request, runs) the ``adk deploy`` commands (P4a).
 
-Contrairement aux domaines P1 (qui *écrivent* du code) et P3 (qui *exécutent* un agent), ce
-domaine **construit l'argv de la CLI ``adk deploy``** à partir d'arguments validés. Par défaut,
-RIEN n'est exécuté (``execute=False``) : on renvoie l'argv construit + un plan lisible. Le vrai
-déploiement (``execute=True``) passe par :func:`adk_toolkit_mcp.adk_cli.run_adk` — il nécessite
-GCP et n'est PAS exercé en CI. La **construction** des commandes et la **validité des flags** le
-sont.
+Unlike the P1 domains (which *write* code) and P3 (which *runs* an agent), this domain **builds
+the ``adk deploy`` CLI argv** from validated arguments. By default, NOTHING is run
+(``execute=False``): we return the built argv + a readable plan. The real deployment
+(``execute=True``) goes through :func:`adk_toolkit_mcp.adk_cli.run_adk` — it requires GCP and is
+NOT exercised in CI. The command **building** and the **flag validity** are.
 
-Garde-fou central : chaque flag émis est validé contre la vraie sortie ``adk <sub> --help`` de
-cette version d'ADK (:func:`adk_cli.available_flags`). Si le toolkit construisait un flag absent
-de l'ADK installé (dérive de version), l'outil renvoie ``err`` en listant les flags inconnus —
-il ne peut donc jamais émettre une commande invalide.
+Central guardrail: each emitted flag is validated against the real ``adk <sub> --help`` output of
+this version of ADK (:func:`adk_cli.available_flags`). If the toolkit built a flag absent from the
+installed ADK (version drift), the tool returns ``err`` listing the unknown flags — so it can
+never emit an invalid command.
 
-Sous-serveur monté sous ``namespace="deploy"`` → outils exposés ``deploy_<nom>``. Noms BARE.
-Chaque outil renvoie l'enveloppe ``{ok, data, error}``. Cf. ``docs/adk-api-notes/deploy-dev.md``
-pour les flags 2.1.0 confirmés (et les écarts vs. l'intuition : ``--trace_to_cloud`` et non
-``--enable_cloud_trace`` ; ``--cluster_name`` et non ``--cluster`` ; agent_engine n'a pas
-``--app_name`` et ``--staging_bucket`` y est déprécié).
+A sub-server mounted under ``namespace="deploy"`` → tools exposed as ``deploy_<name>``. BARE
+names. Each tool returns the ``{ok, data, error}`` envelope. Cf.
+``docs/adk-api-notes/deploy-dev.md`` for the confirmed 2.1.0 flags (and the differences vs.
+intuition: ``--trace_to_cloud`` not
+``--enable_cloud_trace``; ``--cluster_name`` not ``--cluster``; agent_engine has no ``--app_name``
+and ``--staging_bucket`` is deprecated there).
 """
 
 from __future__ import annotations
@@ -33,38 +33,36 @@ from ..workspace import Workspace
 
 deploy_server: FastMCP = FastMCP("deploy")
 
-#: Cibles de déploiement supportées (sous-commandes ``adk deploy``).
+#: Supported deployment targets (``adk deploy`` subcommands).
 DeployTarget = Literal["agent_engine", "cloud_run", "gke"]
 _DEPLOY_TARGETS: frozenset[str] = frozenset({"agent_engine", "cloud_run", "gke"})
 
-#: Dockerfile servant ``adk api_server`` (port 8080 = défaut Cloud Run / $PORT).
+#: Dockerfile serving ``adk api_server`` (port 8080 = Cloud Run / $PORT default).
 _DOCKERFILE_NAME = "Dockerfile"
 
 
 # --------------------------------------------------------------------------- #
-# Helpers internes (non exposés)
+# Internal helpers (not exposed)
 # --------------------------------------------------------------------------- #
 def _agent_dir(path: str, app_name: str) -> Path:
-    """Dossier source de l'agent = ``<path>/<app_name>`` (positionnel AGENT de la CLI)."""
+    """Agent source folder = ``<path>/<app_name>`` (the CLI's positional AGENT)."""
     return Path(path) / app_name
 
 
 def _require_agent_dir(path: str, app_name: str) -> str | None:
-    """Renvoie un message d'erreur si le dossier de l'agent n'existe pas, sinon None."""
+    """Return an error message if the agent folder does not exist, otherwise None."""
     agent_dir = _agent_dir(path, app_name)
     if not agent_dir.is_dir():
-        return (
-            f"Dossier d'agent introuvable : {agent_dir}. Scaffolde d'abord l'app (project_create)."
-        )
+        return f"Agent folder not found: {agent_dir}. Scaffold the app first (project_create)."
     return None
 
 
 def _validate_flags(subcommand: list[str], argv: list[str]) -> set[str]:
-    """Renvoie l'ensemble des flags émis (dans ``argv``) ABSENTS de l'ADK installé.
+    """Return the set of emitted flags (in ``argv``) ABSENT from the installed ADK.
 
-    Compare les tokens ``--xxx`` de ``argv`` à :func:`adk_cli.available_flags`. Un ensemble vide
-    signifie « tous les flags émis sont valides ». Si ``available_flags`` est vide (introspection
-    impossible), on n'invalide RIEN (on ne peut pas affirmer qu'un flag est inconnu).
+    Compares the ``--xxx`` tokens of ``argv`` against :func:`adk_cli.available_flags`. An empty set
+    means "all emitted flags are valid". If ``available_flags`` is empty (introspection
+    impossible), we invalidate NOTHING (we cannot assert that a flag is unknown).
     """
     valid = adk_cli.available_flags(subcommand)
     if not valid:
@@ -80,18 +78,18 @@ def _finalize(
     execute: bool,
     cwd: str | None,
 ) -> dict[str, Any]:
-    """Valide les flags émis, puis renvoie le plan (``execute=False``) ou exécute (sinon).
+    """Validate the emitted flags, then return the plan (``execute=False``) or run (otherwise).
 
-    - Valide d'abord que tout flag émis existe dans l'ADK installé (sinon ``err``).
-    - ``execute=False`` (défaut) : renvoie ``{argv, plan, notes, executed: False, ...}``.
-    - ``execute=True`` : invoque ``adk_cli.run_adk`` et renvoie rc/stdout/stderr (déploiement réel).
+    - First validates that every emitted flag exists in the installed ADK (otherwise ``err``).
+    - ``execute=False`` (default): returns ``{argv, plan, notes, executed: False, ...}``.
+    - ``execute=True``: invokes ``adk_cli.run_adk`` and returns rc/stdout/stderr (real deployment).
     """
     unknown = _validate_flags(subcommand, argv)
     if unknown:
         return err(
-            "Flags inconnus de l'ADK installé : "
+            "Flags unknown to the installed ADK: "
             + ", ".join(sorted(unknown))
-            + ". (Réintrospecte docs/adk-api-notes/deploy-dev.md — drift de version ?)"
+            + ". (Re-introspect docs/adk-api-notes/deploy-dev.md — version drift?)"
         )
 
     plan = "adk " + " ".join(argv)
@@ -121,11 +119,11 @@ def _finalize(
 # --------------------------------------------------------------------------- #
 @deploy_server.tool(tags={"deploy"})
 def preflight(target: str = "cloud_run") -> dict[str, Any]:
-    """Vérifications best-effort avant un déploiement (ne lève/échoue jamais).
+    """Best-effort checks before a deployment (never raises/fails).
 
-    Contrôle si ``gcloud`` est sur le PATH, si ``adk`` est exécutable, et donne des findings
-    orientés selon la cible (``agent_engine``/``cloud_run``/``gke``). Renvoie toujours ``ok`` —
-    c'est un diagnostic, pas une porte bloquante.
+    Checks whether ``gcloud`` is on the PATH, whether ``adk`` is runnable, and gives findings
+    tailored to the target (``agent_engine``/``cloud_run``/``gke``). Always returns ``ok`` — it is
+    a diagnostic, not a blocking gate.
     """
     gcloud = shutil.which("gcloud") is not None
     kubectl = shutil.which("kubectl") is not None
@@ -134,17 +132,17 @@ def preflight(target: str = "cloud_run") -> dict[str, Any]:
 
     findings: list[str] = []
     if not gcloud:
-        findings.append("gcloud introuvable sur le PATH (requis pour cloud_run/gke/agent_engine).")
+        findings.append("gcloud not found on the PATH (required for cloud_run/gke/agent_engine).")
     if not adk_runnable:
-        findings.append("La CLI adk ne répond pas à --help (vérifie l'installation google-adk).")
+        findings.append("The adk CLI does not respond to --help (check the google-adk install).")
     if target == "gke" and not kubectl:
-        findings.append("kubectl introuvable (recommandé pour inspecter un déploiement GKE).")
+        findings.append("kubectl not found (recommended to inspect a GKE deployment).")
     if target not in _DEPLOY_TARGETS:
         findings.append(
-            f"Cible non standard : {target!r}. Attendu l'une de {sorted(_DEPLOY_TARGETS)}."
+            f"Non-standard target: {target!r}. Expected one of {sorted(_DEPLOY_TARGETS)}."
         )
     if not findings:
-        findings.append("Aucun problème évident détecté (vérifications best-effort).")
+        findings.append("No obvious problem detected (best-effort checks).")
 
     return ok(
         {
@@ -171,24 +169,24 @@ def agent_engine(
     requirements_file: str | None = None,
     execute: bool = False,
 ) -> dict[str, Any]:
-    """Construit ``adk deploy agent_engine`` (Vertex AI Agent Engine).
+    """Build ``adk deploy agent_engine`` (Vertex AI Agent Engine).
 
-    Flags 2.1.0 confirmés : ``--project``, ``--region``, ``--display_name``,
-    ``--requirements_file``. ``app_name`` est mappé sur ``--display_name`` (agent_engine n'a PAS
-    de ``--app_name``) ; un ``display_name`` explicite l'emporte. ``staging_bucket`` est
-    **déprécié** (no-op en 2.1.0) : il N'est PAS émis comme flag — seulement signalé dans
-    ``notes``. Le positionnel AGENT = ``<path>/<app_name>``.
+    Confirmed 2.1.0 flags: ``--project``, ``--region``, ``--display_name``,
+    ``--requirements_file``. ``app_name`` is mapped to ``--display_name`` (agent_engine has NO
+    ``--app_name``); an explicit ``display_name`` wins. ``staging_bucket`` is **deprecated** (no-op
+    in 2.1.0): it is NOT emitted as a flag — only flagged in ``notes``. The positional AGENT =
+    ``<path>/<app_name>``.
 
-    Par défaut (``execute=False``), renvoie l'argv + un plan ; ``execute=True`` lance le vrai
-    déploiement (nécessite des creds GCP — non exécuté en CI).
+    By default (``execute=False``), returns the argv + a plan; ``execute=True`` runs the real
+    deployment (requires GCP creds — not run in CI).
     """
     dir_error = _require_agent_dir(path, app_name)
     if dir_error is not None:
         return err(dir_error)
     if not project.strip():
-        return err("project est requis pour agent_engine (Vertex).")
+        return err("project is required for agent_engine (Vertex).")
     if not region.strip():
-        return err("region est requise pour agent_engine (Vertex).")
+        return err("region is required for agent_engine (Vertex).")
 
     name = (display_name or app_name).strip()
     argv: list[str] = [
@@ -207,10 +205,10 @@ def agent_engine(
     notes: list[str] = []
     if staging_bucket:
         notes.append(
-            "staging_bucket est déprécié en ADK 2.1.0 (no-op) : non transmis. "
-            "Agent Engine gère son propre bucket de staging."
+            "staging_bucket is deprecated in ADK 2.1.0 (no-op): not passed. "
+            "Agent Engine manages its own staging bucket."
         )
-    notes.append("Déploiement Agent Engine : nécessite des identifiants Vertex AI (projet/région).")
+    notes.append("Agent Engine deployment: requires Vertex AI credentials (project/region).")
 
     return _finalize(["deploy", "agent_engine"], argv, notes, execute, cwd=path)
 
@@ -229,20 +227,20 @@ def cloud_run(
     enable_cloud_trace: bool = False,
     execute: bool = False,
 ) -> dict[str, Any]:
-    """Construit ``adk deploy cloud_run`` (Google Cloud Run).
+    """Build ``adk deploy cloud_run`` (Google Cloud Run).
 
-    Flags 2.1.0 : ``--project`` (requis), ``--region`` (requis), ``--service_name`` (optionnel),
-    ``--app_name`` (= ``app_name``), ``--with_ui`` (booléen), ``--trace_to_cloud`` (booléen — le
-    paramètre ``enable_cloud_trace`` mappe sur CE flag, PAS ``--enable_cloud_trace`` qui n'existe
-    pas). Positionnel AGENT = ``<path>/<app_name>``.
+    2.1.0 flags: ``--project`` (required), ``--region`` (required), ``--service_name`` (optional),
+    ``--app_name`` (= ``app_name``), ``--with_ui`` (boolean), ``--trace_to_cloud`` (boolean — the
+    ``enable_cloud_trace`` parameter maps to THIS flag, NOT ``--enable_cloud_trace`` which does not
+    exist). Positional AGENT = ``<path>/<app_name>``.
     """
     dir_error = _require_agent_dir(path, app_name)
     if dir_error is not None:
         return err(dir_error)
     if not project.strip():
-        return err("project est requis pour cloud_run.")
+        return err("project is required for cloud_run.")
     if not region.strip():
-        return err("region est requise pour cloud_run.")
+        return err("region is required for cloud_run.")
 
     argv: list[str] = [
         "deploy",
@@ -261,9 +259,9 @@ def cloud_run(
         argv.append("--trace_to_cloud")
     argv.append(str(_agent_dir(path, app_name)))
 
-    notes = ["Déploiement Cloud Run : nécessite gcloud + un projet GCP avec Cloud Run activé."]
+    notes = ["Cloud Run deployment: requires gcloud + a GCP project with Cloud Run enabled."]
     if with_ui:
-        notes.append("--with_ui sert le Web UI ADK (dev/test uniquement — pas pour la production).")
+        notes.append("--with_ui serves the ADK Web UI (dev/test only — not for production).")
 
     return _finalize(["deploy", "cloud_run"], argv, notes, execute, cwd=path)
 
@@ -281,21 +279,21 @@ def gke(
     service_name: str | None = None,
     execute: bool = False,
 ) -> dict[str, Any]:
-    """Construit ``adk deploy gke`` (Google Kubernetes Engine).
+    """Build ``adk deploy gke`` (Google Kubernetes Engine).
 
-    Flags 2.1.0 : ``--project`` (requis), ``--region`` (requis), ``--cluster_name`` (requis — le
-    paramètre ``cluster`` mappe sur CE flag, PAS ``--cluster``), ``--service_name`` (optionnel),
-    ``--app_name``. Positionnel AGENT = ``<path>/<app_name>``.
+    2.1.0 flags: ``--project`` (required), ``--region`` (required), ``--cluster_name`` (required —
+    the ``cluster`` parameter maps to THIS flag, NOT ``--cluster``), ``--service_name`` (optional),
+    ``--app_name``. Positional AGENT = ``<path>/<app_name>``.
     """
     dir_error = _require_agent_dir(path, app_name)
     if dir_error is not None:
         return err(dir_error)
     if not project.strip():
-        return err("project est requis pour gke.")
+        return err("project is required for gke.")
     if not region.strip():
-        return err("region est requise pour gke.")
+        return err("region is required for gke.")
     if not cluster.strip():
-        return err("cluster (--cluster_name) est requis pour gke.")
+        return err("cluster (--cluster_name) is required for gke.")
 
     argv: list[str] = ["deploy", "gke", "--project", project.strip(), "--region", region.strip()]
     argv += ["--cluster_name", cluster.strip()]
@@ -304,7 +302,7 @@ def gke(
     argv += ["--app_name", app_name.strip()]
     argv.append(str(_agent_dir(path, app_name)))
 
-    notes = ["Déploiement GKE : nécessite gcloud + un cluster GKE existant + kubectl configuré."]
+    notes = ["GKE deployment: requires gcloud + an existing GKE cluster + configured kubectl."]
     return _finalize(["deploy", "gke"], argv, notes, execute, cwd=path)
 
 
@@ -313,10 +311,10 @@ def gke(
 # --------------------------------------------------------------------------- #
 @deploy_server.tool(tags={"deploy"})
 def containerize(path: str, app_name: str) -> dict[str, Any]:
-    """Génère un ``Dockerfile`` pour l'app (servant ``adk api_server``). Idempotent via Workspace.
+    """Generate a ``Dockerfile`` for the app (serving ``adk api_server``). Idempotent via Workspace.
 
-    Le Dockerfile installe ``google-adk`` + copie l'app et lance ``adk api_server`` sur le
-    ``$PORT`` (Cloud Run injecte ``PORT``=8080 par défaut). Écrit dans ``<path>/Dockerfile``.
+    The Dockerfile installs ``google-adk`` + copies the app and runs ``adk api_server`` on
+    ``$PORT`` (Cloud Run injects ``PORT``=8080 by default). Written to ``<path>/Dockerfile``.
     """
     dir_error = _require_agent_dir(path, app_name)
     if dir_error is not None:
@@ -335,11 +333,11 @@ def containerize(path: str, app_name: str) -> dict[str, Any]:
 
 
 def _dockerfile_content(app_name: str) -> str:
-    """Source du Dockerfile servant ``adk api_server`` sur ``$PORT`` (8080 par défaut).
+    """Source of the Dockerfile serving ``adk api_server`` on ``$PORT`` (8080 by default).
 
-    L'app vit dans ``/app/<app_name>`` ; ``adk api_server /app`` traite ``/app`` comme un dossier
-    d'agents (chaque sous-dossier = un agent). Le ``$PORT`` est résolu au runtime via un shell
-    pour respecter la convention Cloud Run.
+    The app lives in ``/app/<app_name>``; ``adk api_server /app`` treats ``/app`` as an agents
+    folder (each subfolder = an agent). ``$PORT`` is resolved at runtime via a shell to honor the
+    Cloud Run convention.
     """
     return (
         "FROM python:3.12-slim\n"
@@ -356,7 +354,7 @@ def _dockerfile_content(app_name: str) -> str:
         "\n"
         "EXPOSE 8080\n"
         "\n"
-        "# Sert l'API ADK ; /app est le dossier d'agents (chaque sous-dossier = un agent).\n"
+        "# Serves the ADK API; /app is the agents folder (each subfolder = an agent).\n"
         'CMD ["sh", "-c", "adk api_server --host 0.0.0.0 --port ${PORT} /app"]\n'
     )
 
@@ -372,17 +370,17 @@ def status(
     service_name: str | None = None,
     cluster: str | None = None,
 ) -> dict[str, Any]:
-    """Statut best-effort d'un déploiement (court timeout ; ne bloque jamais).
+    """Best-effort status of a deployment (short timeout; never blocks).
 
-    - ``cloud_run`` : shell vers ``gcloud run services describe`` si ``gcloud`` est présent.
-    - ``gke`` : shell vers ``kubectl get service`` si ``kubectl`` est présent.
-    - ``agent_engine`` : pas de CLI de statut directe → guidance.
+    - ``cloud_run``: shells to ``gcloud run services describe`` if ``gcloud`` is present.
+    - ``gke``: shells to ``kubectl get service`` if ``kubectl`` is present.
+    - ``agent_engine``: no direct status CLI → guidance.
 
-    Si l'outil requis est absent, renvoie ``available=False`` + une guidance (jamais d'erreur de
-    blocage). Une cible inconnue → ``err``.
+    If the required tool is absent, returns ``available=False`` + guidance (never a blocking
+    error). An unknown target → ``err``.
     """
     if target not in _DEPLOY_TARGETS:
-        return err(f"Cible inconnue : {target!r}. Attendu l'une de {sorted(_DEPLOY_TARGETS)}.")
+        return err(f"Unknown target: {target!r}. Expected one of {sorted(_DEPLOY_TARGETS)}.")
 
     if target == "cloud_run":
         return _status_cloud_run(project, region, service_name)
@@ -393,8 +391,8 @@ def status(
             "target": "agent_engine",
             "available": False,
             "guidance": (
-                "Agent Engine n'a pas de commande de statut CLI dédiée. Inspecte via la console "
-                "Vertex AI ou le SDK vertexai (reasoning_engines.list)."
+                "Agent Engine has no dedicated status CLI command. Inspect via the Vertex AI "
+                "console or the vertexai SDK (reasoning_engines.list)."
             ),
         }
     )
@@ -403,15 +401,13 @@ def status(
 def _status_cloud_run(
     project: str | None, region: str | None, service_name: str | None
 ) -> dict[str, Any]:
-    """Statut Cloud Run via ``gcloud`` (court timeout) ; guidance si gcloud absent."""
+    """Cloud Run status via ``gcloud`` (short timeout); guidance if gcloud is absent."""
     if shutil.which("gcloud") is None:
         return ok(
             {
                 "target": "cloud_run",
                 "available": False,
-                "guidance": (
-                    "gcloud introuvable. Installe le SDK Google Cloud pour interroger Cloud Run."
-                ),
+                "guidance": ("gcloud not found. Install the Google Cloud SDK to query Cloud Run."),
             }
         )
     if not (service_name and project and region):
@@ -419,7 +415,7 @@ def _status_cloud_run(
             {
                 "target": "cloud_run",
                 "available": True,
-                "guidance": "Fournis project, region et service_name pour interroger le service.",
+                "guidance": "Provide project, region and service_name to query the service.",
             }
         )
     args = [
@@ -438,14 +434,14 @@ def _status_cloud_run(
 
 
 def _status_gke(cluster: str | None) -> dict[str, Any]:
-    """Statut GKE via ``kubectl`` (court timeout) ; guidance si kubectl absent."""
+    """GKE status via ``kubectl`` (short timeout); guidance if kubectl is absent."""
     if shutil.which("kubectl") is None:
         return ok(
             {
                 "target": "gke",
                 "available": False,
                 "guidance": (
-                    "kubectl introuvable. Configure-le : gcloud container clusters get-credentials."
+                    "kubectl not found. Configure it: gcloud container clusters get-credentials."
                 ),
             }
         )
@@ -454,15 +450,15 @@ def _status_gke(cluster: str | None) -> dict[str, Any]:
 
 
 def _run_tool(argv: list[str]) -> dict[str, Any]:
-    """Exécute un outil externe (gcloud/kubectl) avec un court timeout ; renvoie rc/stdout/stderr.
+    """Run an external tool (gcloud/kubectl) with a short timeout; return rc/stdout/stderr.
 
-    Best-effort : tout échec (outil absent malgré ``which``, timeout, erreur) est capturé en
-    données, jamais propagé. Argv fixe (pas d'entrée shell).
+    Best-effort: any failure (tool absent despite ``which``, timeout, error) is captured in data,
+    never propagated. Fixed argv (no shell input).
     """
-    import subprocess  # noqa: PLC0415 - import local : outil de statut optionnel
+    import subprocess  # noqa: PLC0415 - local import: optional status tool
 
     try:
-        completed = subprocess.run(  # noqa: S603 - argv list, outils de statut connus
+        completed = subprocess.run(  # noqa: S603 - argv list, known status tools
             argv,
             capture_output=True,
             text=True,
@@ -470,7 +466,7 @@ def _run_tool(argv: list[str]) -> dict[str, Any]:
             check=False,
         )
     except (OSError, subprocess.SubprocessError) as exc:
-        return {"rc": -1, "stdout": "", "stderr": f"échec d'invocation : {exc}"}
+        return {"rc": -1, "stdout": "", "stderr": f"invocation failed: {exc}"}
     return {
         "rc": completed.returncode,
         "stdout": (completed.stdout or "").strip(),

@@ -1,15 +1,15 @@
-"""Tests unitaires du domaine ``models`` (P1 domaine 4/4).
+"""Unit tests for the ``models`` domain (P1 domain 4/4).
 
-Couvre :
-- ``set`` (bare ``models_set``) : définit un modèle Gemini string sur un agent.
-- ``configure_litellm`` (bare ``models_configure_litellm``) : configure LiteLlm.
-- ``generate_config`` (bare ``models_generate_config``) : configure GenerateContentConfig.
-- Rendu de source : imports LiteLlm / os / types, api_key jamais hardcodé.
-- Stabilité ruff format.
-- Probe fonctionnel : agent Gemini + generate_content_config importable en subprocess.
-- Probe LiteLlm (skipé si litellm absent en CI).
-- Ressource ``adk://models`` (lecture via Client in-memory).
-- Read-through client : ``models_configure_litellm`` renvoie ``{ok: True}``.
+Covers:
+- ``set`` (bare ``models_set``): sets a Gemini string model on an agent.
+- ``configure_litellm`` (bare ``models_configure_litellm``): configures LiteLlm.
+- ``generate_config`` (bare ``models_generate_config``): configures GenerateContentConfig.
+- Source rendering: LiteLlm / os / types imports, api_key never hardcoded.
+- ruff format stability.
+- Functional probe: a Gemini agent + generate_content_config importable in a subprocess.
+- LiteLlm probe (skipped if litellm is absent in CI).
+- ``adk://models`` resource (read via in-memory Client).
+- Client read-through: ``models_configure_litellm`` returns ``{ok: True}``.
 """
 
 from __future__ import annotations
@@ -42,10 +42,10 @@ from adk_toolkit_mcp.server import build_server
 
 
 # --------------------------------------------------------------------------- #
-# Helpers partagés
+# Shared helpers
 # --------------------------------------------------------------------------- #
 def _ruff_exe() -> str | None:
-    """Localise l'exécutable ruff dans l'environnement courant."""
+    """Locate the ruff executable in the current environment."""
     venv_bin = Path(sys.executable).parent
     for candidate in (venv_bin / "ruff", venv_bin / "ruff.exe"):
         if candidate.exists():
@@ -58,16 +58,16 @@ def _assert_ruff_format_stable(src: str, tmp_path: Path, label: str) -> None:
     gen_file.write_text(src, encoding="utf-8")
     ruff = _ruff_exe()
     if ruff is None:
-        pytest.skip("ruff introuvable dans l'environnement — test de format ignoré")
+        pytest.skip("ruff not found in the environment — format test ignored")
     result = subprocess.run(
         [ruff, "format", "--check", str(gen_file)],
         capture_output=True,
         text=True,
     )
     assert result.returncode == 0, (
-        f"ruff format --check a échoué pour le cas '{label}'.\n"
+        f"ruff format --check failed for case '{label}'.\n"
         f"Stdout: {result.stdout}\nStderr: {result.stderr}\n"
-        f"Source générée :\n{src}"
+        f"Generated source:\n{src}"
     )
 
 
@@ -89,7 +89,7 @@ def _simple_llm_model(
 
 
 # --------------------------------------------------------------------------- #
-# Constantes + dataclasses
+# Constants + dataclasses
 # --------------------------------------------------------------------------- #
 def test_litellm_providers_set_is_correct() -> None:
     assert "openai" in LITELLM_PROVIDERS
@@ -149,26 +149,26 @@ def test_agent_spec_with_model_spec_and_gcc_roundtrip() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# Rendu Gemini string (compat ascendante)
+# Gemini string rendering (backward compat)
 # --------------------------------------------------------------------------- #
 def test_render_gemini_string_model_unchanged() -> None:
     model_obj = _simple_llm_model(model="gemini-2.5-pro")
     src = render_agent_module(model_obj)
     assert 'model="gemini-2.5-pro"' in src
-    # Pas d'import LiteLlm ni types si seulement un string Gemini.
+    # No LiteLlm or types import if only a Gemini string.
     assert "LiteLlm" not in src
     assert "from google.genai import types" not in src
 
 
 # --------------------------------------------------------------------------- #
-# Rendu LiteLlm
+# LiteLlm rendering
 # --------------------------------------------------------------------------- #
 def test_render_litellm_basic_openai() -> None:
     model_obj = _simple_llm_model(model_spec=LiteLlmSpec(provider="openai", model="gpt-4o"))
     src = render_agent_module(model_obj)
     assert "from google.adk.models.lite_llm import LiteLlm" in src
     assert 'model=LiteLlm(model="openai/gpt-4o")' in src
-    # Pas d'api_key hardcodée.
+    # No hardcoded api_key.
     assert "api_key=" not in src
 
 
@@ -186,37 +186,37 @@ def test_render_litellm_api_key_uses_os_getenv() -> None:
         model_spec=LiteLlmSpec(provider="openai", model="gpt-4o", api_key_env="MY_API_KEY")
     )
     src = render_agent_module(model_obj)
-    # La clé est lue via os.getenv, jamais hardcodée.
+    # The key is read via os.getenv, never hardcoded.
     assert 'api_key=os.getenv("MY_API_KEY")' in src
     assert "import os" in src
-    # Aucune valeur de clé littérale.
-    assert "api_key=" in src  # présent...
-    # ...mais uniquement sous forme os.getenv (pas de chaîne littérale de clé).
+    # No literal key value.
+    assert "api_key=" in src  # present...
+    # ...but only as os.getenv (no literal key string).
     import re
 
     assert not re.search(r'api_key\s*=\s*"[a-zA-Z0-9_-]+"', src)
 
 
 def test_render_litellm_no_hardcoded_api_key_ever() -> None:
-    """Invariant de sécurité : aucune clé ne doit jamais apparaître en dur."""
+    """Security invariant: no key must ever appear hardcoded."""
     for provider in LITELLM_PROVIDERS:
         spec = LiteLlmSpec(provider=provider, model="model-x")
         model_obj = _simple_llm_model(model_spec=spec)
         src = render_agent_module(model_obj)
-        # Sans api_key_env : pas de api_key= du tout.
+        # Without api_key_env: no api_key= at all.
         assert "api_key=" not in src, (
-            f"api_key trouvé dans le code généré pour provider={provider!r} sans api_key_env"
+            f"api_key found in the generated code for provider={provider!r} without api_key_env"
         )
 
 
 def test_render_litellm_lm_studio_defaults_provider_and_api_base() -> None:
     model_obj = _simple_llm_model(model_spec=LiteLlmSpec(provider="lm_studio", model="llama3"))
     src = render_agent_module(model_obj)
-    # lm_studio -> provider rendu comme openai.
+    # lm_studio -> provider rendered as openai.
     assert '"openai/llama3"' in src
-    # api_base par défaut LM Studio.
+    # Default LM Studio api_base.
     assert '"http://127.0.0.1:1234/v1"' in src
-    # Pas d'api_key sans api_key_env.
+    # No api_key without api_key_env.
     assert "api_key=" not in src
 
 
@@ -252,7 +252,7 @@ def test_render_litellm_with_api_key_env_import_os() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# Rendu GenerateContentConfig
+# GenerateContentConfig rendering
 # --------------------------------------------------------------------------- #
 def test_render_generate_content_config_temperature_only() -> None:
     model_obj = _simple_llm_model(
@@ -262,7 +262,7 @@ def test_render_generate_content_config_temperature_only() -> None:
     assert "from google.genai import types" in src
     assert "generate_content_config=types.GenerateContentConfig(" in src
     assert "temperature=0.7" in src
-    # Autres champs absents (pas fournis).
+    # Other fields absent (not provided).
     assert "max_output_tokens=" not in src
     assert "safety_settings=" not in src
 
@@ -310,7 +310,7 @@ def test_render_generate_content_config_response_modalities() -> None:
 
 
 def test_render_generate_content_config_with_litellm_together() -> None:
-    """LiteLlm + GenerateContentConfig ensemble : imports corrects."""
+    """LiteLlm + GenerateContentConfig together: correct imports."""
     model_obj = _simple_llm_model(
         model_spec=LiteLlmSpec(provider="openai", model="gpt-4o", api_key_env="OPENAI_API_KEY"),
         generate_content_config=GenerateContentConfigSpec(temperature=0.3, max_output_tokens=512),
@@ -324,7 +324,7 @@ def test_render_generate_content_config_with_litellm_together() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# Python valide (ast.parse) — les modules générés doivent être syntaxiquement corrects
+# Valid Python (ast.parse) — the generated modules must be syntactically correct
 # --------------------------------------------------------------------------- #
 def test_render_litellm_module_is_valid_python_ast() -> None:
     model_obj = _simple_llm_model(
@@ -335,7 +335,7 @@ def test_render_litellm_module_is_valid_python_ast() -> None:
         ),
     )
     src = render_agent_module(model_obj)
-    ast.parse(src)  # lève SyntaxError si invalide
+    ast.parse(src)  # raises SyntaxError if invalid
 
 
 def test_render_gcc_only_module_is_valid_python_ast() -> None:
@@ -355,10 +355,10 @@ def test_render_gcc_only_module_is_valid_python_ast() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# Stabilité ruff format (format-stable generated code)
+# ruff format stability (format-stable generated code)
 # --------------------------------------------------------------------------- #
 def test_render_format_stable_litellm_with_gcc(tmp_path: Path) -> None:
-    """Module LiteLlm + GenerateContentConfig + safety_settings : stable pour ruff format."""
+    """LiteLlm + GenerateContentConfig + safety_settings module: stable for ruff format."""
     model_obj = ProjectModel(
         app_name="myapp",
         root="my_agent",
@@ -388,7 +388,7 @@ def test_render_format_stable_litellm_with_gcc(tmp_path: Path) -> None:
 
 
 def test_render_format_stable_gcc_only(tmp_path: Path) -> None:
-    """Module avec seulement GenerateContentConfig (Gemini string) : stable pour ruff format."""
+    """Module with only GenerateContentConfig (Gemini string): stable for ruff format."""
     model_obj = _simple_llm_model(
         generate_content_config=GenerateContentConfigSpec(
             temperature=0.5,
@@ -401,18 +401,18 @@ def test_render_format_stable_gcc_only(tmp_path: Path) -> None:
 
 
 def test_render_format_stable_lm_studio(tmp_path: Path) -> None:
-    """LM Studio (provider normalisé openai + api_base par défaut) : stable pour ruff format."""
+    """LM Studio (provider normalized to openai + default api_base): stable for ruff format."""
     model_obj = _simple_llm_model(model_spec=LiteLlmSpec(provider="lm_studio", model="mistral"))
     src = render_agent_module(model_obj)
     _assert_ruff_format_stable(src, tmp_path, "lm_studio")
 
 
 # --------------------------------------------------------------------------- #
-# Probe fonctionnel : Gemini string + GenerateContentConfig importable en subprocess
-# (google-genai est core → installé, pas besoin d'extra)
+# Functional probe: Gemini string + GenerateContentConfig importable in a subprocess
+# (google-genai is core → installed, no extra needed)
 # --------------------------------------------------------------------------- #
 def test_functional_probe_gemini_string_with_gcc(tmp_path: Path) -> None:
-    """Probe fonctionnel : génère agent.py + l'importe en subprocess ; vérifie les types live."""
+    """Functional probe: generate agent.py + import it in a subprocess; check the live types."""
     model_obj = ProjectModel(
         app_name="probe_app",
         root="probe_agent",
@@ -472,11 +472,11 @@ print("PROBE OK")
 
 
 # --------------------------------------------------------------------------- #
-# Probe LiteLlm (conditionnel — skipé si litellm absent)
+# LiteLlm probe (conditional — skipped if litellm is absent)
 # --------------------------------------------------------------------------- #
 @pytest.mark.skipif(importlib.util.find_spec("litellm") is None, reason="litellm not installed")
 def test_functional_probe_litellm(tmp_path: Path) -> None:
-    """Probe fonctionnel LiteLlm : génère + importe ; vérifie que model est un LiteLlm."""
+    """Functional LiteLlm probe: generate + import; check that model is a LiteLlm."""
     model_obj = ProjectModel(
         app_name="litellm_probe",
         root="llm_agent",
@@ -521,11 +521,11 @@ print("LITELLM PROBE OK")
 
 
 # --------------------------------------------------------------------------- #
-# Ressource adk://models
+# adk://models resource
 # --------------------------------------------------------------------------- #
 @pytest.mark.asyncio
 async def test_models_resource_read_through() -> None:
-    """Lit ``adk://models`` via Client in-memory et vérifie le contenu."""
+    """Read ``adk://models`` via an in-memory Client and check the content."""
     mcp = FastMCP("t")
     register_resources(mcp)
     async with Client(mcp) as client:
@@ -535,22 +535,22 @@ async def test_models_resource_read_through() -> None:
     assert "litellm_providers" in payload
     assert "harm_categories" in payload
     assert "harm_block_thresholds" in payload
-    # Les providers connus sont présents.
+    # The known providers are present.
     providers = payload["litellm_providers"]["supported"]
     assert "openai" in providers
     assert "lm_studio" in providers
-    # Les catégories ADK sont présentes.
+    # The ADK categories are present.
     assert "HARM_CATEGORY_HARASSMENT" in payload["harm_categories"]
     assert "BLOCK_NONE" in payload["harm_block_thresholds"]
 
 
 # --------------------------------------------------------------------------- #
-# In-memory client read-through : models_configure_litellm
+# In-memory client read-through: models_configure_litellm
 # --------------------------------------------------------------------------- #
 @pytest.mark.asyncio
 async def test_models_configure_litellm_client_readthrough(tmp_path: Path) -> None:
-    """Appel in-memory de models_configure_litellm via Client ; vérifie {ok: True}."""
-    # Prépare un projet avec un agent llm.
+    """In-memory call to models_configure_litellm via Client; checks {ok: True}."""
+    # Prepare a project with an llm agent.
     from adk_toolkit_mcp.project_model import AgentSpec, ProjectModel, save_model
     from adk_toolkit_mcp.workspace import Workspace
 
@@ -564,7 +564,7 @@ async def test_models_configure_litellm_client_readthrough(tmp_path: Path) -> No
     )
     save_model(ws, model_obj)
 
-    # Appelle models_configure_litellm via Client in-memory.
+    # Call models_configure_litellm via an in-memory Client.
     async with Client(models_server) as client:
         result = await client.call_tool(
             "configure_litellm",
@@ -577,26 +577,26 @@ async def test_models_configure_litellm_client_readthrough(tmp_path: Path) -> No
                 "api_key_env": "OPENAI_API_KEY",
             },
         )
-    # CallToolResult.data contient directement le dict.
+    # CallToolResult.data directly contains the dict.
     payload = result.data
     assert payload["ok"] is True, f"Expected ok=True, got: {payload}"
     assert payload["error"] is None
 
-    # Vérifie que le code généré contient LiteLlm et os.getenv.
+    # Check that the generated code contains LiteLlm and os.getenv.
     agent_py = app_dir / "agent.py"
     assert agent_py.exists()
     generated = agent_py.read_text(encoding="utf-8")
     assert "LiteLlm" in generated
     assert 'os.getenv("OPENAI_API_KEY")' in generated
-    # Invariant sécurité : aucune clé hardcodée.
-    assert "OPENAI_API_KEY" in generated  # le nom de la var env est ok...
+    # Security invariant: no hardcoded key.
+    assert "OPENAI_API_KEY" in generated  # the env var name is fine...
     import re
 
     assert not re.search(r'api_key\s*=\s*"[a-zA-Z0-9_+/=.-]+"', generated)
 
 
 # --------------------------------------------------------------------------- #
-# Tests des outils domaine — validation d'entrées
+# Domain tool tests — input validation
 # --------------------------------------------------------------------------- #
 @pytest.mark.asyncio
 async def test_models_set_rejects_empty_model(tmp_path: Path) -> None:
@@ -619,7 +619,7 @@ async def test_models_set_rejects_empty_model(tmp_path: Path) -> None:
         )
     payload = result.data
     assert payload["ok"] is False
-    assert "vide" in payload["error"].lower()
+    assert "empty" in payload["error"].lower()
 
 
 @pytest.mark.asyncio
@@ -649,7 +649,7 @@ async def test_models_configure_litellm_rejects_unknown_provider(tmp_path: Path)
         )
     payload = result.data
     assert payload["ok"] is False
-    assert "provider" in payload["error"].lower() or "inconnu" in payload["error"].lower()
+    assert "provider" in payload["error"].lower()
 
 
 @pytest.mark.asyncio
@@ -748,7 +748,7 @@ async def test_models_generate_config_rejects_non_llm_agent(tmp_path: Path) -> N
 
 @pytest.mark.asyncio
 async def test_models_set_idempotent(tmp_path: Path) -> None:
-    """Appeler set deux fois avec le même modèle doit être idempotent."""
+    """Calling set twice with the same model must be idempotent."""
     from adk_toolkit_mcp.project_model import AgentSpec, ProjectModel, save_model
     from adk_toolkit_mcp.workspace import Workspace
 
@@ -780,37 +780,37 @@ async def test_models_set_idempotent(tmp_path: Path) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# Test double-prefix guard : les outils exposés ne doivent pas contenir de double prefix
+# Double-prefix guard test: the exposed tools must not contain a double prefix
 # --------------------------------------------------------------------------- #
 @pytest.mark.asyncio
 async def test_exposed_tool_names_no_double_prefix() -> None:
-    """Les outils models_* sont exposés sans double-prefix (pas models_models_*)."""
+    """The models_* tools are exposed without a double prefix (not models_models_*)."""
     mcp = build_server()
     async with Client(mcp) as client:
         tools = await client.list_tools()
         names = [t.name for t in tools]
     models_tools = [n for n in names if n.startswith("models_")]
-    assert models_tools, "Aucun outil models_* trouvé"
+    assert models_tools, "No models_* tool found"
     for name in models_tools:
-        assert not name.startswith("models_models_"), f"Double-prefix détecté : {name!r}"
-    # Outils attendus.
+        assert not name.startswith("models_models_"), f"Double prefix detected: {name!r}"
+    # Expected tools.
     assert "models_set" in models_tools
     assert "models_configure_litellm" in models_tools
     assert "models_generate_config" in models_tools
 
 
 # --------------------------------------------------------------------------- #
-# Couverture supplémentaire des chemins d'erreur (domaine models)
+# Additional error-path coverage (models domain)
 # --------------------------------------------------------------------------- #
 @pytest.mark.asyncio
 async def test_models_set_invalid_app_name(tmp_path: Path) -> None:
-    """app_name invalide -> err."""
+    """invalid app_name -> err."""
     async with Client(models_server) as client:
         result = await client.call_tool(
             "set",
             {
                 "path": str(tmp_path),
-                "app_name": "bad app",  # espace -> invalide
+                "app_name": "bad app",  # space -> invalid
                 "agent_name": "a",
                 "model": "gemini-2.5-flash",
             },
@@ -821,7 +821,7 @@ async def test_models_set_invalid_app_name(tmp_path: Path) -> None:
 
 @pytest.mark.asyncio
 async def test_models_set_invalid_agent_name(tmp_path: Path) -> None:
-    """agent_name invalide -> err."""
+    """invalid agent_name -> err."""
     from adk_toolkit_mcp.project_model import AgentSpec, ProjectModel, save_model
     from adk_toolkit_mcp.workspace import Workspace
 
@@ -836,7 +836,7 @@ async def test_models_set_invalid_agent_name(tmp_path: Path) -> None:
             {
                 "path": str(tmp_path),
                 "app_name": "myapp",
-                "agent_name": "bad name",  # espace -> invalide
+                "agent_name": "bad name",  # space -> invalid
                 "model": "gemini-2.5-flash",
             },
         )
@@ -845,7 +845,7 @@ async def test_models_set_invalid_agent_name(tmp_path: Path) -> None:
 
 @pytest.mark.asyncio
 async def test_models_generate_config_clears_when_all_none(tmp_path: Path) -> None:
-    """generate_config avec tout None efface la config existante (idempotent)."""
+    """generate_config with all None clears the existing config (idempotent)."""
     from adk_toolkit_mcp.project_model import (
         AgentSpec,
         GenerateContentConfigSpec,
@@ -857,7 +857,7 @@ async def test_models_generate_config_clears_when_all_none(tmp_path: Path) -> No
     app_dir = tmp_path / "myapp"
     app_dir.mkdir()
     ws = Workspace(app_dir)
-    # Agent avec une config existante.
+    # Agent with an existing config.
     save_model(
         ws,
         ProjectModel(
@@ -879,18 +879,18 @@ async def test_models_generate_config_clears_when_all_none(tmp_path: Path) -> No
                 "path": str(tmp_path),
                 "app_name": "myapp",
                 "agent_name": "a",
-                # Pas de paramètres -> efface la config.
+                # No parameters -> clears the config.
             },
         )
     assert result.data["ok"] is True
-    # Vérifier que la config a été effacée.
+    # Check that the config was cleared.
     agent_py = (app_dir / "agent.py").read_text(encoding="utf-8")
     assert "generate_content_config=" not in agent_py
 
 
 @pytest.mark.asyncio
 async def test_models_set_missing_agent(tmp_path: Path) -> None:
-    """Agent inexistant -> err."""
+    """Nonexistent agent -> err."""
     from adk_toolkit_mcp.project_model import ProjectModel, save_model
     from adk_toolkit_mcp.workspace import Workspace
 
@@ -910,12 +910,12 @@ async def test_models_set_missing_agent(tmp_path: Path) -> None:
             },
         )
     assert result.data["ok"] is False
-    assert "introuvable" in result.data["error"].lower()
+    assert "not found" in result.data["error"].lower()
 
 
 @pytest.mark.asyncio
 async def test_models_generate_config_success_all_fields(tmp_path: Path) -> None:
-    """generate_config avec tous les champs -> ok + code correct."""
+    """generate_config with all fields -> ok + correct code."""
     from adk_toolkit_mcp.project_model import AgentSpec, ProjectModel, save_model
     from adk_toolkit_mcp.workspace import Workspace
 

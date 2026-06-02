@@ -1,19 +1,19 @@
-"""Tests unitaires du domaine ``deploy`` (P4a — construction de commandes de déploiement).
+"""Unit tests for the ``deploy`` domain (P4a — building deployment commands).
 
-Principe : par défaut, AUCUN déploiement réel n'est exécuté (``execute=False``) — l'outil
-construit et renvoie l'**argv exact** + un plan lisible. On assert la liste de tokens construite
-(preuve déterministe) et la **validité des flags** émis contre la vraie sortie ``--help`` d'ADK
-2.1.0 (``available_flags``). Le vrai déploiement cloud N'EST PAS testé (nécessite GCP) — mais la
-construction de commande et la validité des flags LE SONT.
+Principle: by default, NO real deployment is run (``execute=False``) — the tool builds and returns
+the **exact argv** + a readable plan. We assert the built list of tokens (deterministic proof) and
+the **validity of the flags** emitted against ADK 2.1.0's real ``--help`` output
+(``available_flags``). The real cloud deployment is NOT tested (requires GCP) — but the command
+building and the flag validity ARE.
 
-Couverture :
-- ``agent_engine`` / ``cloud_run`` / ``gke`` : argv exact + tous les flags émis ∈ available_flags.
-- validation des arguments requis → ``err`` (chemins/projet/région/cluster manquants).
-- ``containerize`` : écrit un Dockerfile (idempotent via Workspace).
-- ``preflight`` : findings structurés (best-effort), ne lève jamais.
-- ``status`` : « unavailable » actionnable si l'outil cloud est absent, sans blocage.
-- ``execute=False`` ne lance JAMAIS de vrai déploiement (le ``run_adk`` réel n'est pas appelé).
-- read-through ``fastmcp.Client`` pour une construction de commande.
+Coverage:
+- ``agent_engine`` / ``cloud_run`` / ``gke``: exact argv + all emitted flags ∈ available_flags.
+- validation of the required arguments → ``err`` (missing paths/project/region/cluster).
+- ``containerize``: writes a Dockerfile (idempotent via Workspace).
+- ``preflight``: structured findings (best-effort), never raises.
+- ``status``: actionable "unavailable" if the cloud tool is absent, without blocking.
+- ``execute=False`` NEVER launches a real deployment (the real ``run_adk`` is not called).
+- ``fastmcp.Client`` read-through for a command build.
 """
 
 from __future__ import annotations
@@ -29,7 +29,7 @@ from adk_toolkit_mcp.server import build_server
 
 
 def _scaffold(tmp_path: Path, app_name: str = "myapp") -> str:
-    """Crée un dossier d'app minimal (``agent.py``) et renvoie le chemin parent."""
+    """Create a minimal app folder (``agent.py``) and return the parent path."""
     app_dir = tmp_path / app_name
     app_dir.mkdir(parents=True, exist_ok=True)
     (app_dir / "agent.py").write_text("root_agent = None\n", encoding="utf-8")
@@ -37,7 +37,7 @@ def _scaffold(tmp_path: Path, app_name: str = "myapp") -> str:
 
 
 def _agent_dir(tmp_path: Path, app_name: str = "myapp") -> str:
-    """Chemin attendu du dossier d'agent (positionnel AGENT de la CLI)."""
+    """Expected path of the agent folder (positional AGENT of the CLI)."""
     return str(Path(tmp_path) / app_name)
 
 
@@ -56,22 +56,22 @@ def test_agent_engine_argv_exact(tmp_path: Path) -> None:
     )
     assert result["ok"] is True, result
     argv = result["data"]["argv"]
-    # Tokens attendus : deploy agent_engine --project ... --region ... --display_name ... AGENT.
+    # Expected tokens: deploy agent_engine --project ... --region ... --display_name ... AGENT.
     assert argv[:2] == ["deploy", "agent_engine"]
     assert "--project" in argv and argv[argv.index("--project") + 1] == "my-proj"
     assert "--region" in argv and argv[argv.index("--region") + 1] == "us-central1"
-    # display_name explicite l'emporte ; sinon app_name.
+    # an explicit display_name wins; otherwise app_name.
     assert "--display_name" in argv and argv[argv.index("--display_name") + 1] == "My Agent"
-    # AGENT est le DERNIER token (le dossier de l'app).
+    # AGENT is the LAST token (the app folder).
     assert argv[-1] == _agent_dir(tmp_path)
-    # staging_bucket est DÉPRÉCIÉ : non émis comme flag, mais signalé dans les notes.
+    # staging_bucket is DEPRECATED: not emitted as a flag, but flagged in the notes.
     assert "--staging_bucket" not in argv
     assert any("staging_bucket" in n for n in result["data"]["notes"])
     assert result["data"]["executed"] is False
 
 
 def test_agent_engine_app_name_maps_to_display_name(tmp_path: Path) -> None:
-    """Sans display_name explicite, app_name est mappé sur --display_name."""
+    """Without an explicit display_name, app_name is mapped to --display_name."""
     path = _scaffold(tmp_path, "billing")
     result = D.agent_engine(path=path, app_name="billing", project="p", region="r")
     assert result["ok"] is True
@@ -95,14 +95,14 @@ def test_agent_engine_requirements_file_emitted(tmp_path: Path) -> None:
 
 
 def test_agent_engine_flags_all_valid(tmp_path: Path) -> None:
-    """Tous les flags émis pour agent_engine existent réellement (available_flags)."""
+    """All the flags emitted for agent_engine actually exist (available_flags)."""
     path = _scaffold(tmp_path)
     result = D.agent_engine(path=path, app_name="myapp", project="p", region="r", display_name="X")
     assert result["ok"] is True
     valid = adk_cli.available_flags(["deploy", "agent_engine"])
     emitted = [t for t in result["data"]["argv"][2:] if t.startswith("--")]
-    assert emitted, "au moins un flag devrait être émis"
-    assert set(emitted) <= valid, f"flags inconnus: {set(emitted) - valid}"
+    assert emitted, "at least one flag should be emitted"
+    assert set(emitted) <= valid, f"unknown flags: {set(emitted) - valid}"
 
 
 def test_agent_engine_requires_project_region(tmp_path: Path) -> None:
@@ -116,7 +116,7 @@ def test_agent_engine_requires_project_region(tmp_path: Path) -> None:
 def test_agent_engine_missing_agent_dir_returns_err(tmp_path: Path) -> None:
     result = D.agent_engine(path=str(tmp_path), app_name="ghost", project="p", region="r")
     assert result["ok"] is False
-    assert "ghost" in result["error"] or "introuvable" in result["error"].lower()
+    assert "ghost" in result["error"] or "not found" in result["error"].lower()
 
 
 # --------------------------------------------------------------------------- #
@@ -140,16 +140,16 @@ def test_cloud_run_argv_exact(tmp_path: Path) -> None:
     assert argv[argv.index("--region") + 1] == "us-central1"
     assert argv[argv.index("--service_name") + 1] == "my-svc"
     assert argv[argv.index("--app_name") + 1] == "myapp"
-    # with_ui + enable_cloud_trace sont des flags booléens (pas de valeur).
+    # with_ui + enable_cloud_trace are boolean flags (no value).
     assert "--with_ui" in argv
-    # enable_cloud_trace mappe sur le VRAI flag --trace_to_cloud (pas --enable_cloud_trace).
+    # enable_cloud_trace maps to the REAL flag --trace_to_cloud (not --enable_cloud_trace).
     assert "--trace_to_cloud" in argv
     assert "--enable_cloud_trace" not in argv
     assert argv[-1] == _agent_dir(tmp_path)
 
 
 def test_cloud_run_minimal_no_optional_flags(tmp_path: Path) -> None:
-    """Sans options, with_ui/trace ne sont pas émis ; service_name omis si non fourni."""
+    """Without options, with_ui/trace are not emitted; service_name omitted if not provided."""
     path = _scaffold(tmp_path)
     result = D.cloud_run(path=path, app_name="myapp", project="p", region="r")
     assert result["ok"] is True
@@ -173,7 +173,7 @@ def test_cloud_run_flags_all_valid(tmp_path: Path) -> None:
     assert result["ok"] is True
     valid = adk_cli.available_flags(["deploy", "cloud_run"])
     emitted = [t for t in result["data"]["argv"][2:] if t.startswith("--")]
-    assert set(emitted) <= valid, f"flags inconnus: {set(emitted) - valid}"
+    assert set(emitted) <= valid, f"unknown flags: {set(emitted) - valid}"
 
 
 def test_cloud_run_requires_project_region(tmp_path: Path) -> None:
@@ -200,7 +200,7 @@ def test_gke_argv_exact(tmp_path: Path) -> None:
     assert argv[:2] == ["deploy", "gke"]
     assert argv[argv.index("--project") + 1] == "my-proj"
     assert argv[argv.index("--region") + 1] == "us-central1"
-    # cluster mappe sur le VRAI flag --cluster_name (pas --cluster).
+    # cluster maps to the REAL flag --cluster_name (not --cluster).
     assert argv[argv.index("--cluster_name") + 1] == "my-cluster"
     assert "--cluster" not in [t for t in argv if t == "--cluster"]
     assert argv[argv.index("--service_name") + 1] == "my-svc"
@@ -215,7 +215,7 @@ def test_gke_flags_all_valid(tmp_path: Path) -> None:
     assert result["ok"] is True
     valid = adk_cli.available_flags(["deploy", "gke"])
     emitted = [t for t in result["data"]["argv"][2:] if t.startswith("--")]
-    assert set(emitted) <= valid, f"flags inconnus: {set(emitted) - valid}"
+    assert set(emitted) <= valid, f"unknown flags: {set(emitted) - valid}"
 
 
 def test_gke_requires_cluster(tmp_path: Path) -> None:
@@ -235,7 +235,7 @@ def test_containerize_writes_dockerfile(tmp_path: Path) -> None:
     dockerfile = Path(result["data"]["path"])
     assert dockerfile.exists()
     content = dockerfile.read_text(encoding="utf-8")
-    # Le Dockerfile sert `adk api_server`.
+    # The Dockerfile serves `adk api_server`.
     assert "adk" in content and "api_server" in content
     assert result["data"]["changed"] is True
 
@@ -254,7 +254,7 @@ def test_containerize_missing_agent_dir_returns_err(tmp_path: Path) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# preflight (best-effort, ne lève jamais)
+# preflight (best-effort, never raises)
 # --------------------------------------------------------------------------- #
 def test_preflight_returns_structured_findings() -> None:
     result = D.preflight(target="cloud_run")
@@ -266,22 +266,22 @@ def test_preflight_returns_structured_findings() -> None:
 
 
 def test_preflight_unknown_target_still_ok() -> None:
-    """Un target inconnu ne fait pas échouer le preflight (best-effort)."""
+    """An unknown target does not fail the preflight (best-effort)."""
     result = D.preflight(target="banana")
     assert result["ok"] is True
     assert "banana" in str(result["data"]["findings"]) or data_ok(result)
 
 
 def data_ok(result: dict) -> bool:
-    """Helper laxiste : le preflight reste ok même pour un target non standard."""
+    """Lax helper: the preflight stays ok even for a non-standard target."""
     return result["ok"] is True
 
 
 # --------------------------------------------------------------------------- #
-# status (best-effort, ne bloque pas)
+# status (best-effort, does not block)
 # --------------------------------------------------------------------------- #
 def test_status_unavailable_when_tool_absent(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Si gcloud/kubectl est absent, status renvoie une guidance « unavailable » sans bloquer."""
+    """If gcloud/kubectl is absent, status returns "unavailable" guidance without blocking."""
     monkeypatch.setattr(D.shutil, "which", lambda *_a, **_k: None)
     result = D.status(target="cloud_run", project="p", region="r", service_name="s")
     assert result["ok"] is True
@@ -295,7 +295,7 @@ def test_status_unknown_target_returns_err() -> None:
 
 
 def test_status_agent_engine_guidance() -> None:
-    """agent_engine n'a pas de CLI de statut → available False + guidance (toujours ok)."""
+    """agent_engine has no status CLI → available False + guidance (always ok)."""
     result = D.status(target="agent_engine")
     assert result["ok"] is True
     assert result["data"]["available"] is False
@@ -303,7 +303,7 @@ def test_status_agent_engine_guidance() -> None:
 
 
 def test_status_cloud_run_executes_gcloud_when_present(monkeypatch: pytest.MonkeyPatch) -> None:
-    """gcloud présent + args complets → _run_tool est invoqué, rc/sortie remontés."""
+    """gcloud present + complete args → _run_tool is invoked, rc/output surfaced."""
     monkeypatch.setattr(D.shutil, "which", lambda *_a, **_k: "/usr/bin/gcloud")
     monkeypatch.setattr(
         D, "_run_tool", lambda argv: {"rc": 0, "stdout": "https://svc.run.app", "stderr": ""}
@@ -316,7 +316,7 @@ def test_status_cloud_run_executes_gcloud_when_present(monkeypatch: pytest.Monke
 
 
 def test_status_cloud_run_present_but_incomplete_args(monkeypatch: pytest.MonkeyPatch) -> None:
-    """gcloud présent mais args manquants → guidance demandant project/region/service_name."""
+    """gcloud present but args missing → guidance asking for project/region/service_name."""
     monkeypatch.setattr(D.shutil, "which", lambda *_a, **_k: "/usr/bin/gcloud")
     result = D.status(target="cloud_run", project="p")
     assert result["ok"] is True
@@ -325,7 +325,7 @@ def test_status_cloud_run_present_but_incomplete_args(monkeypatch: pytest.Monkey
 
 
 def test_status_gke_executes_kubectl_when_present(monkeypatch: pytest.MonkeyPatch) -> None:
-    """kubectl présent → _run_tool invoqué pour lister les services."""
+    """kubectl present → _run_tool invoked to list the services."""
     monkeypatch.setattr(D.shutil, "which", lambda *_a, **_k: "/usr/bin/kubectl")
     monkeypatch.setattr(
         D, "_run_tool", lambda argv: {"rc": 0, "stdout": "svc ClusterIP", "stderr": ""}
@@ -338,7 +338,7 @@ def test_status_gke_executes_kubectl_when_present(monkeypatch: pytest.MonkeyPatc
 
 
 def test_run_tool_captures_invocation_failure(monkeypatch: pytest.MonkeyPatch) -> None:
-    """_run_tool capture une OSError (outil absent malgré which) en données, sans lever."""
+    """_run_tool captures an OSError (tool absent despite which) into data, without raising."""
     import subprocess as _sp
 
     def _boom(*_a, **_k):  # type: ignore[no-untyped-def]
@@ -347,14 +347,14 @@ def test_run_tool_captures_invocation_failure(monkeypatch: pytest.MonkeyPatch) -
     monkeypatch.setattr(_sp, "run", _boom)
     result = D._run_tool(["gcloud", "version"])
     assert result["rc"] == -1
-    assert "échec" in result["stderr"] or "not found" in result["stderr"]
+    assert "failed" in result["stderr"] or "not found" in result["stderr"]
 
 
 def test_execute_true_unknown_flag_blocks_before_running(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Si available_flags ne contient pas un flag émis, _finalize renvoie err AVANT d'exécuter."""
-    # available_flags renvoie un set qui n'inclut PAS --app_name → cloud_run doit échouer.
+    """If available_flags does not contain an emitted flag, _finalize returns err BEFORE running."""
+    # available_flags returns a set that does NOT include --app_name → cloud_run must fail.
     monkeypatch.setattr(D.adk_cli, "available_flags", lambda _sub: {"--project", "--region"})
     called: list[object] = []
     monkeypatch.setattr(D.adk_cli, "run_adk", lambda *a, **k: called.append(a) or {"rc": 0})
@@ -362,13 +362,13 @@ def test_execute_true_unknown_flag_blocks_before_running(
     result = D.cloud_run(path=path, app_name="myapp", project="p", region="r", execute=True)
     assert result["ok"] is False
     assert "--app_name" in result["error"]
-    assert called == [], "un flag inconnu ne doit jamais déclencher run_adk"
+    assert called == [], "an unknown flag must never trigger run_adk"
 
 
 def test_finalize_skips_validation_when_help_unavailable(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """available_flags vide (introspection KO) → on n'invalide rien (plan rendu quand même)."""
+    """Empty available_flags (introspection failed) → invalidate nothing (plan still returned)."""
     monkeypatch.setattr(D.adk_cli, "available_flags", lambda _sub: set())
     path = _scaffold(tmp_path)
     result = D.cloud_run(path=path, app_name="myapp", project="p", region="r")
@@ -377,25 +377,25 @@ def test_finalize_skips_validation_when_help_unavailable(
 
 
 # --------------------------------------------------------------------------- #
-# execute=False ne lance JAMAIS un vrai déploiement
+# execute=False NEVER launches a real deployment
 # --------------------------------------------------------------------------- #
 def test_execute_false_never_runs_real_deploy(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Avec execute=False (défaut), run_adk n'est jamais appelé (pas de vrai déploiement)."""
+    """With execute=False (default), run_adk is never called (no real deployment)."""
     called: list[list[str]] = []
     monkeypatch.setattr(D.adk_cli, "run_adk", lambda *a, **k: called.append(a) or {"rc": 0})
     path = _scaffold(tmp_path)
     D.agent_engine(path=path, app_name="myapp", project="p", region="r")
     D.cloud_run(path=path, app_name="myapp", project="p", region="r")
     D.gke(path=path, app_name="myapp", project="p", region="r", cluster="c")
-    assert called == [], "execute=False ne doit jamais invoquer run_adk"
+    assert called == [], "execute=False must never invoke run_adk"
 
 
 def test_execute_true_validates_flags_before_running(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """execute=True passe par run_adk (mocké) APRÈS validation des flags ; rc/sortie remontés."""
+    """execute=True goes through run_adk (mocked) AFTER flag validation; rc/output surfaced."""
     recorded: dict[str, object] = {}
 
     def _fake_run(args, cwd=None, timeout=None):  # type: ignore[no-untyped-def]
@@ -410,7 +410,7 @@ def test_execute_true_validates_flags_before_running(
     assert result["data"]["executed"] is True
     assert result["data"]["rc"] == 0
     assert "deployed (fake)" in result["data"]["stdout"]
-    # run_adk a bien reçu l'argv construit.
+    # run_adk indeed received the built argv.
     assert recorded["args"][:2] == ["deploy", "cloud_run"]
 
 
@@ -418,7 +418,7 @@ def test_execute_true_validates_flags_before_running(
 # read-through fastmcp.Client
 # --------------------------------------------------------------------------- #
 async def test_client_exposed_names_and_cloud_run(tmp_path: Path) -> None:
-    """Outils exposés deploy_<bare> (pas de double-préfixe) ; deploy_cloud_run construit l'argv."""
+    """Tools exposed as deploy_<bare> (no double prefix); deploy_cloud_run builds the argv."""
     path = _scaffold(tmp_path)
     mcp = build_server()
     async with Client(mcp) as client:

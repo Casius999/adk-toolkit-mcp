@@ -1,1 +1,1 @@
-"""Sous-serveurs de domaine (montés par le serveur racine). Remplis en P1→P4."""
+"""Domain sub-servers (mounted by the root server). Filled in across P1→P4."""

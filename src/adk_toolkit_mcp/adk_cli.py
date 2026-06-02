@@ -1,25 +1,25 @@
-"""Plomberie CLI partagée pour invoquer la commande ``adk`` (P4a).
+"""Shared CLI plumbing for invoking the ``adk`` command (P4a).
 
-Les domaines ``deploy`` et ``dev`` s'appuient sur ce module pour :
+The ``deploy`` and ``dev`` domains rely on this module to:
 
-1. **Résoudre comment invoquer ``adk``** (:func:`adk_executable`) — on préfère le script console
-   du venv (``adk``/``adk.exe``), sinon on retombe sur ``[sys.executable, "-m",
-   "google.adk.cli"]`` (module RÉEL vérifié : ``google.adk.cli.__main__`` existe en 2.1.0).
-2. **Exécuter ``adk <args>`` de façon synchrone** (:func:`run_adk`) en capturant rc/stdout/stderr.
-   Liste d'arguments (argv), JAMAIS ``shell=True``. Sert au ``--help`` d'introspection et aux
-   vrais déploiements (uniquement quand le domaine ``deploy`` reçoit ``execute=True``).
-3. **Lister les flags réellement disponibles** d'une sous-commande (:func:`available_flags`) en
-   parsant son ``--help`` — pour que le toolkit ne puisse PAS émettre un flag absent de cette
-   version d'ADK (les flags dérivent entre versions).
-4. **Un registre de process** pour les serveurs de dev longue durée (``adk web`` /
-   ``adk api_server``) : :func:`start_process` / :func:`process_status` / :func:`stop_process` /
-   :func:`process_logs`. ``subprocess.Popen`` avec stdout+stderr redirigés vers un fichier log ;
-   handles stockés dans un dict module-level keyé par une clé stable (:func:`make_key`).
-   ``stop`` termine l'ARBRE de process (sur Windows : ``CREATE_NEW_PROCESS_GROUP`` +
-   ``taskkill /T``, sinon ``terminate()`` puis ``kill()``).
+1. **Resolve how to invoke ``adk``** (:func:`adk_executable`) — we prefer the venv console script
+   (``adk``/``adk.exe``), otherwise we fall back to ``[sys.executable, "-m",
+   "google.adk.cli"]`` (a REAL verified module: ``google.adk.cli.__main__`` exists in 2.1.0).
+2. **Run ``adk <args>`` synchronously** (:func:`run_adk`), capturing rc/stdout/stderr. Argument
+   list (argv), NEVER ``shell=True``. Used for ``--help`` introspection and real deployments
+   (only when the ``deploy`` domain receives ``execute=True``).
+3. **List the flags actually available** for a subcommand (:func:`available_flags`) by parsing
+   its ``--help`` — so the toolkit CANNOT emit a flag absent from this version of ADK (flags
+   drift between versions).
+4. **A process registry** for long-running dev servers (``adk web`` / ``adk api_server``):
+   :func:`start_process` / :func:`process_status` / :func:`stop_process` / :func:`process_logs`.
+   ``subprocess.Popen`` with stdout+stderr redirected to a log file; handles stored in a
+   module-level dict keyed by a stable key (:func:`make_key`). ``stop`` terminates the process
+   TREE (on Windows: ``CREATE_NEW_PROCESS_GROUP`` + ``taskkill /T``, otherwise ``terminate()``
+   then ``kill()``).
 
-Aucune dépendance lourde au chargement ; ``google.adk`` n'est PAS importé ici (on shell vers la
-CLI). Cf. ``docs/adk-api-notes/deploy-dev.md`` pour les flags 2.1.0 confirmés.
+No heavy dependency at load; ``google.adk`` is NOT imported here (we shell out to the CLI). Cf.
+``docs/adk-api-notes/deploy-dev.md`` for the confirmed 2.1.0 flags.
 """
 
 from __future__ import annotations
@@ -28,38 +28,38 @@ import os
 import re
 import shutil
 import signal
-import subprocess  # noqa: S404 - exécution voulue de la CLI adk (argv, jamais shell=True)
+import subprocess  # noqa: S404 - intentional execution of the adk CLI (argv, never shell=True)
 import sys
 import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-#: Regex d'un token de flag long dans une sortie ``--help`` (``--flag`` / ``--no-flag``).
+#: Regex for a long-flag token in a ``--help`` output (``--flag`` / ``--no-flag``).
 _FLAG_RE = re.compile(r"--[A-Za-z][A-Za-z0-9_-]*")
 
-#: Cache des flags par sous-commande (clé = tuple des tokens de sous-commande).
+#: Cache of flags per subcommand (key = tuple of subcommand tokens).
 _FLAG_CACHE: dict[tuple[str, ...], set[str]] = {}
 
-#: Délai par défaut (s) d'un ``adk <subcommand> --help``.
+#: Default timeout (s) for an ``adk <subcommand> --help``.
 _HELP_TIMEOUT = 60.0
 
-#: Vrai si on tourne sous Windows (gestion spécifique de la terminaison d'arbre de process).
+#: True if running on Windows (specific handling of process-tree termination).
 _IS_WINDOWS = os.name == "nt"
 
 
 class ProcessAlreadyRunning(Exception):
-    """Levée par :func:`start_process` si la clé est déjà associée à un process vivant."""
+    """Raised by :func:`start_process` if the key is already bound to a live process."""
 
 
 # --------------------------------------------------------------------------- #
-# Résolution de l'exécutable adk
+# adk executable resolution
 # --------------------------------------------------------------------------- #
 def _venv_script(name: str) -> str | None:
-    """Renvoie le chemin d'un script console (``adk``/``adk.exe``) dans le venv courant, ou None.
+    """Return the path of a console script (``adk``/``adk.exe``) in the current venv, or None.
 
-    On regarde à côté de ``sys.executable`` (``Scripts`` sous Windows, sinon le même dossier
-    ``bin``). Permet de préférer l'``adk`` de l'environnement actif sans dépendre du PATH.
+    We look next to ``sys.executable`` (``Scripts`` on Windows, otherwise the same ``bin``
+    folder). Lets us prefer the active environment's ``adk`` without relying on the PATH.
     """
     exe_dir = Path(sys.executable).parent
     candidates = [exe_dir / name]
@@ -72,12 +72,12 @@ def _venv_script(name: str) -> str | None:
 
 
 def adk_executable() -> list[str]:
-    """Renvoie l'argv de base pour invoquer ``adk`` (préfixe à compléter avec la sous-commande).
+    """Return the base argv to invoke ``adk`` (prefix to complete with the subcommand).
 
-    Ordre de préférence :
-    1. script console ``adk``/``adk.exe`` du venv courant (à côté de ``sys.executable``) ;
-    2. ``adk`` trouvé sur le PATH (``shutil.which``) ;
-    3. fallback ``[sys.executable, "-m", "google.adk.cli"]`` (module réel vérifié).
+    Preference order:
+    1. ``adk``/``adk.exe`` console script of the current venv (next to ``sys.executable``);
+    2. ``adk`` found on the PATH (``shutil.which``);
+    3. fallback ``[sys.executable, "-m", "google.adk.cli"]`` (a real verified module).
     """
     script = _venv_script("adk")
     if script is not None:
@@ -89,20 +89,20 @@ def adk_executable() -> list[str]:
 
 
 # --------------------------------------------------------------------------- #
-# Exécution synchrone d'adk
+# Synchronous adk execution
 # --------------------------------------------------------------------------- #
 def run_adk(
     args: list[str], cwd: str | None = None, timeout: float | None = None
 ) -> dict[str, Any]:
-    """Exécute ``adk <args>`` de façon synchrone et renvoie ``{argv, rc, stdout, stderr}``.
+    """Run ``adk <args>`` synchronously and return ``{argv, rc, stdout, stderr}``.
 
-    Passe une **liste d'arguments** (jamais ``shell=True``). Capture stdout/stderr en texte.
-    Un timeout dépassé renvoie ``rc=-1`` avec un message dans ``stderr`` (jamais de blocage qui
-    remonte). Une CLI introuvable lève ``FileNotFoundError`` (cas anormal ; l'appelant décide).
+    Passes an **argument list** (never ``shell=True``). Captures stdout/stderr as text. An
+    exceeded timeout returns ``rc=-1`` with a message in ``stderr`` (never a blocking hang that
+    propagates). A missing CLI raises ``FileNotFoundError`` (abnormal case; the caller decides).
     """
     argv = adk_executable() + list(args)
     try:
-        completed = subprocess.run(  # noqa: S603 - argv list, exécution voulue de la CLI adk
+        completed = subprocess.run(  # noqa: S603 - argv list, intentional execution of the adk CLI
             argv,
             cwd=cwd,
             capture_output=True,
@@ -115,7 +115,7 @@ def run_adk(
             "argv": argv,
             "rc": -1,
             "stdout": exc.stdout or "",
-            "stderr": f"adk a dépassé le délai de {timeout}s : {' '.join(args)}",
+            "stderr": f"adk exceeded the {timeout}s timeout: {' '.join(args)}",
         }
     return {
         "argv": argv,
@@ -126,19 +126,19 @@ def run_adk(
 
 
 # --------------------------------------------------------------------------- #
-# Flags disponibles d'une sous-commande
+# Available flags of a subcommand
 # --------------------------------------------------------------------------- #
 def _parse_flags(help_text: str) -> set[str]:
-    """Extrait tous les tokens ``--flag`` (et ``--no-flag``) d'une sortie ``--help``."""
+    """Extract all ``--flag`` (and ``--no-flag``) tokens from a ``--help`` output."""
     return set(_FLAG_RE.findall(help_text))
 
 
 def available_flags(subcommand: list[str]) -> set[str]:
-    """Renvoie l'ensemble des flags ``--xxx`` exposés par ``adk <subcommand> --help``.
+    """Return the set of ``--xxx`` flags exposed by ``adk <subcommand> --help``.
 
-    Résultat mis en cache par sous-commande (le ``--help`` ne change pas dans un process). Si la
-    commande d'aide échoue (rc non nul ou sortie vide), renvoie un set vide (l'appelant traite
-    l'absence de flags comme « impossible de valider »).
+    Result cached per subcommand (the ``--help`` does not change within a process). If the help
+    command fails (non-zero rc or empty output), returns an empty set (the caller treats the
+    absence of flags as "cannot validate").
     """
     key = tuple(subcommand)
     cached = _FLAG_CACHE.get(key)
@@ -151,66 +151,66 @@ def available_flags(subcommand: list[str]) -> set[str]:
 
 
 def clear_flag_cache() -> None:
-    """Vide le cache des flags (utile en test pour forcer une réintrospection)."""
+    """Clear the flag cache (useful in tests to force re-introspection)."""
     _FLAG_CACHE.clear()
 
 
 # --------------------------------------------------------------------------- #
-# Registre de process longue durée (serveurs de dev)
+# Long-running process registry (dev servers)
 # --------------------------------------------------------------------------- #
 @dataclass
 class _ManagedProcess:
-    """Handle interne d'un process géré : ``Popen`` + métadonnées + handle de fichier log."""
+    """Internal handle for a managed process: ``Popen`` + metadata + log file handle."""
 
     key: str
     popen: subprocess.Popen[bytes]
     argv: list[str]
     cwd: str | None
     log_path: str
-    log_file: Any  # objet fichier binaire ouvert en écriture
+    log_file: Any  # binary file object open for writing
 
 
-#: Registre module-level des process gérés, protégé par un verrou.
+#: Module-level registry of managed processes, protected by a lock.
 _REGISTRY: dict[str, _ManagedProcess] = {}
 _REGISTRY_LOCK = threading.Lock()
 
 
 def make_key(kind: str, cwd: str, port: int | None) -> str:
-    """Construit une clé stable ``"{kind}:{cwd}:{port}"`` pour identifier un process géré."""
+    """Build a stable key ``"{kind}:{cwd}:{port}"`` to identify a managed process."""
     return f"{kind}:{cwd}:{port if port is not None else '-'}"
 
 
 def _is_running(proc: _ManagedProcess) -> bool:
-    """Vrai si le process sous-jacent est encore en cours (``poll()`` renvoie None)."""
+    """True if the underlying process is still running (``poll()`` returns None)."""
     return proc.popen.poll() is None
 
 
 def start_process(key: str, args: list[str], cwd: str | None, log_path: str) -> dict[str, Any]:
-    """Démarre ``args`` en arrière-plan, stdout+stderr redirigés vers ``log_path``.
+    """Start ``args`` in the background, stdout+stderr redirected to ``log_path``.
 
-    Stocke le handle dans le registre sous ``key``. Lève :class:`ProcessAlreadyRunning` si la clé
-    est déjà associée à un process VIVANT (un process mort sous cette clé est remplacé). Sur
-    Windows, le process est lancé dans un nouveau groupe (``CREATE_NEW_PROCESS_GROUP``) pour
-    permettre une terminaison d'arbre fiable.
+    Stores the handle in the registry under ``key``. Raises :class:`ProcessAlreadyRunning` if the
+    key is already bound to a LIVE process (a dead process under that key is replaced). On
+    Windows, the process is launched in a new group (``CREATE_NEW_PROCESS_GROUP``) to allow
+    reliable tree termination.
 
-    Renvoie ``{key, pid, running, log_path, argv}``.
+    Returns ``{key, pid, running, log_path, argv}``.
     """
     with _REGISTRY_LOCK:
         existing = _REGISTRY.get(key)
         if existing is not None and _is_running(existing):
-            raise ProcessAlreadyRunning(f"Un process est déjà actif pour la clé {key!r}.")
+            raise ProcessAlreadyRunning(f"A process is already active for key {key!r}.")
         if existing is not None:
             _close_log(existing)
             del _REGISTRY[key]
 
         Path(log_path).parent.mkdir(parents=True, exist_ok=True)
-        log_file = open(log_path, "wb")  # noqa: SIM115 - fermé via stop_process/_close_log
+        log_file = open(log_path, "wb")  # noqa: SIM115 - closed via stop_process/_close_log
 
         creationflags = 0
         if _IS_WINDOWS:
             creationflags = subprocess.CREATE_NEW_PROCESS_GROUP
 
-        popen = subprocess.Popen(  # noqa: S603 - argv list, exécution voulue
+        popen = subprocess.Popen(  # noqa: S603 - argv list, intentional execution
             list(args),
             cwd=cwd,
             stdout=log_file,
@@ -232,7 +232,7 @@ def start_process(key: str, args: list[str], cwd: str | None, log_path: str) -> 
 
 
 def process_status(key: str) -> dict[str, Any]:
-    """Renvoie l'état d'un process géré : ``{found, running, pid, returncode, log_path, argv}``."""
+    """Return a managed process's state: ``{found, running, pid, returncode, log_path, argv}``."""
     with _REGISTRY_LOCK:
         proc = _REGISTRY.get(key)
         if proc is None:
@@ -249,10 +249,10 @@ def process_status(key: str) -> dict[str, Any]:
 
 
 def process_logs(key: str, tail: int = 50) -> dict[str, Any]:
-    """Renvoie les ``tail`` dernières lignes du fichier log d'un process géré.
+    """Return the last ``tail`` lines of a managed process's log file.
 
-    ``{found, lines, log_path}``. Une clé inconnue → ``found=False`` + ``lines=[]``. Le fichier
-    peut être manquant (process à peine lancé) → lignes vides sans erreur.
+    ``{found, lines, log_path}``. An unknown key → ``found=False`` + ``lines=[]``. The file may
+    be missing (process just launched) → empty lines without error.
     """
     with _REGISTRY_LOCK:
         proc = _REGISTRY.get(key)
@@ -264,13 +264,13 @@ def process_logs(key: str, tail: int = 50) -> dict[str, Any]:
 
 
 def stop_process(key: str, timeout: float = 10.0) -> dict[str, Any]:
-    """Termine l'arbre de process associé à ``key`` et le retire du registre.
+    """Terminate the process tree bound to ``key`` and remove it from the registry.
 
-    Sur Windows : ``taskkill /F /T /PID`` (tue l'arbre), avec repli sur ``terminate()``/``kill()``.
-    Ailleurs : ``terminate()`` (SIGTERM) puis ``kill()`` (SIGKILL) si non terminé dans le délai.
-    Idempotent : une clé inconnue → ``found=False``.
+    On Windows: ``taskkill /F /T /PID`` (kills the tree), with a fallback to
+    ``terminate()``/``kill()``. Elsewhere: ``terminate()`` (SIGTERM) then ``kill()`` (SIGKILL) if
+    not terminated within the timeout. Idempotent: an unknown key → ``found=False``.
 
-    Renvoie ``{found, stopped, returncode}``.
+    Returns ``{found, stopped, returncode}``.
     """
     with _REGISTRY_LOCK:
         proc = _REGISTRY.pop(key, None)
@@ -284,7 +284,7 @@ def stop_process(key: str, timeout: float = 10.0) -> dict[str, Any]:
         proc.popen.kill()
         try:
             proc.popen.wait(timeout=timeout)
-        except subprocess.TimeoutExpired:  # pragma: no cover - cas extrême
+        except subprocess.TimeoutExpired:  # pragma: no cover - extreme case
             pass
     _close_log(proc)
     stopped = proc.popen.poll() is not None
@@ -292,9 +292,9 @@ def stop_process(key: str, timeout: float = 10.0) -> dict[str, Any]:
 
 
 def stop_all_processes() -> int:
-    """Termine TOUS les process gérés (filet de sécurité pour les tests).
+    """Terminate ALL managed processes (safety net for the tests).
 
-    Renvoie le nombre de process effectivement arrêtés.
+    Returns the number of processes actually stopped.
     """
     with _REGISTRY_LOCK:
         keys = list(_REGISTRY.keys())
@@ -306,24 +306,24 @@ def stop_all_processes() -> int:
 
 
 # --------------------------------------------------------------------------- #
-# Helpers internes de terminaison / logs
+# Internal termination / log helpers
 # --------------------------------------------------------------------------- #
 def _terminate_tree(proc: _ManagedProcess) -> None:
-    """Demande la terminaison de l'arbre de process (best-effort, sans lever)."""
+    """Request termination of the process tree (best-effort, without raising)."""
     popen = proc.popen
     if popen.poll() is not None:
         return
     if _IS_WINDOWS:
-        # taskkill termine l'ARBRE (/T) de force (/F). Best-effort : on ignore son rc.
+        # taskkill terminates the TREE (/T) forcefully (/F). Best-effort: we ignore its rc.
         try:
-            subprocess.run(  # noqa: S603,S607 - argv fixe, pas d'entrée utilisateur
+            subprocess.run(  # noqa: S603,S607 - fixed argv, no user input
                 ["taskkill", "/F", "/T", "/PID", str(popen.pid)],
                 capture_output=True,
                 timeout=10,
                 check=False,
             )
             return
-        except (OSError, subprocess.SubprocessError):  # pragma: no cover - repli rare
+        except (OSError, subprocess.SubprocessError):  # pragma: no cover - rare fallback
             pass
         try:
             popen.send_signal(signal.CTRL_BREAK_EVENT)
@@ -335,23 +335,23 @@ def _terminate_tree(proc: _ManagedProcess) -> None:
 
 
 def _close_log(proc: _ManagedProcess) -> None:
-    """Ferme le handle de fichier log (best-effort)."""
+    """Close the log file handle (best-effort)."""
     try:
         if not proc.log_file.closed:
             proc.log_file.flush()
             proc.log_file.close()
-    except OSError:  # pragma: no cover - fermeture best-effort
+    except OSError:  # pragma: no cover - best-effort close
         pass
 
 
 def _read_tail(log_path: str, tail: int) -> list[str]:
-    """Renvoie les ``tail`` dernières lignes (sans newline) de ``log_path`` ; [] si absent."""
+    """Return the last ``tail`` lines (without newline) of ``log_path``; [] if absent."""
     path = Path(log_path)
     if not path.exists():
         return []
     try:
         text = path.read_text(encoding="utf-8", errors="replace")
-    except OSError:  # pragma: no cover - lecture best-effort
+    except OSError:  # pragma: no cover - best-effort read
         return []
     lines = text.splitlines()
     if tail >= 0:

@@ -1,12 +1,12 @@
-"""Tests unitaires de la fabrique runtime partagée (``adk_toolkit_mcp.runtime``).
+"""Unit tests for the shared runtime factory (``adk_toolkit_mcp.runtime``).
 
-Couvre :
-- Round-trip de la config runtime (persist → load), y compris backend ``database``.
-- Tolérance : config absente → défaut ``in_memory`` ; JSON corrompu → ``ValueError``.
-- Idempotence de ``save_runtime_config``.
-- INVARIANT singleton : même backend ``in_memory`` → MÊME instance de service ;
-  backends différents → instances différentes ; service ``database`` caché par ``db_url``.
-- ``reset_service_cache`` casse bien le cache.
+Covers:
+- Round-trip of the runtime config (persist → load), including the ``database`` backend.
+- Tolerance: absent config → ``in_memory`` default; corrupt JSON → ``ValueError``.
+- Idempotence of ``save_runtime_config``.
+- Singleton INVARIANT: the same ``in_memory`` backend → the SAME service instance;
+  different backends → different instances; ``database`` service cached by ``db_url``.
+- ``reset_service_cache`` properly breaks the cache.
 """
 
 from __future__ import annotations
@@ -34,7 +34,7 @@ from adk_toolkit_mcp.workspace import Workspace
 
 @pytest.fixture(autouse=True)
 def _clear_cache() -> None:
-    """Isole chaque test : le cache d'instances de service est vidé avant/après."""
+    """Isolate each test: the service-instance cache is cleared before/after."""
     reset_service_cache()
     yield
     reset_service_cache()
@@ -114,7 +114,7 @@ def test_unknown_kind_in_file_falls_back_to_in_memory(tmp_path: Path) -> None:
 
 
 def test_memory_artifacts_default_none(tmp_path: Path) -> None:
-    """Sans backend choisi, memory/artifacts restent ``None`` (sérialisés à ``null``)."""
+    """Without a chosen backend, memory/artifacts stay ``None`` (serialized as ``null``)."""
     ws = Workspace(tmp_path)
     save_runtime_config(ws, RuntimeConfig(session=SessionBackend()))
     loaded = load_runtime_config(ws, "myapp")
@@ -173,7 +173,7 @@ def test_artifacts_gcs_round_trip(tmp_path: Path) -> None:
 
 
 def test_full_config_round_trip(tmp_path: Path) -> None:
-    """Session + memory + artifacts ensemble survivent au round-trip."""
+    """Session + memory + artifacts together survive the round-trip."""
     ws = Workspace(tmp_path)
     config = RuntimeConfig(
         session=SessionBackend(kind="database", db_url="sqlite+aiosqlite:///x.db"),
@@ -186,10 +186,10 @@ def test_full_config_round_trip(tmp_path: Path) -> None:
 
 
 def test_backward_compat_with_p2a_runtime_json(tmp_path: Path) -> None:
-    """Une ``runtime.json`` écrite par P2a (memory/artifacts = null) se charge proprement.
+    """A ``runtime.json`` written by P2a (memory/artifacts = null) loads cleanly.
 
-    P2a sérialisait memory/artifacts comme ``null`` ; ils doivent se charger en ``None`` sans
-    erreur, et la session rester intacte.
+    P2a serialized memory/artifacts as ``null``; they must load as ``None`` without error, and the
+    session must stay intact.
     """
     ws = Workspace(tmp_path)
     ws.write(
@@ -223,7 +223,7 @@ def test_unknown_artifact_kind_in_file_falls_back(tmp_path: Path) -> None:
 # Singleton invariant
 # --------------------------------------------------------------------------- #
 def test_in_memory_singleton_identity() -> None:
-    """Même backend in_memory → MÊME instance (l'état survit entre appels)."""
+    """Same in_memory backend → SAME instance (state survives across calls)."""
     backend = SessionBackend(kind="in_memory")
     svc_a = get_session_service(backend)
     svc_b = get_session_service(SessionBackend(kind="in_memory"))
@@ -231,7 +231,7 @@ def test_in_memory_singleton_identity() -> None:
 
 
 def test_in_memory_singleton_survives_state(tmp_path: Path) -> None:
-    """Prouve concrètement que l'instance partagée conserve l'état (create puis get)."""
+    """Concretely prove that the shared instance keeps the state (create then get)."""
     import asyncio
 
     backend = SessionBackend(kind="in_memory")
@@ -239,7 +239,7 @@ def test_in_memory_singleton_survives_state(tmp_path: Path) -> None:
     async def scenario() -> None:
         svc1 = get_session_service(backend)
         created = await svc1.create_session(app_name="app", user_id="u1")
-        # Un autre appel d'outil récupérerait le service via la même clé.
+        # Another tool call would fetch the service via the same key.
         svc2 = get_session_service(SessionBackend(kind="in_memory"))
         fetched = await svc2.get_session(app_name="app", user_id="u1", session_id=created.id)
         assert fetched is not None
@@ -249,7 +249,7 @@ def test_in_memory_singleton_survives_state(tmp_path: Path) -> None:
 
 
 def test_database_service_keyed_by_url(tmp_path: Path) -> None:
-    """Service database mis en cache par db_url : même url → même instance."""
+    """Database service cached by db_url: same url → same instance."""
     url = f"sqlite+aiosqlite:///{(tmp_path / 'a.db').as_posix()}"
     svc_a = get_session_service(SessionBackend(kind="database", db_url=url))
     svc_b = get_session_service(SessionBackend(kind="database", db_url=url))
@@ -293,7 +293,7 @@ def test_reset_service_cache_invalidates() -> None:
 # Memory / artifact singleton invariants + config validation
 # --------------------------------------------------------------------------- #
 def test_memory_in_memory_singleton_identity() -> None:
-    """Même backend mémoire in_memory → MÊME instance (état partagé entre appels)."""
+    """Same in_memory memory backend → SAME instance (state shared across calls)."""
     svc_a = get_memory_service(MemoryBackend(kind="in_memory"))
     svc_b = get_memory_service(MemoryBackend(kind="in_memory"))
     assert svc_a is svc_b
@@ -306,7 +306,7 @@ def test_artifact_in_memory_singleton_identity() -> None:
 
 
 def test_memory_and_artifact_caches_are_independent() -> None:
-    """Les caches sont distincts : un service mémoire n'est pas un service d'artifacts."""
+    """The caches are distinct: a memory service is not an artifact service."""
     mem = get_memory_service(MemoryBackend(kind="in_memory"))
     art = get_artifact_service(ArtifactBackend(kind="in_memory"))
     assert mem is not art
@@ -336,10 +336,10 @@ def test_artifact_gcs_without_bucket_raises() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# Plugins manifest (P4c) — sérialisation + compat ascendante
+# Plugins manifest (P4c) — serialization + backward compatibility
 # --------------------------------------------------------------------------- #
 def test_runtime_plugins_roundtrip(tmp_path: Path) -> None:
-    """Le manifeste de plugins est persisté puis relu (var/name/kind)."""
+    """The plugins manifest is persisted then re-read (var/name/kind)."""
     ws = Workspace(tmp_path)
     config = RuntimeConfig(
         session=SessionBackend(kind="in_memory"),
@@ -357,17 +357,17 @@ def test_runtime_plugins_roundtrip(tmp_path: Path) -> None:
 
 
 def test_runtime_no_plugins_key_when_empty(tmp_path: Path) -> None:
-    """Sans plugin, la clé 'plugins' n'est PAS émise (runtime.json reste compat P2a/P2b)."""
+    """Without a plugin, the 'plugins' key is NOT emitted (runtime.json stays P2a/P2b compat)."""
     ws = Workspace(tmp_path)
     save_runtime_config(ws, RuntimeConfig(session=SessionBackend(kind="in_memory")))
     raw = ws.read(RUNTIME_CONFIG_FILE)
     assert "plugins" not in raw
-    # Et un fichier sans clé 'plugins' se relit avec plugins == () (pas d'erreur).
+    # And a file without a 'plugins' key re-reads with plugins == () (no error).
     assert load_runtime_config(ws, "app").plugins == ()
 
 
 def test_runtime_plugins_ignores_entries_without_var(tmp_path: Path) -> None:
-    """Une entrée de manifeste sans 'var' non vide est ignorée (tolérance)."""
+    """A manifest entry without a non-empty 'var' is ignored (tolerance)."""
     import json
 
     ws = Workspace(tmp_path)

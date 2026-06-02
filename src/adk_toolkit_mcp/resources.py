@@ -4,7 +4,7 @@ from fastmcp import FastMCP
 
 from .versions import adk_versions
 
-#: Catalogue statique des modèles Gemini connus et des providers LiteLLM supportés.
+#: Static catalog of known Gemini models and supported LiteLLM providers.
 _MODELS_CATALOG: dict[str, object] = {
     "gemini_models": {
         "recommended": [
@@ -16,8 +16,8 @@ _MODELS_CATALOG: dict[str, object] = {
             "gemini-1.5-pro",
         ],
         "note": (
-            "Passez le nom de modèle directement à models_set (ex. 'gemini-2.5-flash'). "
-            "Consultez https://ai.google.dev/gemini-api/docs/models pour la liste complète."
+            "Pass the model name directly to models_set (e.g. 'gemini-2.5-flash'). "
+            "See https://ai.google.dev/gemini-api/docs/models for the full list."
         ),
     },
     "litellm_providers": {
@@ -35,13 +35,12 @@ _MODELS_CATALOG: dict[str, object] = {
         ),
         "notes": {
             "lm_studio": (
-                "Rendu comme provider 'openai' avec api_base='http://127.0.0.1:1234/v1' "
-                "par défaut. Utilisez api_key_env si LM Studio requiert une clé."
+                "Rendered as the 'openai' provider with api_base='http://127.0.0.1:1234/v1' "
+                "by default. Use api_key_env if LM Studio requires a key."
             ),
-            "ollama": "Utilisez 'ollama_chat' pour les modèles conversationnels.",
+            "ollama": "Use 'ollama_chat' for conversational models.",
             "openrouter": (
-                "Définissez OPENROUTER_API_KEY dans votre env et passez "
-                "api_key_env='OPENROUTER_API_KEY'."
+                "Set OPENROUTER_API_KEY in your env and pass api_key_env='OPENROUTER_API_KEY'."
             ),
         },
     },
@@ -74,7 +73,7 @@ _MODELS_CATALOG: dict[str, object] = {
 
 
 def register_resources(mcp: FastMCP) -> None:
-    """Enregistre les resources lecture-seule. Étendu aux phases suivantes."""
+    """Register the read-only resources. Extended in later phases."""
 
     @mcp.resource("adk://version", mime_type="application/json")
     def version_resource() -> dict[str, str]:
@@ -82,6 +81,6 @@ def register_resources(mcp: FastMCP) -> None:
 
     @mcp.resource("adk://models", mime_type="application/json")
     def models_resource() -> dict[str, object]:
-        """Catalogue statique : modèles Gemini connus, providers LiteLLM supportés,
-        membres des enums HarmCategory / HarmBlockThreshold."""
+        """Static catalog: known Gemini models, supported LiteLLM providers,
+        HarmCategory / HarmBlockThreshold enum members."""
         return _MODELS_CATALOG

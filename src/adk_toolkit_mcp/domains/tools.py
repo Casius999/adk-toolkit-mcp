@@ -1,29 +1,29 @@
-"""Domaine `tools` : attache des outils ADK aux agents (code-first, sidecar + régénération).
+"""`tools` domain: attach ADK tools to agents (code-first, sidecar + regeneration).
 
-Sous-serveur FastMCP monté par le serveur racine sous le namespace ``tools`` (outils exposés
-comme ``tools_<nom>`` côté client). Fonctions nommées avec des noms **BARE** (``add_function``,
+A FastMCP sub-server mounted by the root server under the ``tools`` namespace (tools exposed as
+``tools_<name>`` on the client side). Functions named with **BARE** names (``add_function``,
 ``add_long_running``, …) — cf. ``docs/adk-api-notes/conventions.md``.
 
-Chaque outil opère sur ``(path, app_name, agent_name, …)`` : il charge le sidecar
-``<path>/<app_name>/.adk_toolkit/agents.json``, **attache/remplace** une spec d'outil sur
-l'agent ``agent_name`` (sémantique « append unique, replace by name » via
-:meth:`~adk_toolkit_mcp.project_model.ToolSpec.ref_key`), réécrit le sidecar, puis **régénère
-intégralement** ``agent.py`` (+ ``__init__.py``). Tout est renvoyé dans l'enveloppe
-``{ok, data, error}`` ; les entrées invalides renvoient ``err(...)`` (jamais d'exception).
+Each tool operates on ``(path, app_name, agent_name, …)``: it loads the sidecar
+``<path>/<app_name>/.adk_toolkit/agents.json``, **attaches/replaces** a tool spec on the
+``agent_name`` agent ("append unique, replace by name" semantics via
+:meth:`~adk_toolkit_mcp.project_model.ToolSpec.ref_key`), rewrites the sidecar, then **fully
+regenerates** ``agent.py`` (+ ``__init__.py``). Everything is returned in the
+``{ok, data, error}`` envelope; invalid inputs return ``err(...)`` (never an exception).
 
-Passe **3a** : outils **sans dépendance** (aucune extra ``google-adk`` requise) :
-``function``, ``long_running``, ``builtin`` (dont ``vertex_ai_search``), ``agent_tool``,
-``openapi``.
+Pass **3a**: tools **without dependency** (no ``google-adk`` extra required): ``function``,
+``long_running``, ``builtin`` (including ``vertex_ai_search``), ``agent_tool``, ``openapi``.
 
-Passe **3b** : toolsets à **dépendance optionnelle** (extras ``google-adk[...]``) — **codegen-only**
-(le toolkit n'importe jamais ces extras ; il émet du code que l'utilisateur exécute dans son propre
-venv) : ``add_bigquery``, ``add_spanner``, ``add_mcp_toolset``, ``add_apihub``, ``add_langchain``,
-``add_crewai``, plus ``set_auth`` (attache une sous-spec d'auth à un toolset compatible).
+Pass **3b**: toolsets with an **optional dependency** (``google-adk[...]`` extras) —
+**codegen-only** (the toolkit never imports these extras; it emits code that the user runs in
+their own venv): ``add_bigquery``, ``add_spanner``, ``add_mcp_toolset``, ``add_apihub``,
+``add_langchain``, ``add_crewai``, plus ``set_auth`` (attaches an auth sub-spec to a compatible
+toolset).
 
-Le codegen réel et la sémantique vivent dans :mod:`adk_toolkit_mcp.project_model` (pur, testable).
-Voir ``docs/adk-api-notes/tools.md`` pour les signatures ADK confirmées (builtins = instances,
-toolsets directs dans ``tools=[...]``, fonction auto-wrappée en ``FunctionTool`` par ADK, chemins
-d'import + classes d'auth confirmés par introspection).
+The actual codegen and the semantics live in :mod:`adk_toolkit_mcp.project_model` (pure,
+testable). See ``docs/adk-api-notes/tools.md`` for the confirmed ADK signatures (builtins =
+instances, toolsets directly in ``tools=[...]``, a function auto-wrapped in a ``FunctionTool`` by
+ADK, import paths + auth classes confirmed by introspection).
 """
 
 from __future__ import annotations
@@ -52,23 +52,23 @@ from ..workspace import Workspace
 
 tools_server: FastMCP = FastMCP("tools")
 
-#: app_name = identifiant de package Python (nom de dossier ET de module).
+#: app_name = Python package identifier (both folder AND module name).
 _APP_NAME_ERR = (
-    "app_name invalide : attendu un identifiant Python "
-    "(lettres, chiffres, underscore ; ne commence pas par un chiffre)."
+    "Invalid app_name: expected a Python identifier "
+    "(letters, digits, underscore; not starting with a digit)."
 )
 
 
 # --------------------------------------------------------------------------- #
-# Helpers internes (non exposés)
+# Internal helpers (not exposed)
 # --------------------------------------------------------------------------- #
 def _app_ws(path: str, app_name: str) -> Workspace:
-    """Workspace pointant sur le dossier de l'app (``<path>/<app_name>``)."""
+    """Workspace pointing at the app folder (``<path>/<app_name>``)."""
     return Workspace(Path(path) / app_name)
 
 
 def _load(path: str, app_name: str) -> ProjectModel | dict[str, Any]:
-    """Charge le modèle ; renvoie un ``err(...)`` (dict) si le sidecar est corrompu."""
+    """Load the model; return an ``err(...)`` (dict) if the sidecar is corrupt."""
     ws = _app_ws(path, app_name)
     try:
         return load_model(ws, app_name)
@@ -77,14 +77,14 @@ def _load(path: str, app_name: str) -> ProjectModel | dict[str, Any]:
 
 
 def _commit(path: str, app_name: str, model: ProjectModel) -> dict[str, Any]:
-    """Sauve le sidecar + régénère ``agent.py``. Convertit un cycle en ``err``.
+    """Save the sidecar + regenerate ``agent.py``. Converts a cycle into ``err``.
 
-    Renvoie le payload commun ``{app_name, agent, tools, sidecar, regenerated, changed}``.
+    Returns the common payload ``{app_name, agent, tools, sidecar, regenerated, changed}``.
     """
     ws = _app_ws(path, app_name)
     try:
         regen = regenerate(ws, model)
-    except ValueError as exc:  # cycle détecté au rendu
+    except ValueError as exc:  # cycle detected at render time
         return err(str(exc))
     sidecar_changed = save_model(ws, model)
     return ok(
@@ -98,16 +98,16 @@ def _commit(path: str, app_name: str, model: ProjectModel) -> dict[str, Any]:
 
 
 def _attach(path: str, app_name: str, agent_name: str, tool: ToolSpec) -> dict[str, Any]:
-    """Valide puis attache/remplace ``tool`` sur ``agent_name``, et commit. Mutualise 1-5.
+    """Validate then attach/replace ``tool`` on ``agent_name``, and commit. Shared by 1-5.
 
-    Étapes : valide ``app_name`` -> charge le modèle -> exige un agent ``llm`` existant
-    (seul un ``LlmAgent`` porte des outils) -> valide la spec (avec le modèle, pour
-    ``agent_tool``) -> attache (append unique / replace by name) -> commit (régénère).
+    Steps: validate ``app_name`` -> load the model -> require an existing ``llm`` agent (only an
+    ``LlmAgent`` carries tools) -> validate the spec (with the model, for ``agent_tool``) ->
+    attach (append unique / replace by name) -> commit (regenerate).
     """
     if not is_identifier(app_name):
         return err(_APP_NAME_ERR)
     if not is_identifier(agent_name):
-        return err(f"agent_name invalide : {agent_name!r}. Attendu un identifiant Python.")
+        return err(f"Invalid agent_name: {agent_name!r}. Expected a Python identifier.")
 
     model = _load(path, app_name)
     if isinstance(model, dict):  # err()
@@ -115,11 +115,11 @@ def _attach(path: str, app_name: str, agent_name: str, tool: ToolSpec) -> dict[s
 
     agent = model.get(agent_name)
     if agent is None:
-        return err(f"Agent introuvable : {agent_name!r}. Créez-le d'abord (domaine agents).")
+        return err(f"Agent not found: {agent_name!r}. Create it first (agents domain).")
     if agent.type != "llm":
         return err(
-            f"L'agent {agent_name!r} est de type {agent.type!r} ; seuls les agents 'llm' "
-            "(LlmAgent) portent des outils."
+            f"The {agent_name!r} agent is of type {agent.type!r}; only 'llm' agents "
+            "(LlmAgent) carry tools."
         )
 
     tool_error = validate_tool_spec(tool, model, agent_name)
@@ -136,16 +136,16 @@ def _attach(path: str, app_name: str, agent_name: str, tool: ToolSpec) -> dict[s
 
 
 def _parse_params(params: list[dict[str, Any]]) -> tuple[tuple[str, str, str | None], ...] | str:
-    """Normalise une liste ``[{"name","type","default"}]`` en tuple typé pour ``ToolSpec``.
+    """Normalize a ``[{"name","type","default"}]`` list into a typed tuple for ``ToolSpec``.
 
-    Renvoie un message d'erreur (str) si un item est mal formé. ``default`` est un **littéral
-    source** (déjà rendu) ou ``None`` (paramètre sans défaut). Ex. ``{"name":"n","type":"int",
+    Returns an error message (str) if an item is malformed. ``default`` is a **source literal**
+    (already rendered) or ``None`` (parameter without default). E.g. ``{"name":"n","type":"int",
     "default":"0"}`` -> ``("n","int","0")``.
     """
     out: list[tuple[str, str, str | None]] = []
     for item in params:
         if not isinstance(item, dict) or "name" not in item:
-            return f"Paramètre mal formé : {item!r}. Attendu {{'name','type','default'?}}."
+            return f"Malformed parameter: {item!r}. Expected {{'name','type','default'?}}."
         name = str(item["name"])
         ptype = str(item.get("type", "str"))
         default = item.get("default")
@@ -154,17 +154,17 @@ def _parse_params(params: list[dict[str, Any]]) -> tuple[tuple[str, str, str | N
 
 
 def _replace_tool_fields(tool: ToolSpec, **changes: Any) -> ToolSpec:
-    """Renvoie une copie **immuable** de ``tool`` avec les champs ``changes`` remplacés.
+    """Return an **immutable** copy of ``tool`` with the ``changes`` fields replaced.
 
-    Fin wrapper de :func:`dataclasses.replace` (``ToolSpec`` est ``frozen``) — préserve l'identité
-    (``ref_key`` inchangé tant qu'on ne touche ni ``name``/``kind``), donc ``add_or_replace_tool``
-    remplace bien l'outil en place (pas de doublon).
+    A thin wrapper around :func:`dataclasses.replace` (``ToolSpec`` is ``frozen``) — preserves
+    the identity (``ref_key`` unchanged as long as neither ``name``/``kind`` is touched), so
+    ``add_or_replace_tool`` indeed replaces the tool in place (no duplicate).
     """
     return replace(tool, **changes)
 
 
 # --------------------------------------------------------------------------- #
-# Outils MCP — ajout d'outils par genre
+# MCP tools — adding tools by kind
 # --------------------------------------------------------------------------- #
 @tools_server.tool(tags={"tools"})
 def add_function(
@@ -177,12 +177,12 @@ def add_function(
     returns: str = "dict",
     body: str = "return {}",
 ) -> dict[str, Any]:
-    """Attache une **function-tool** à ``agent_name`` : génère ``def <func_name>(...)`` et
-    place le nom bare dans ``tools=[...]`` (ADK l'auto-wrappe en ``FunctionTool``).
+    """Attach a **function-tool** to ``agent_name``: generates ``def <func_name>(...)`` and
+    places the bare name in ``tools=[...]`` (ADK auto-wraps it in a ``FunctionTool``).
 
-    ``params`` : liste de ``{"name":.., "type":"str", "default":null}`` (``default`` = littéral
-    source ou ``null``). Identifiants et types sont validés. Sémantique « append unique /
-    replace by name » : ré-attacher le même ``func_name`` remplace la définition.
+    ``params``: list of ``{"name":.., "type":"str", "default":null}`` (``default`` = source
+    literal or ``null``). Identifiers and types are validated. "Append unique / replace by name"
+    semantics: re-attaching the same ``func_name`` replaces the definition.
     """
     parsed = _parse_params(params)
     if isinstance(parsed, str):
@@ -209,8 +209,8 @@ def add_long_running(
     returns: str = "dict",
     body: str = "return {}",
 ) -> dict[str, Any]:
-    """Comme :func:`add_function`, mais enveloppe la fonction dans
-    ``LongRunningFunctionTool(func=<func_name>)`` (outil long-running ADK)."""
+    """Like :func:`add_function`, but wraps the function in
+    ``LongRunningFunctionTool(func=<func_name>)`` (ADK long-running tool)."""
     parsed = _parse_params(params)
     if isinstance(parsed, str):
         return err(parsed)
@@ -233,15 +233,15 @@ def add_builtin(
     kind: str,
     args: dict[str, str] | None = None,
 ) -> dict[str, Any]:
-    """Attache un **builtin** ADK (``google_search``, ``url_context``, …) à ``agent_name``.
+    """Attach an ADK **builtin** (``google_search``, ``url_context``, …) to ``agent_name``.
 
-    ``kind`` doit appartenir à l'ensemble confirmé :data:`BUILTIN_TOOLS`. Pour
-    ``vertex_ai_search``, ``args`` doit fournir ``data_store_id`` (ou ``search_engine_id``)
-    -> rendu ``VertexAiSearchTool(data_store_id="...")``. Les builtins core sont rendus par
-    leur nom bare (instance d'outil déjà exportée par ADK).
+    ``kind`` must belong to the confirmed set :data:`BUILTIN_TOOLS`. For ``vertex_ai_search``,
+    ``args`` must provide ``data_store_id`` (or ``search_engine_id``) -> rendered as
+    ``VertexAiSearchTool(data_store_id="...")``. Core builtins are rendered by their bare name (a
+    tool instance already exported by ADK).
     """
     if kind not in BUILTIN_TOOLS:
-        return err(f"Builtin inconnu : {kind!r}. Connus : {', '.join(sorted(BUILTIN_TOOLS))}.")
+        return err(f"Unknown builtin: {kind!r}. Known: {', '.join(sorted(BUILTIN_TOOLS))}.")
     arg_pairs = tuple((str(k), str(v)) for k, v in (args or {}).items())
     tool = ToolSpec(kind="builtin", builtin_kind=kind, args=arg_pairs)
     return _attach(path, app_name, agent_name, tool)
@@ -254,12 +254,12 @@ def add_agent_tool(
     agent_name: str,
     target_agent: str,
 ) -> dict[str, Any]:
-    """Attache ``AgentTool(agent=<target_agent>)`` à ``agent_name`` (délégation agent-as-tool).
+    """Attach ``AgentTool(agent=<target_agent>)`` to ``agent_name`` (agent-as-tool delegation).
 
-    ``target_agent`` doit être un agent **existant** du modèle et différent de ``agent_name``
-    (pas d'auto-enveloppe). L'ordre de génération est topologique (cible définie avant
-    l'enveloppant) ; la cible **n'est pas** ajoutée comme ``sub_agent`` (règle ADK du parent
-    unique : un agent enveloppé en outil n'est pas un enfant).
+    ``target_agent`` must be an **existing** agent in the model and different from ``agent_name``
+    (no self-wrapping). The generation order is topological (target defined before the wrapper);
+    the target is **not** added as a ``sub_agent`` (ADK's single-parent rule: an agent wrapped as
+    a tool is not a child).
     """
     tool = ToolSpec(kind="agent_tool", target_agent=target_agent)
     return _attach(path, app_name, agent_name, tool)
@@ -273,24 +273,24 @@ def add_openapi(
     spec: str,
     name: str | None = None,
 ) -> dict[str, Any]:
-    """Attache un ``OpenAPIToolset`` (construit depuis la chaîne ``spec``) à ``agent_name``.
+    """Attach an ``OpenAPIToolset`` (built from the ``spec`` string) to ``agent_name``.
 
-    Génère ``<name> = OpenAPIToolset(spec_str=<spec>, spec_str_type="json")`` au niveau module
-    et place ``<name>`` **directement** dans ``tools=[...]`` (confirmé : un toolset est accepté
-    tel quel, pas besoin de ``.get_tools()``). ``name`` défaut = ``<agent_name>_openapi``.
+    Generates ``<name> = OpenAPIToolset(spec_str=<spec>, spec_str_type="json")`` at module level
+    and places ``<name>`` **directly** in ``tools=[...]`` (confirmed: a toolset is accepted as-is,
+    no need for ``.get_tools()``). ``name`` defaults to ``<agent_name>_openapi``.
     """
     toolset_name = name if name is not None else f"{agent_name}_openapi"
     if not is_identifier(toolset_name):
-        return err(f"Nom de toolset invalide : {toolset_name!r}. Attendu un identifiant Python.")
+        return err(f"Invalid toolset name: {toolset_name!r}. Expected a Python identifier.")
     tool = ToolSpec(kind="openapi", name=toolset_name, spec=spec)
     return _attach(path, app_name, agent_name, tool)
 
 
 # --------------------------------------------------------------------------- #
-# Outils MCP — passe 3b (toolsets à dépendance optionnelle, codegen-only)
+# MCP tools — pass 3b (optional-dependency toolsets, codegen-only)
 # --------------------------------------------------------------------------- #
 def _toolset_name(name: str | None, agent_name: str, suffix: str) -> str:
-    """Nom de variable du toolset : ``name`` fourni, sinon ``<agent_name>_<suffix>``."""
+    """Toolset variable name: ``name`` if provided, otherwise ``<agent_name>_<suffix>``."""
     return name if name is not None else f"{agent_name}_{suffix}"
 
 
@@ -302,13 +302,13 @@ def add_bigquery(
     name: str | None = None,
     args: dict[str, str] | None = None,
 ) -> dict[str, Any]:
-    """Attache un ``BigQueryToolset`` (extra ``google-adk[bigquery]``) à ``agent_name``.
+    """Attach a ``BigQueryToolset`` (``google-adk[bigquery]`` extra) to ``agent_name``.
 
-    Génère ``<name> = BigQueryToolset(<args>)`` au niveau module et place ``<name>``
-    directement dans ``tools=[...]``. ``args`` sont des **expressions source** (pas des
-    littéraux chaîne) : ex. ``{"bigquery_tool_config": "my_cfg"}`` référence une variable que
-    vous définissez par ailleurs. ``name`` défaut = ``<agent_name>_bigquery``. **Codegen-only** :
-    le toolkit n'importe pas l'extra (cf. ``docs/adk-api-notes/tools.md``).
+    Generates ``<name> = BigQueryToolset(<args>)`` at module level and places ``<name>`` directly
+    in ``tools=[...]``. ``args`` are **source expressions** (not string literals): e.g.
+    ``{"bigquery_tool_config": "my_cfg"}`` references a variable you define elsewhere. ``name``
+    defaults to ``<agent_name>_bigquery``. **Codegen-only**: the toolkit does not import the extra
+    (cf. ``docs/adk-api-notes/tools.md``).
     """
     toolset_name = _toolset_name(name, agent_name, "bigquery")
     arg_pairs = tuple((str(k), str(v)) for k, v in (args or {}).items())
@@ -324,11 +324,11 @@ def add_spanner(
     name: str | None = None,
     args: dict[str, str] | None = None,
 ) -> dict[str, Any]:
-    """Attache un ``SpannerToolset`` (extra ``google-adk[spanner]``) à ``agent_name``.
+    """Attach a ``SpannerToolset`` (``google-adk[spanner]`` extra) to ``agent_name``.
 
-    Comme :func:`add_bigquery` mais pour Spanner : ``<name> = SpannerToolset(<args>)``.
-    ``args`` = expressions source (ex. ``{"credentials_config": "my_creds"}``). ``name`` défaut
-    = ``<agent_name>_spanner``. **Codegen-only**.
+    Like :func:`add_bigquery` but for Spanner: ``<name> = SpannerToolset(<args>)``. ``args`` =
+    source expressions (e.g. ``{"credentials_config": "my_creds"}``). ``name`` defaults to
+    ``<agent_name>_spanner``. **Codegen-only**.
     """
     toolset_name = _toolset_name(name, agent_name, "spanner")
     arg_pairs = tuple((str(k), str(v)) for k, v in (args or {}).items())
@@ -349,17 +349,17 @@ def add_mcp_toolset(
     tool_filter: list[str] | None = None,
     name: str | None = None,
 ) -> dict[str, Any]:
-    """Attache un ``McpToolset`` (extra ``google-adk[mcp]``) à ``agent_name``.
+    """Attach an ``McpToolset`` (``google-adk[mcp]`` extra) to ``agent_name``.
 
-    ``transport`` ∈ {``stdio``, ``sse``, ``http``} :
+    ``transport`` ∈ {``stdio``, ``sse``, ``http``}:
 
-    - ``stdio`` : ``command`` requis (+ ``args`` optionnels) -> ``StdioConnectionParams(
-      server_params=StdioServerParameters(command=..., args=[...]))`` ;
-    - ``sse`` / ``http`` : ``url`` requis (+ ``headers`` optionnels) -> ``SseConnectionParams`` /
+    - ``stdio``: ``command`` required (+ optional ``args``) -> ``StdioConnectionParams(
+      server_params=StdioServerParameters(command=..., args=[...]))``;
+    - ``sse`` / ``http``: ``url`` required (+ optional ``headers``) -> ``SseConnectionParams`` /
       ``StreamableHTTPConnectionParams(url=..., headers={...})``.
 
-    ``tool_filter`` (optionnel) restreint les outils exposés. ``name`` défaut =
-    ``<agent_name>_mcp``. Le toolset entre directement dans ``tools=[...]``. **Codegen-only**.
+    ``tool_filter`` (optional) restricts the exposed tools. ``name`` defaults to
+    ``<agent_name>_mcp``. The toolset goes directly into ``tools=[...]``. **Codegen-only**.
     """
     toolset_name = _toolset_name(name, agent_name, "mcp")
     tool = ToolSpec(
@@ -383,12 +383,12 @@ def add_apihub(
     apihub_resource_name: str,
     name: str | None = None,
 ) -> dict[str, Any]:
-    """Attache un ``APIHubToolset`` à ``agent_name`` (API Hub de Google Cloud).
+    """Attach an ``APIHubToolset`` to ``agent_name`` (Google Cloud API Hub).
 
-    Génère ``<name> = APIHubToolset(apihub_resource_name="...")`` et le place dans
-    ``tools=[...]``. ``apihub_resource_name`` est la ressource API Hub (ex.
-    ``projects/<p>/locations/<l>/apis/<a>``). ``name`` défaut = ``<agent_name>_apihub``.
-    Auth attachable via :func:`set_auth`. **Codegen-only**.
+    Generates ``<name> = APIHubToolset(apihub_resource_name="...")`` and places it in
+    ``tools=[...]``. ``apihub_resource_name`` is the API Hub resource (e.g.
+    ``projects/<p>/locations/<l>/apis/<a>``). ``name`` defaults to ``<agent_name>_apihub``. Auth
+    attachable via :func:`set_auth`. **Codegen-only**.
     """
     toolset_name = _toolset_name(name, agent_name, "apihub")
     tool = ToolSpec(kind="apihub", name=toolset_name, apihub_resource_name=apihub_resource_name)
@@ -404,13 +404,13 @@ def add_langchain(
     tool_expr: str,
     name: str | None = None,
 ) -> dict[str, Any]:
-    """Attache un outil LangChain enveloppé via ``LangchainTool`` (extra ``google-adk[community]``).
+    """Attach a LangChain tool wrapped via ``LangchainTool`` (``google-adk[community]`` extra).
 
-    Le toolkit ne connaît pas votre outil LangChain : vous fournissez ``import_line`` (rendu
-    **verbatim**, ex. ``from langchain_community.tools import WikipediaQueryRun``) et ``tool_expr``
-    (l'expression de construction, ex. ``WikipediaQueryRun(api_wrapper=wrapper)``). Rendu :
-    ``LangchainTool(tool=<tool_expr>)`` dans ``tools=[...]``. ``name`` est accepté mais
-    actuellement non rendu (le wrapper LangChain dérive son nom). **Codegen-only**.
+    The toolkit does not know your LangChain tool: you provide ``import_line`` (rendered
+    **verbatim**, e.g. ``from langchain_community.tools import WikipediaQueryRun``) and
+    ``tool_expr`` (the construction expression, e.g. ``WikipediaQueryRun(api_wrapper=wrapper)``).
+    Rendered: ``LangchainTool(tool=<tool_expr>)`` in ``tools=[...]``. ``name`` is accepted but
+    currently not rendered (the LangChain wrapper derives its name). **Codegen-only**.
     """
     tool = ToolSpec(
         kind="langchain",
@@ -431,11 +431,11 @@ def add_crewai(
     name: str,
     description: str,
 ) -> dict[str, Any]:
-    """Attache un outil CrewAI enveloppé via ``CrewaiTool`` (extra ``google-adk[community]``).
+    """Attach a CrewAI tool wrapped via ``CrewaiTool`` (``google-adk[community]`` extra).
 
-    Comme :func:`add_langchain` mais pour CrewAI. ``CrewaiTool`` **exige** un ``name``
-    (keyword-only, confirmé) ; ``description`` requise ici pour un rendu explicite.
-    Rendu : ``CrewaiTool(tool=<tool_expr>, name="...", description="...")``. **Codegen-only**.
+    Like :func:`add_langchain` but for CrewAI. ``CrewaiTool`` **requires** a ``name``
+    (keyword-only, confirmed); ``description`` is required here for an explicit rendering.
+    Rendered: ``CrewaiTool(tool=<tool_expr>, name="...", description="...")``. **Codegen-only**.
     """
     tool = ToolSpec(
         kind="crewai",
@@ -448,7 +448,7 @@ def add_crewai(
 
 
 # --------------------------------------------------------------------------- #
-# Outil MCP — auth (set_auth) : attache une sous-spec auth à un toolset existant
+# MCP tool — auth (set_auth): attach an auth sub-spec to an existing toolset
 # --------------------------------------------------------------------------- #
 @tools_server.tool(tags={"tools"})
 def set_auth(
@@ -459,22 +459,22 @@ def set_auth(
     scheme: str,
     credential: dict[str, str],
 ) -> dict[str, Any]:
-    """Attache une **auth** (``scheme`` + ``credential``) à un toolset déjà présent sur l'agent.
+    """Attach an **auth** (``scheme`` + ``credential``) to a toolset already present on the agent.
 
-    ``tool_name`` désigne la **variable de toolset** (le ``name`` passé à ``add_openapi`` /
-    ``add_apihub`` / ``add_mcp_toolset``). Seuls ces genres acceptent l'auth (confirmé :
-    ``OpenAPIToolset``/``APIHubToolset``/``McpToolset`` ont ``auth_scheme``/``auth_credential`` ;
-    ``BigQueryToolset``/``SpannerToolset`` non -> refus).
+    ``tool_name`` designates the **toolset variable** (the ``name`` passed to ``add_openapi`` /
+    ``add_apihub`` / ``add_mcp_toolset``). Only these kinds accept auth (confirmed:
+    ``OpenAPIToolset``/``APIHubToolset``/``McpToolset`` have ``auth_scheme``/``auth_credential``;
+    ``BigQueryToolset``/``SpannerToolset`` do not -> rejected).
 
-    ``scheme`` ∈ {``apikey``, ``oauth2``, ``service_account``, ``bearer``}. ``credential`` est un
-    dict de champs (ex. ``{"api_key": "..."}``, ``{"token": "..."}``, ``{"client_id": "...",
-    "client_secret": "..."}``). Rendu : ``auth_credential=AuthCredential(...)`` sur le toolset
-    (+ imports ``google.adk.auth``). Sémantique idempotente (remplace par nom). **Codegen-only**.
+    ``scheme`` ∈ {``apikey``, ``oauth2``, ``service_account``, ``bearer``}. ``credential`` is a
+    dict of fields (e.g. ``{"api_key": "..."}``, ``{"token": "..."}``, ``{"client_id": "...",
+    "client_secret": "..."}``). Rendered: ``auth_credential=AuthCredential(...)`` on the toolset
+    (+ ``google.adk.auth`` imports). Idempotent semantics (replace by name). **Codegen-only**.
     """
     if not is_identifier(app_name):
         return err(_APP_NAME_ERR)
     if not is_identifier(agent_name):
-        return err(f"agent_name invalide : {agent_name!r}. Attendu un identifiant Python.")
+        return err(f"Invalid agent_name: {agent_name!r}. Expected a Python identifier.")
 
     model = _load(path, app_name)
     if isinstance(model, dict):  # err()
@@ -482,9 +482,9 @@ def set_auth(
 
     agent = model.get(agent_name)
     if agent is None:
-        return err(f"Agent introuvable : {agent_name!r}. Créez-le d'abord (domaine agents).")
+        return err(f"Agent not found: {agent_name!r}. Create it first (agents domain).")
 
-    # Cherche le toolset cible (par sa variable ``name``) parmi les outils de l'agent.
+    # Find the target toolset (by its ``name`` variable) among the agent's tools.
     target = next(
         (
             t
@@ -496,14 +496,14 @@ def set_auth(
     )
     if target is None:
         return err(
-            f"Toolset introuvable sur {agent_name!r} : {tool_name!r}. "
-            "set_auth cible un toolset existant (openapi/apihub/mcp_toolset) par son 'name'."
+            f"Toolset not found on {agent_name!r}: {tool_name!r}. "
+            "set_auth targets an existing toolset (openapi/apihub/mcp_toolset) by its 'name'."
         )
 
     cred_pairs = tuple((str(k), str(v)) for k, v in credential.items())
     updated_tool = _replace_tool_fields(target, auth=AuthSpec(scheme=scheme, credential=cred_pairs))
 
-    # Re-valide (rejette auth sur bigquery/spanner, schéma inconnu, champ requis manquant…).
+    # Re-validate (rejects auth on bigquery/spanner, unknown scheme, missing required field…).
     tool_error = validate_tool_spec(updated_tool, model, agent_name)
     if tool_error is not None:
         return err(tool_error)
@@ -518,19 +518,19 @@ def set_auth(
 
 
 # --------------------------------------------------------------------------- #
-# Outil MCP — lecture
+# MCP tool — read
 # --------------------------------------------------------------------------- #
 @tools_server.tool(tags={"tools"}, name="list")
 def list_tools_for_agent(path: str, app_name: str, agent_name: str) -> dict[str, Any]:
-    """Liste les outils attachés à ``agent_name`` (genre + détail synthétique). Lecture seule.
+    """List the tools attached to ``agent_name`` (kind + summary detail). Read-only.
 
-    Nommée ``list_tools_for_agent`` en Python (pour ne pas masquer le builtin ``list`` dans ce
-    module), mais **enregistrée sous le nom d'outil BARE ``list``** -> exposée ``tools_list``.
+    Named ``list_tools_for_agent`` in Python (so as not to shadow the ``list`` builtin in this
+    module), but **registered under the BARE tool name ``list``** -> exposed as ``tools_list``.
     """
     if not is_identifier(app_name):
         return err(_APP_NAME_ERR)
     if not is_identifier(agent_name):
-        return err(f"agent_name invalide : {agent_name!r}. Attendu un identifiant Python.")
+        return err(f"Invalid agent_name: {agent_name!r}. Expected a Python identifier.")
 
     model = _load(path, app_name)
     if isinstance(model, dict):
@@ -538,7 +538,7 @@ def list_tools_for_agent(path: str, app_name: str, agent_name: str) -> dict[str,
 
     agent = model.get(agent_name)
     if agent is None:
-        return err(f"Agent introuvable : {agent_name!r}.")
+        return err(f"Agent not found: {agent_name!r}.")
 
     return ok(
         {
@@ -550,7 +550,7 @@ def list_tools_for_agent(path: str, app_name: str, agent_name: str) -> dict[str,
 
 
 def _tool_summary(tool: ToolSpec) -> dict[str, Any]:
-    """Résumé synthétique d'un ``ToolSpec`` pour ``list`` (selon le genre)."""
+    """Summary of a ``ToolSpec`` for ``list`` (per kind)."""
     summary: dict[str, Any] = {"kind": tool.kind, "ref_key": tool.ref_key()}
     if tool.kind in ("function", "long_running"):
         summary["name"] = tool.name

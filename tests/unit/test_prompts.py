@@ -1,13 +1,13 @@
-"""Tests des 5 prompts de workflow (P6a).
+"""Tests for the 5 workflow prompts (P6a).
 
-Lus via un ``fastmcp.Client`` in-memory (``list_prompts`` / ``get_prompt`` — la VRAIE API client
-de fastmcp 3.3.1). On vérifie :
+Read via an in-memory ``fastmcp.Client`` (``list_prompts`` / ``get_prompt`` — the REAL fastmcp
+3.3.1 client API). We verify:
 
-- les 5 prompts attendus sont enregistrés (avec leurs arguments) ;
-- chacun rend une chaîne NON vide et actionnable référençant des outils ``<domaine>_*`` ;
-- **cross-check load-bearing** : tout token ``<domaine>_<nom>`` cité dans un prompt existe bien
-  dans le catalogue réel d'outils du serveur (aucun nom d'outil inventé) ;
-- chaque prompt porte le tag ``workflow``.
+- the 5 expected prompts are registered (with their arguments);
+- each renders a NON-empty, actionable string referencing ``<domain>_*`` tools;
+- **load-bearing cross-check**: every ``<domain>_<name>`` token cited in a prompt actually
+  exists in the server's real tool catalog (no invented tool name);
+- each prompt carries the ``workflow`` tag.
 """
 
 from __future__ import annotations
@@ -19,16 +19,16 @@ from fastmcp import Client
 
 from adk_toolkit_mcp.server import build_server
 
-#: Les 5 prompts de workflow attendus -> arguments d'exemple pour le rendu.
+#: The 5 expected workflow prompts -> example arguments for rendering.
 _PROMPT_ARGS: dict[str, dict[str, str]] = {
-    "scaffold_multi_agent": {"goal": "trier des tickets de support"},
-    "add_guardrail": {"agent": "router", "concern": "bloquer les PII"},
+    "scaffold_multi_agent": {"goal": "triage support tickets"},
+    "add_guardrail": {"agent": "router", "concern": "block PII"},
     "write_evalset": {"agent": "router"},
     "deploy_checklist": {"target": "cloud_run"},
-    "debug_agent": {"symptom": "aucune réponse"},
+    "debug_agent": {"symptom": "no response"},
 }
 
-#: Les 15 domaines montés (pour repérer les tokens ``<domaine>_<nom>`` dans le texte des prompts).
+#: The 15 mounted domains (to spot the ``<domain>_<name>`` tokens in the prompt text).
 _DOMAINS = (
     "project",
     "agents",
@@ -47,33 +47,33 @@ _DOMAINS = (
     "observability",
 )
 
-#: Repère un token ressemblant à un nom d'outil exposé : ``<domaine>_<suffixe_snake>``.
+#: Spots a token that looks like an exposed tool name: ``<domain>_<snake_suffix>``.
 _TOOL_TOKEN = re.compile(r"\b(?:" + "|".join(_DOMAINS) + r")_[a-z][a-z_]*\b")
 
 
 async def _real_tool_names() -> set[str]:
-    """Ensemble des noms d'outils réellement exposés (mode outils-directs)."""
+    """Set of the tool names actually exposed (direct-tools mode)."""
     return {t.name for t in await build_server().list_tools()}
 
 
 async def _render(client: Client, name: str) -> str:
-    """Rend un prompt et renvoie le texte de son unique message."""
+    """Render a prompt and return the text of its single message."""
     result = await client.get_prompt(name, _PROMPT_ARGS[name])
     return result.messages[0].content.text
 
 
 # --------------------------------------------------------------------------- #
-# Enregistrement
+# Registration
 # --------------------------------------------------------------------------- #
 async def test_all_five_prompts_registered() -> None:
-    """Les 5 prompts de workflow attendus sont enregistrés sur le serveur."""
+    """The 5 expected workflow prompts are registered on the server."""
     async with Client(build_server()) as client:
         names = {p.name for p in await client.list_prompts()}
     assert set(_PROMPT_ARGS) <= names
 
 
 async def test_prompts_declare_their_arguments() -> None:
-    """Chaque prompt déclare ses arguments (dérivés de la signature de la fonction)."""
+    """Each prompt declares its arguments (derived from the function signature)."""
     async with Client(build_server()) as client:
         by_name = {p.name: p for p in await client.list_prompts()}
     expected_args = {
@@ -89,47 +89,47 @@ async def test_prompts_declare_their_arguments() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# Rendu
+# Rendering
 # --------------------------------------------------------------------------- #
 @pytest.mark.parametrize("name", sorted(_PROMPT_ARGS))
 async def test_prompt_renders_non_empty_actionable_text(name: str) -> None:
-    """Chaque prompt rend une chaîne non vide, substantielle et citant des outils du toolkit."""
+    """Each prompt renders a non-empty, substantial string citing the toolkit's tools."""
     async with Client(build_server()) as client:
         text = await _render(client, name)
     assert isinstance(text, str)
     assert len(text.strip()) > 200
-    # Un prompt actionnable cite au moins un outil ``<domaine>_*``.
+    # An actionable prompt cites at least one ``<domain>_*`` tool.
     assert _TOOL_TOKEN.search(text) is not None
 
 
 async def test_prompt_interpolates_its_arguments() -> None:
-    """Les arguments passés sont interpolés dans le texte rendu (template réellement paramétré)."""
+    """The passed arguments are interpolated into the rendered text (parameterized template)."""
     async with Client(build_server()) as client:
         scaffold = await _render(client, "scaffold_multi_agent")
         guardrail = await _render(client, "add_guardrail")
-    assert "trier des tickets de support" in scaffold
+    assert "triage support tickets" in scaffold
     assert "router" in guardrail
-    assert "bloquer les PII" in guardrail
+    assert "block PII" in guardrail
 
 
 # --------------------------------------------------------------------------- #
-# Cross-check : tout outil cité existe réellement (aucun nom inventé)
+# Cross-check: every cited tool actually exists (no invented name)
 # --------------------------------------------------------------------------- #
 async def test_every_cited_tool_token_is_a_real_tool() -> None:
-    """Cross-check : chaque token ``<domaine>_<nom>`` cité dans un prompt est un outil réel."""
+    """Cross-check: every ``<domain>_<name>`` token cited in a prompt is a real tool."""
     real = await _real_tool_names()
     cited: set[str] = set()
     async with Client(build_server()) as client:
         for name in _PROMPT_ARGS:
             cited |= set(_TOOL_TOKEN.findall(await _render(client, name)))
-    # Le cross-check n'a de sens que si les prompts citent vraiment des outils.
-    assert cited, "aucun token d'outil cité — les prompts devraient référencer des outils"
+    # The cross-check only makes sense if the prompts actually cite tools.
+    assert cited, "no tool token cited — the prompts should reference tools"
     bogus = sorted(token for token in cited if token not in real)
-    assert bogus == [], f"tokens cités mais inexistants comme outils : {bogus}"
+    assert bogus == [], f"tokens cited but nonexistent as tools: {bogus}"
 
 
 async def test_key_workflow_tools_are_cited() -> None:
-    """Chaque prompt cite l'outil pivot de son workflow (couverture du parcours-clé)."""
+    """Each prompt cites the pivotal tool of its workflow (key-path coverage)."""
     async with Client(build_server()) as client:
         rendered = {name: await _render(client, name) for name in _PROMPT_ARGS}
     assert "project_create" in rendered["scaffold_multi_agent"]
@@ -148,7 +148,7 @@ async def test_key_workflow_tools_are_cited() -> None:
 # Tag workflow
 # --------------------------------------------------------------------------- #
 async def test_prompts_carry_workflow_tag() -> None:
-    """Chaque prompt de workflow porte le tag ``workflow`` (parité avec le tagging des outils)."""
+    """Each workflow prompt carries the ``workflow`` tag (parity with the tools' tagging)."""
     prompts = await build_server().list_prompts()
     by_name = {p.name: p for p in prompts}
     for name in _PROMPT_ARGS:

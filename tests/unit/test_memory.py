@@ -1,21 +1,21 @@
-"""Tests unitaires du domaine ``memory`` (P2b — service de mémoire runtime ADK).
+"""Unit tests for the ``memory`` domain (P2b — ADK runtime memory service).
 
-Les outils sont **async** (``asyncio_mode=auto``). On appelle les fonctions bare directement
-et, pour le read-through, via un ``fastmcp.Client`` in-memory.
+The tools are **async** (``asyncio_mode=auto``). We call the bare functions directly and, for the
+read-through, via an in-memory ``fastmcp.Client``.
 
-Couverture clé :
-- ``service_set`` : persiste le backend ; validations (kind, vertex_rag, vertex_memory_bank) ;
-  préserve les backends session/artifacts déjà écrits.
-- FONCTIONNEL (in_memory) : créer une session (via le domaine sessions), y ajouter des
-  événements PORTANT du texte, ``add_session`` dans la mémoire, puis ``search`` avec une
-  requête qui DOIT matcher (rappel par mots-clés d'InMemoryMemoryService) → résultat non vide
-  contenant le texte attendu ; une requête sans correspondance → 0 résultat.
-- Erreurs propres : pas de backend configuré, session introuvable, query/inputs vides.
-- Branches Vertex : validation de forme + (selon présence de l'extra) erreur orientée action.
-- Read-through ``fastmcp.Client`` pour un flux mémoire complet.
+Key coverage:
+- ``service_set``: persists the backend; validations (kind, vertex_rag, vertex_memory_bank);
+  preserves the session/artifacts backends already written.
+- FUNCTIONAL (in_memory): create a session (via the sessions domain), add text-CARRYING events to
+  it, ``add_session`` into memory, then ``search`` with a query that MUST match
+  (InMemoryMemoryService's keyword recall) → non-empty result containing the expected text; a
+  non-matching query → 0 results.
+- Clean errors: no configured backend, session not found, empty query/inputs.
+- Vertex branches: shape validation + (depending on the extra's presence) an actionable error.
+- ``fastmcp.Client`` read-through for a complete memory flow.
 
-Rappel ADK (cf. docs/adk-api-notes/memory-artifacts.md) : seuls les événements avec
-``content.parts`` textuels sont indexés ; le rappel est par MOTS-CLÉS (pas sémantique).
+ADK reminder (cf. docs/adk-api-notes/memory-artifacts.md): only events with textual
+``content.parts`` are indexed; recall is by KEYWORD (not semantic).
 """
 
 from __future__ import annotations
@@ -33,27 +33,27 @@ from adk_toolkit_mcp.server import build_server
 
 
 def _has_module(name: str) -> bool:
-    """``find_spec`` tolérant : un namespace parent absent lève ModuleNotFoundError."""
+    """Tolerant ``find_spec``: an absent parent namespace raises ModuleNotFoundError."""
     try:
         return importlib.util.find_spec(name) is not None
     except (ImportError, ModuleNotFoundError, ValueError):
         return False
 
 
-#: Les services Vertex mémoire nécessitent l'extra ``gcp`` (google-cloud-aiplatform).
+#: The Vertex memory services require the ``gcp`` extra (google-cloud-aiplatform).
 _HAS_VERTEX = _has_module("vertexai")
 
 
 @pytest.fixture(autouse=True)
 def _clear_cache() -> None:
-    """Isole les tests : vide le cache singleton de services avant/après chacun."""
+    """Isolate the tests: clear the singleton service cache before/after each."""
     reset_service_cache()
     yield
     reset_service_cache()
 
 
 async def _setup(tmp_path: Path, app_name: str = "myapp") -> str:
-    """Configure les backends session ET mémoire in_memory ; renvoie le ``path`` racine."""
+    """Configure both the session AND memory in_memory backends; return the root ``path``."""
     path = str(tmp_path)
     assert S.service_set(path=path, app_name=app_name, kind="in_memory")["ok"] is True
     assert M.service_set(path=path, app_name=app_name, kind="in_memory")["ok"] is True
@@ -111,11 +111,11 @@ async def test_service_set_is_idempotent(tmp_path: Path) -> None:
 
 
 async def test_service_set_preserves_session_backend(tmp_path: Path) -> None:
-    """Choisir le backend mémoire ne doit pas écraser le backend session déjà écrit."""
+    """Choosing the memory backend must not overwrite an already-written session backend."""
     path = str(tmp_path)
     S.service_set(path=path, app_name="myapp", kind="database", db_url="sqlite+aiosqlite:///x.db")
     M.service_set(path=path, app_name="myapp", kind="in_memory")
-    # Le backend session doit subsister.
+    # The session backend must persist.
     from adk_toolkit_mcp.runtime import load_runtime_config
     from adk_toolkit_mcp.workspace import Workspace
 
@@ -129,9 +129,9 @@ async def test_service_set_preserves_session_backend(tmp_path: Path) -> None:
 # add_session / search — error paths
 # --------------------------------------------------------------------------- #
 async def test_search_without_configured_service_returns_err(tmp_path: Path) -> None:
-    """Pas de memory_service_set → err explicite (et non une exception)."""
+    """No memory_service_set → explicit err (and not an exception)."""
     path = str(tmp_path)
-    # Configure seulement les sessions, pas la mémoire.
+    # Configure only the sessions, not the memory.
     S.service_set(path=path, app_name="myapp", kind="in_memory")
     result = await M.search(path=path, app_name="myapp", user_id="u1", query="hi")
     assert result["ok"] is False
@@ -150,7 +150,7 @@ async def test_add_session_missing_session_returns_err(tmp_path: Path) -> None:
     path = await _setup(tmp_path)
     result = await M.add_session(path=path, app_name="myapp", user_id="u1", session_id="nope")
     assert result["ok"] is False
-    assert "introuvable" in result["error"].lower()
+    assert "not found" in result["error"].lower()
 
 
 async def test_add_session_rejects_empty_session_id(tmp_path: Path) -> None:
@@ -186,7 +186,7 @@ async def test_add_session_on_corrupt_config_returns_err(tmp_path: Path) -> None
 
 
 async def test_service_set_overwrites_corrupt_config(tmp_path: Path) -> None:
-    """service_set tolère une runtime.json corrompue (repart d'une config par défaut)."""
+    """service_set tolerates a corrupt runtime.json (starts from a default config)."""
     app_dir = tmp_path / "myapp"
     (app_dir / ".adk_toolkit").mkdir(parents=True)
     (app_dir / ".adk_toolkit" / "runtime.json").write_text("{ broken", encoding="utf-8")
@@ -199,16 +199,16 @@ async def test_service_set_overwrites_corrupt_config(tmp_path: Path) -> None:
 # FUNCTIONAL — real InMemoryMemoryService keyword recall
 # --------------------------------------------------------------------------- #
 async def test_functional_add_and_search_hits(tmp_path: Path) -> None:
-    """Flux complet : session + événements texte → add_session → search trouve le souvenir.
+    """Complete flow: session + text events → add_session → search finds the memory.
 
-    InMemoryMemoryService indexe uniquement les événements porteurs de texte et fait un rappel
-    par mots-clés. On ajoute deux événements mentionnant « Paris » puis on cherche « Paris ».
+    InMemoryMemoryService indexes only the text-carrying events and does a keyword recall. We add
+    two events mentioning "Paris" then search for "Paris".
     """
     path = await _setup(tmp_path)
     created = await S.create(path=path, app_name="myapp", user_id="u1")
     sid = created["data"]["session_id"]
 
-    # Événements PORTANT du texte (sinon non indexés).
+    # Text-CARRYING events (otherwise not indexed).
     await S.append_event(
         path=path,
         app_name="myapp",
@@ -235,7 +235,7 @@ async def test_functional_add_and_search_hits(tmp_path: Path) -> None:
     assert hit["data"]["count"] >= 1
     joined = " ".join(m["text"] for m in hit["data"]["memories"])
     assert "Paris" in joined
-    # Chaque souvenir expose author + timestamp + content sérialisé.
+    # Each memory exposes author + timestamp + serialized content.
     first = hit["data"]["memories"][0]
     assert first["author"] in {"user", "assistant"}
     assert first["timestamp"]
@@ -243,7 +243,7 @@ async def test_functional_add_and_search_hits(tmp_path: Path) -> None:
 
 
 async def test_functional_search_no_match_returns_empty(tmp_path: Path) -> None:
-    """Une requête sans mot-clé commun ne renvoie aucun souvenir (count == 0)."""
+    """A query without a common keyword returns no memory (count == 0)."""
     path = await _setup(tmp_path)
     created = await S.create(path=path, app_name="myapp", user_id="u1")
     sid = created["data"]["session_id"]
@@ -264,11 +264,11 @@ async def test_functional_search_no_match_returns_empty(tmp_path: Path) -> None:
 
 
 async def test_functional_state_only_event_not_recalled(tmp_path: Path) -> None:
-    """Un événement sans texte (state_delta seul) n'est PAS indexé → search ne le trouve pas."""
+    """An event without text (state_delta only) is NOT indexed → search does not find it."""
     path = await _setup(tmp_path)
     created = await S.create(path=path, app_name="myapp", user_id="u1")
     sid = created["data"]["session_id"]
-    # Événement sans content textuel.
+    # Event without textual content.
     await S.append_event(
         path=path,
         app_name="myapp",
@@ -287,9 +287,9 @@ async def test_functional_state_only_event_not_recalled(tmp_path: Path) -> None:
 # --------------------------------------------------------------------------- #
 # Vertex branches: validate config + actionable error when extra absent
 # --------------------------------------------------------------------------- #
-@pytest.mark.skipif(_HAS_VERTEX, reason="extra gcp présent : pas d'erreur de dépendance")
+@pytest.mark.skipif(_HAS_VERTEX, reason="gcp extra present: no dependency error")
 async def test_vertex_rag_search_errors_without_extra(tmp_path: Path) -> None:
-    """Avec un backend vertex_rag mais sans l'extra gcp, search renvoie une err orientée action."""
+    """With a vertex_rag backend but without the gcp extra, search returns an actionable err."""
     path = str(tmp_path)
     S.service_set(path=path, app_name="myapp", kind="in_memory")
     M.service_set(

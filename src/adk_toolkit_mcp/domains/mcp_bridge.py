@@ -1,28 +1,28 @@
-"""Domaine `mcp_bridge` : exposer des outils ADK **comme** des outils MCP (P4b).
+"""`mcp_bridge` domain: expose ADK tools **as** MCP tools (P4b).
 
-Ce domaine est le pont « ADK → MCP » : il convertit des `BaseTool` ADK en **schémas d'outils
-MCP** (`mcp.types.Tool` : ``{name, description, inputSchema}``) via la fonction officielle
-``google.adk.tools.mcp_tool.conversion_utils.adk_to_mcp_tool_type``. C'est l'opération distincte
-du domaine P1 ``tools`` (qui *consomme* des serveurs MCP via ``McpToolset``) : ici on rend les
-outils d'un agent **publiables** comme un serveur MCP.
+This domain is the "ADK → MCP" bridge: it converts ADK `BaseTool` objects into **MCP tool
+schemas** (`mcp.types.Tool`: ``{name, description, inputSchema}``) via the official function
+``google.adk.tools.mcp_tool.conversion_utils.adk_to_mcp_tool_type``. This is the operation
+distinct from the P1 ``tools`` domain (which *consumes* MCP servers via ``McpToolset``): here we
+make an agent's tools **publishable** as an MCP server.
 
-Le paquet ``mcp`` est une dépendance **CORE** (``fastmcp`` en dépend) : ce domaine est donc
-entièrement testable en CI **sans aucun extra** (contrairement à ``a2a``). Cf.
-``docs/adk-api-notes/a2a-mcp-bridge.md`` pour les signatures confirmées et le résultat
-FONCTIONNEL (le schéma MCP obtenu d'un vrai outil ADK).
+The ``mcp`` package is a **CORE** dependency (``fastmcp`` depends on it): this domain is therefore
+fully testable in CI **without any extra** (unlike ``a2a``). Cf.
+``docs/adk-api-notes/a2a-mcp-bridge.md`` for the confirmed signatures and the FUNCTIONAL result
+(the MCP schema obtained from a real ADK tool).
 
-Outils exposés sous ``namespace="mcp_bridge"`` → ``mcp_bridge_<nom>``. Noms BARE :
+Tools exposed under ``namespace="mcp_bridge"`` → ``mcp_bridge_<name>``. BARE names:
 
-- ``expose_adk_tools(path, app_name, agent_name)`` — importe le ``root_agent`` du projet, localise
-  l'agent ``agent_name`` (via ``BaseAgent.find_agent``), normalise ses outils en ``BaseTool`` (via
-  ``await agent.canonical_tools()``, qui enveloppe les fonctions nues en ``FunctionTool``), et rend
-  la liste de schémas MCP. Chemin ROBUSTE : on opère sur l'agent RÉELLEMENT construit (les specs
-  du sidecar deviennent les vrais objets ADK), pas sur une re-dérivation des specs.
-- ``convert_builtin(kind)`` — instancie un seul builtin ADK « core » par son ``kind`` (ex.
-  ``google_search``) et renvoie son schéma MCP. Pratique pour inspecter un builtin isolé.
+- ``expose_adk_tools(path, app_name, agent_name)`` — imports the project's ``root_agent``, locates
+  the ``agent_name`` agent (via ``BaseAgent.find_agent``), normalizes its tools to ``BaseTool``
+  (via ``await agent.canonical_tools()``, which wraps bare functions in ``FunctionTool``), and
+  renders the list of MCP schemas. ROBUST path: we operate on the ACTUALLY built agent (the
+  sidecar specs become the real ADK objects), not on a re-derivation of the specs.
+- ``convert_builtin(kind)`` — instantiates a single "core" ADK builtin by its ``kind`` (e.g.
+  ``google_search``) and returns its MCP schema. Handy to inspect an isolated builtin.
 
-Chaque outil renvoie l'enveloppe ``{ok, data, error}`` ; les entrées invalides → ``err(...)``
-(jamais d'exception qui remonte). Les imports ADK sont **paresseux** (au point d'appel).
+Each tool returns the ``{ok, data, error}`` envelope; invalid inputs → ``err(...)`` (never an
+exception that propagates). The ADK imports are **lazy** (at the call site).
 """
 
 from __future__ import annotations
@@ -35,27 +35,27 @@ from ..envelope import err, ok
 from ..project_model import CORE_BUILTINS, is_identifier
 from ..run_core import RootAgentImportError, import_root_agent
 
-if TYPE_CHECKING:  # pragma: no cover - hints seulement, imports réels paresseux
+if TYPE_CHECKING:  # pragma: no cover - hints only, real imports are lazy
     from google.adk.tools import BaseTool
 
 mcp_bridge_server: FastMCP = FastMCP("mcp_bridge")
 
-#: app_name = identifiant de package Python (nom de dossier ET de module).
+#: app_name = Python package identifier (both folder AND module name).
 _APP_NAME_ERR = (
-    "app_name invalide : attendu un identifiant Python "
-    "(lettres, chiffres, underscore ; ne commence pas par un chiffre)."
+    "Invalid app_name: expected a Python identifier "
+    "(letters, digits, underscore; not starting with a digit)."
 )
 
 
 # --------------------------------------------------------------------------- #
-# Conversion ADK BaseTool -> schéma MCP (mcp.types.Tool)
+# ADK BaseTool -> MCP schema (mcp.types.Tool) conversion
 # --------------------------------------------------------------------------- #
 def _to_mcp_schema(tool: BaseTool) -> dict[str, Any]:
-    """Convertit un ``BaseTool`` ADK en dict ``{name, description, inputSchema}`` (forme MCP).
+    """Convert an ADK ``BaseTool`` into a ``{name, description, inputSchema}`` dict (MCP form).
 
-    Délègue à ``adk_to_mcp_tool_type`` (qui renvoie un ``mcp.types.Tool``) puis n'expose que les
-    trois champs qui nous intéressent. ``inputSchema`` est déjà un dict JSON-Schema (vide ``{}``
-    pour un builtin sans paramètres déclarés, ex. ``google_search``).
+    Delegates to ``adk_to_mcp_tool_type`` (which returns a ``mcp.types.Tool``) then exposes only
+    the three fields we care about. ``inputSchema`` is already a JSON-Schema dict (empty ``{}`` for
+    a builtin with no declared parameters, e.g. ``google_search``).
     """
     from google.adk.tools.mcp_tool.conversion_utils import adk_to_mcp_tool_type
 
@@ -68,11 +68,11 @@ def _to_mcp_schema(tool: BaseTool) -> dict[str, Any]:
 
 
 def _builtin_to_base_tool(kind: str) -> BaseTool:
-    """Instancie un builtin « core » (``kind`` ∈ :data:`CORE_BUILTINS`) en un ``BaseTool``.
+    """Instantiate a "core" builtin (``kind`` ∈ :data:`CORE_BUILTINS`) into a ``BaseTool``.
 
-    Certains « builtins core » sont déjà des **instances** ``BaseTool`` (ex. ``google_search`` =
-    ``GoogleSearchTool()``) ; d'autres sont de simples **fonctions** (``exit_loop``,
-    ``transfer_to_agent``) qu'on enveloppe alors en ``FunctionTool`` pour pouvoir les convertir.
+    Some "core builtins" are already ``BaseTool`` **instances** (e.g. ``google_search`` =
+    ``GoogleSearchTool()``); others are plain **functions** (``exit_loop``, ``transfer_to_agent``)
+    which we then wrap in a ``FunctionTool`` so they can be converted.
     """
     import google.adk.tools as adk_tools
     from google.adk.tools import BaseTool as _BaseTool
@@ -81,61 +81,61 @@ def _builtin_to_base_tool(kind: str) -> BaseTool:
     obj = getattr(adk_tools, kind)
     if isinstance(obj, _BaseTool):
         return obj
-    # Fonction nue (exit_loop / transfer_to_agent) -> on l'enveloppe en FunctionTool.
+    # Bare function (exit_loop / transfer_to_agent) -> we wrap it in a FunctionTool.
     return FunctionTool(obj)
 
 
 # --------------------------------------------------------------------------- #
-# Outil MCP — convert_builtin
+# MCP tool — convert_builtin
 # --------------------------------------------------------------------------- #
 @mcp_bridge_server.tool(tags={"mcp_bridge"})
 def convert_builtin(kind: str) -> dict[str, Any]:
-    """Instancie un builtin ADK « core » par ``kind`` et renvoie son schéma MCP.
+    """Instantiate a "core" ADK builtin by ``kind`` and return its MCP schema.
 
-    Ex. ``convert_builtin("google_search")`` → ``{name, description, inputSchema}`` (un
-    ``mcp.types.Tool`` aplati). Seuls les builtins **core** (sans argument requis) sont supportés
-    ici — ``vertex_ai_search`` exige un ``data_store_id`` et doit être attaché à un agent puis
-    exposé via :func:`expose_adk_tools`. Un ``kind`` inconnu → ``err`` listant les kinds connus.
+    E.g. ``convert_builtin("google_search")`` → ``{name, description, inputSchema}`` (a flattened
+    ``mcp.types.Tool``). Only **core** builtins (no required argument) are supported here —
+    ``vertex_ai_search`` requires a ``data_store_id`` and must be attached to an agent then exposed
+    via :func:`expose_adk_tools`. An unknown ``kind`` → ``err`` listing the known kinds.
 
-    Le paquet ``mcp`` est core → cet outil fonctionne sans aucun extra (testable en CI).
+    The ``mcp`` package is core → this tool works without any extra (testable in CI).
     """
     if kind not in CORE_BUILTINS:
         return err(
-            f"Builtin core inconnu : {kind!r}. Connus : {', '.join(sorted(CORE_BUILTINS))}. "
-            "(Les builtins à argument comme 'vertex_ai_search' : attache-les à un agent puis "
-            "utilise mcp_bridge_expose_adk_tools.)"
+            f"Unknown core builtin: {kind!r}. Known: {', '.join(sorted(CORE_BUILTINS))}. "
+            "(Arg-requiring builtins like 'vertex_ai_search': attach them to an agent then "
+            "use mcp_bridge_expose_adk_tools.)"
         )
     try:
         tool = _builtin_to_base_tool(kind)
         schema = _to_mcp_schema(tool)
-    except Exception as exc:  # noqa: BLE001 - conversion best-effort, on remonte un err propre
-        return err(f"Échec de conversion du builtin {kind!r} en schéma MCP : {exc}")
+    except Exception as exc:  # noqa: BLE001 - best-effort conversion, we return a clean err
+        return err(f"Failed to convert the builtin {kind!r} into an MCP schema: {exc}")
     return ok({"kind": kind, "tool": schema})
 
 
 # --------------------------------------------------------------------------- #
-# Outil MCP — expose_adk_tools
+# MCP tool — expose_adk_tools
 # --------------------------------------------------------------------------- #
 @mcp_bridge_server.tool(tags={"mcp_bridge"})
 async def expose_adk_tools(path: str, app_name: str, agent_name: str) -> dict[str, Any]:
-    """Convertit les outils ADK d'un agent du projet en **schémas d'outils MCP**.
+    """Convert a project agent's ADK tools into **MCP tool schemas**.
 
-    Réalise « exposer les outils ADK COMME des outils MCP » : importe le ``root_agent`` du projet
-    (``<path>/<app_name>/agent.py``), localise l'agent ``agent_name`` dans l'arbre (via
-    ``BaseAgent.find_agent`` — fonctionne aussi pour la racine elle-même), normalise ses outils en
-    ``BaseTool`` (``await agent.canonical_tools()`` enveloppe les fonctions nues en
-    ``FunctionTool``), puis convertit chacun via ``adk_to_mcp_tool_type``.
+    Realizes "expose the ADK tools AS MCP tools": imports the project's ``root_agent``
+    (``<path>/<app_name>/agent.py``), locates the ``agent_name`` agent in the tree (via
+    ``BaseAgent.find_agent`` — also works for the root itself), normalizes its tools to
+    ``BaseTool`` (``await agent.canonical_tools()`` wraps bare functions in ``FunctionTool``), then
+    converts each via ``adk_to_mcp_tool_type``.
 
-    Renvoie ``{app_name, agent_name, count, tools: [{name, description, inputSchema}, ...]}``. Un
-    agent sans outils renvoie une liste vide (``count=0``, pas une erreur). Erreurs propres
-    (``err``) si : ``app_name``/``agent_name`` invalides, ``agent.py`` absent/illisible
-    (``RootAgentImportError``), agent introuvable dans l'arbre, ou agent sans capacité d'outils
-    (ex. un agent workflow Sequential/Parallel/Loop n'a pas de ``canonical_tools``).
+    Returns ``{app_name, agent_name, count, tools: [{name, description, inputSchema}, ...]}``. An
+    agent without tools returns an empty list (``count=0``, not an error). Clean errors (``err``)
+    if: ``app_name``/``agent_name`` invalid, ``agent.py`` missing/unreadable
+    (``RootAgentImportError``), agent not found in the tree, or agent without tool capability (e.g.
+    a Sequential/Parallel/Loop workflow agent has no ``canonical_tools``).
     """
     if not is_identifier(app_name):
         return err(_APP_NAME_ERR)
     if not is_identifier(agent_name):
-        return err(f"Nom d'agent invalide : {agent_name!r}. Attendu un identifiant Python.")
+        return err(f"Invalid agent name: {agent_name!r}. Expected a Python identifier.")
 
     try:
         root_agent = import_root_agent(path, app_name)
@@ -145,23 +145,23 @@ async def expose_adk_tools(path: str, app_name: str, agent_name: str) -> dict[st
     agent = root_agent.find_agent(agent_name)
     if agent is None:
         return err(
-            f"Agent introuvable dans l'arbre du root_agent : {agent_name!r}. "
-            "Vérifie le nom (la racine et tous ses sous-agents sont inspectés)."
+            f"Agent not found in the root_agent tree: {agent_name!r}. "
+            "Check the name (the root and all its sub-agents are inspected)."
         )
 
-    # Les agents workflow (Sequential/Parallel/Loop) n'ont pas d'outils : pas de canonical_tools.
+    # Workflow agents (Sequential/Parallel/Loop) have no tools: no canonical_tools.
     canonical = getattr(agent, "canonical_tools", None)
     if canonical is None:
         return err(
-            f"L'agent {agent_name!r} (type {type(agent).__name__}) ne porte pas d'outils ADK "
-            "(seuls les agents de type LLM exposent des tools convertibles en MCP)."
+            f"The {agent_name!r} agent (type {type(agent).__name__}) carries no ADK tools "
+            "(only LLM-type agents expose tools convertible to MCP)."
         )
 
     try:
         base_tools = await canonical()
         tools = [_to_mcp_schema(t) for t in base_tools]
-    except Exception as exc:  # noqa: BLE001 - on convertit toute erreur en err actionnable
-        return err(f"Échec de conversion des outils de {agent_name!r} en schémas MCP : {exc}")
+    except Exception as exc:  # noqa: BLE001 - we convert any error into an actionable err
+        return err(f"Failed to convert {agent_name!r}'s tools into MCP schemas: {exc}")
 
     return ok(
         {

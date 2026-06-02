@@ -1,23 +1,23 @@
-"""Tests unitaires du domaine ``eval`` (P3b — évaluation d'agents ADK).
+"""Unit tests for the ``eval`` domain (P3b — ADK agent evaluation).
 
-Les outils ``eval_*`` opèrent sur un projet ``(path, app_name)`` et écrivent les fichiers
-d'éval sous ``<app_dir>/eval/``. Les fonctions sont **async** (``asyncio_mode=auto``).
+The ``eval_*`` tools operate on a ``(path, app_name)`` project and write the eval files
+under ``<app_dir>/eval/``. The functions are **async** (``asyncio_mode=auto``).
 
-PREUVE FONCTIONNELLE (sans clé API) : on scaffolde une app dont ``agent.py`` importe un
-``FakeLlm`` / ``ScriptedLlm`` (via ``sys.path``) et construit un ``LlmAgent``. On crée un
-evalset dont ``expected_response`` == la réponse canned du fake (et, pour le cas outil, une
-trajectoire d'outils que le ``ScriptedLlm`` satisfait). ``eval_run`` lance alors un VRAI
-``AgentEvaluator`` hors-ligne avec des métriques OFFLINE (``tool_trajectory_avg_score`` +
-``response_match_score``) et l'éval PASSE — prouvant le pipeline de bout en bout sans réseau.
+FUNCTIONAL PROOF (no API key): we scaffold an app whose ``agent.py`` imports a
+``FakeLlm`` / ``ScriptedLlm`` (via ``sys.path``) and builds an ``LlmAgent``. We create an
+evalset whose ``expected_response`` == the fake's canned answer (and, for the tool case, a
+tool trajectory the ``ScriptedLlm`` satisfies). ``eval_run`` then runs a REAL offline
+``AgentEvaluator`` with OFFLINE metrics (``tool_trajectory_avg_score`` +
+``response_match_score``) and the eval PASSES — proving the pipeline end to end without network.
 
-Couverture complémentaire :
-- ``create_set`` produit un fichier qui round-trip via le VRAI modèle pydantic ``EvalSet``
-  (``EvalSet.model_validate_json`` réussit) → conformité de schéma prouvée.
-- ``set_criteria`` écrit le ``test_config.json`` attendu (``EvalConfig`` chargeable).
-- persistance du rapport + lecture via ``eval_report`` (et read-through ``fastmcp.Client``).
-- ``eval_run`` sur un modèle nécessitant des creds / une métrique LLM-judge → ``err`` propre
-  (pas de blocage).
-- validations d'entrée (cases vide, fichier evalset absent, etc.).
+Additional coverage:
+- ``create_set`` produces a file that round-trips through the REAL pydantic ``EvalSet`` model
+  (``EvalSet.model_validate_json`` succeeds) → schema conformance proven.
+- ``set_criteria`` writes the expected ``test_config.json`` (loadable ``EvalConfig``).
+- report persistence + read via ``eval_report`` (and ``fastmcp.Client`` read-through).
+- ``eval_run`` on a model requiring creds / an LLM-judge metric → clean ``err``
+  (no hang).
+- input validation (empty cases, missing evalset file, etc.).
 """
 
 from __future__ import annotations
@@ -31,15 +31,15 @@ from fastmcp import Client
 from adk_toolkit_mcp.domains import eval as E
 from adk_toolkit_mcp.server import build_server
 
-#: Dossier des fixtures (contient ``fake_llm.py``) — injecté dans le agent.py généré.
+#: Fixtures directory (contains ``fake_llm.py``) — injected into the generated agent.py.
 _FIXTURE_DIR = str(Path(__file__).parent)
 
 
 # --------------------------------------------------------------------------- #
-# Scaffolding d'apps offline (paquets importables : __init__.py + agent.py)
+# Offline app scaffolding (importable packages: __init__.py + agent.py)
 # --------------------------------------------------------------------------- #
 def _scaffold_fake_agent(root: Path, app_name: str, answer: str) -> str:
-    """App ``<app_name>`` dont ``root_agent`` est un LlmAgent + FakeLlm (réponse fixe)."""
+    """App ``<app_name>`` whose ``root_agent`` is an LlmAgent + FakeLlm (fixed answer)."""
     app_dir = root / app_name
     app_dir.mkdir(parents=True, exist_ok=True)
     (app_dir / "__init__.py").write_text("from . import agent\n", encoding="utf-8")
@@ -57,7 +57,7 @@ def _scaffold_fake_agent(root: Path, app_name: str, answer: str) -> str:
 
 
 def _scaffold_tool_agent(root: Path, app_name: str) -> str:
-    """App ``<app_name>`` dont ``root_agent`` utilise un ScriptedLlm + outil ``add_numbers``."""
+    """App ``<app_name>`` whose ``root_agent`` uses a ScriptedLlm + ``add_numbers`` tool."""
     app_dir = root / app_name
     app_dir.mkdir(parents=True, exist_ok=True)
     (app_dir / "__init__.py").write_text("from . import agent\n", encoding="utf-8")
@@ -75,7 +75,7 @@ def _scaffold_tool_agent(root: Path, app_name: str) -> str:
 
 
 def _scaffold_gemini_agent(root: Path, app_name: str) -> str:
-    """App dont ``root_agent`` utilise un VRAI modèle Gemini (string) → nécessite des creds."""
+    """App whose ``root_agent`` uses a REAL Gemini model (string) → requires creds."""
     app_dir = root / app_name
     app_dir.mkdir(parents=True, exist_ok=True)
     (app_dir / "__init__.py").write_text("from . import agent\n", encoding="utf-8")
@@ -89,10 +89,10 @@ def _scaffold_gemini_agent(root: Path, app_name: str) -> str:
 
 
 # --------------------------------------------------------------------------- #
-# eval_create_set — conformité de schéma (round-trip via le VRAI EvalSet)
+# eval_create_set — schema conformance (round-trip through the REAL EvalSet)
 # --------------------------------------------------------------------------- #
 async def test_create_set_roundtrips_through_real_evalset_model(tmp_path: Path) -> None:
-    """Le fichier produit est validé par le VRAI modèle pydantic EvalSet (schéma conforme)."""
+    """The produced file is validated by the REAL pydantic EvalSet model (schema conformant)."""
     path = _scaffold_fake_agent(tmp_path, "qa", answer="Paris.")
     result = await E.create_set(
         path=path,
@@ -112,13 +112,13 @@ async def test_create_set_roundtrips_through_real_evalset_model(tmp_path: Path) 
     assert eval_file.is_file()
     assert eval_file.name == "basics.evalset.json"
 
-    # ROUND-TRIP via le VRAI modèle ADK : prouve la conformité (pas une supposition).
+    # ROUND-TRIP through the REAL ADK model: proves conformance (not a guess).
     from google.adk.evaluation.eval_set import EvalSet
 
     eval_set = EvalSet.model_validate_json(eval_file.read_text(encoding="utf-8"))
     assert eval_set.eval_set_id
     assert len(eval_set.eval_cases) == 2
-    # 1er cas : pas d'outil ; 2e cas : trajectoire d'outils renseignée.
+    # 1st case: no tool; 2nd case: tool trajectory populated.
     case2 = eval_set.eval_cases[1]
     assert case2.conversation is not None
     inv = case2.conversation[0]
@@ -147,7 +147,7 @@ async def test_create_set_rejects_case_missing_query(tmp_path: Path) -> None:
 
 
 async def test_create_set_rejects_bad_tool_use_shape(tmp_path: Path) -> None:
-    """Un expected_tool_use mal formé (pas de 'name') → err clair (validation d'entrée)."""
+    """A malformed expected_tool_use (no 'name') → clear err (input validation)."""
     path = _scaffold_fake_agent(tmp_path, "qa", answer="x")
     result = await E.create_set(
         path=path,
@@ -169,7 +169,7 @@ async def test_create_set_rejects_empty_name(tmp_path: Path) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# eval_set_criteria — écrit un test_config.json (EvalConfig) attendu
+# eval_set_criteria — writes an expected test_config.json (EvalConfig)
 # --------------------------------------------------------------------------- #
 async def test_set_criteria_writes_expected_test_config(tmp_path: Path) -> None:
     path = _scaffold_fake_agent(tmp_path, "qa", answer="x")
@@ -185,7 +185,7 @@ async def test_set_criteria_writes_expected_test_config(tmp_path: Path) -> None:
     assert raw["criteria"]["tool_trajectory_avg_score"] == 1.0
     assert raw["criteria"]["response_match_score"] == 0.8
 
-    # Le fichier est un EvalConfig valide (ADK le chargera via model_validate_json).
+    # The file is a valid EvalConfig (ADK will load it via model_validate_json).
     from google.adk.evaluation.eval_config import EvalConfig
 
     cfg = EvalConfig.model_validate_json(cfg_file.read_text(encoding="utf-8"))
@@ -193,7 +193,7 @@ async def test_set_criteria_writes_expected_test_config(tmp_path: Path) -> None:
 
 
 async def test_set_criteria_rejects_out_of_range(tmp_path: Path) -> None:
-    """Un seuil hors [0, 1] → err (validation d'entrée)."""
+    """A threshold outside [0, 1] → err (input validation)."""
     path = _scaffold_fake_agent(tmp_path, "qa", answer="x")
     result = await E.set_criteria(path=path, app_name="qa", response_match_score=1.5)
     assert result["ok"] is False
@@ -201,10 +201,10 @@ async def test_set_criteria_rejects_out_of_range(tmp_path: Path) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# FUNCTIONAL — eval_run PASSE hors-ligne (métriques offline, sans clé)
+# FUNCTIONAL — eval_run PASSES offline (offline metrics, no key)
 # --------------------------------------------------------------------------- #
 async def test_eval_run_passes_offline_response_match(tmp_path: Path) -> None:
-    """eval_run : un agent FakeLlm dont la réponse == expected_response PASSE offline (ROUGE)."""
+    """eval_run: a FakeLlm agent whose answer == expected_response PASSES offline (ROUGE)."""
     answer = "Paris is the capital of France."
     path = _scaffold_fake_agent(tmp_path, "qaapp", answer=answer)
     created = await E.create_set(
@@ -214,23 +214,23 @@ async def test_eval_run_passes_offline_response_match(tmp_path: Path) -> None:
         cases=[{"query": "What is the capital of France?", "expected_response": answer}],
     )
     assert created["ok"] is True
-    # Critères OFFLINE uniquement : response_match (ROUGE), pas de métrique LLM-judge.
+    # OFFLINE criteria only: response_match (ROUGE), no LLM-judge metric.
     await E.set_criteria(path=path, app_name="qaapp", response_match_score=0.7)
 
     result = await E.run(
         path=path,
         app_name="qaapp",
         eval_set_file=created["data"]["eval_set_file"],
-        config_file=None,  # auto-détecte test_config.json dans le dossier eval
+        config_file=None,  # auto-detect test_config.json in the eval dir
         num_runs=1,
     )
     assert result["ok"] is True, result
     assert result["data"]["passed"] is True, result["data"]
-    # Score par métrique capturé dans le rapport.
+    # Per-metric score captured in the report.
     metrics = {m["metric_name"]: m for m in result["data"]["metrics"]}
     assert "response_match_score" in metrics
     assert metrics["response_match_score"]["score"] >= 0.7
-    # summary doit être non-vide et refléter la conformité.
+    # summary must be non-empty and reflect conformance.
     summary = result["data"]["summary"]
     assert summary and isinstance(summary, str)
     assert "PASSED" in summary
@@ -238,7 +238,7 @@ async def test_eval_run_passes_offline_response_match(tmp_path: Path) -> None:
 
 
 async def test_eval_run_passes_offline_tool_trajectory(tmp_path: Path) -> None:
-    """eval_run : un ScriptedLlm satisfait la trajectoire d'outils + la réponse → PASSE offline."""
+    """eval_run: a ScriptedLlm satisfies the tool trajectory + the response → PASSES offline."""
     path = _scaffold_tool_agent(tmp_path, "calcapp")
     created = await E.create_set(
         path=path,
@@ -271,10 +271,10 @@ async def test_eval_run_passes_offline_tool_trajectory(tmp_path: Path) -> None:
 
 
 async def test_eval_run_fails_offline_on_wrong_expected(tmp_path: Path) -> None:
-    """Un expected_response délibérément faux → l'éval ÉCHOUE (passed False), mais ok=True.
+    """A deliberately wrong expected_response → the eval FAILS (passed False), but ok=True.
 
-    Prouve que le pipeline évalue VRAIMENT (ne fabrique pas un succès) : une non-conformité
-    est un résultat d'éval normal (ok=True, passed=False), PAS une erreur d'outil.
+    Proves the pipeline REALLY evaluates (does not fabricate a success): a non-conformance
+    is a normal eval result (ok=True, passed=False), NOT a tool error.
     """
     path = _scaffold_fake_agent(tmp_path, "qaapp", answer="Paris.")
     created = await E.create_set(
@@ -291,17 +291,17 @@ async def test_eval_run_fails_offline_on_wrong_expected(tmp_path: Path) -> None:
     )
     assert result["ok"] is True, result
     assert result["data"]["passed"] is False, result["data"]
-    # summary doit indiquer FAILED pour une éval échouée.
+    # summary must report FAILED for a failed eval.
     summary = result["data"]["summary"]
     assert summary and isinstance(summary, str)
     assert "FAILED" in summary
 
 
 # --------------------------------------------------------------------------- #
-# Persistance du rapport + lecture (eval_report) + read-through Client
+# Report persistence + read (eval_report) + Client read-through
 # --------------------------------------------------------------------------- #
 async def test_eval_run_persists_report_and_eval_report_reads_it(tmp_path: Path) -> None:
-    answer = "Bonjour le monde."
+    answer = "Hello world."
     path = _scaffold_fake_agent(tmp_path, "qaapp", answer=answer)
     created = await E.create_set(
         path=path, app_name="qaapp", name="qa", cases=[{"query": "hi", "expected_response": answer}]
@@ -314,12 +314,12 @@ async def test_eval_run_persists_report_and_eval_report_reads_it(tmp_path: Path)
     report_id = run["data"]["report_id"]
     assert report_id
 
-    # Le fichier rapport existe sous <app_dir>/eval/reports/.
+    # The report file exists under <app_dir>/eval/reports/.
     report_path = Path(run["data"]["report_path"])
     assert report_path.is_file()
     assert report_path.parent.name == "reports"
 
-    # eval_report relit le rapport stocké.
+    # eval_report re-reads the stored report.
     got = await E.report(path=path, app_name="qaapp", report_id=report_id)
     assert got["ok"] is True, got
     assert got["data"]["report_id"] == report_id
@@ -335,7 +335,7 @@ async def test_eval_report_unknown_id_returns_err(tmp_path: Path) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# eval_run — chemins d'erreur propres (pas de blocage / pas d'exception)
+# eval_run — clean error paths (no hang / no exception)
 # --------------------------------------------------------------------------- #
 async def test_eval_run_missing_evalset_file_returns_err(tmp_path: Path) -> None:
     path = _scaffold_fake_agent(tmp_path, "qaapp", answer="x")
@@ -347,8 +347,8 @@ async def test_eval_run_missing_evalset_file_returns_err(tmp_path: Path) -> None
 
 
 async def test_eval_run_missing_agent_returns_err(tmp_path: Path) -> None:
-    """App sans agent.py importable → err (import échoué), pas d'exception."""
-    # Crée un evalset valide mais aucune app importable.
+    """App without an importable agent.py → err (import failed), not an exception."""
+    # Create a valid evalset but no importable app.
     (tmp_path / "ghost").mkdir(parents=True, exist_ok=True)
     es = tmp_path / "ghost" / "eval" / "x.evalset.json"
     es.parent.mkdir(parents=True, exist_ok=True)
@@ -379,12 +379,12 @@ async def test_eval_run_missing_agent_returns_err(tmp_path: Path) -> None:
 async def test_eval_run_credential_needing_model_returns_err(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Un VRAI modèle Gemini sans clé → err actionnable (pas de hang, pas d'exception).
+    """A REAL Gemini model without a key → actionable err (no hang, no exception).
 
-    On neutralise toute creds de l'environnement puis on lance une éval contre un agent dont
-    le modèle est ``gemini-2.5-flash`` (string) : l'inférence échoue faute de clé → eval_run
-    convertit l'exception en err propre. (Si une clé était présente l'appel réseau réel serait
-    tenté ; en CI il n'y en a pas, ce qui est le cas couvert.)
+    We clear every env credential then run an eval against an agent whose model is
+    ``gemini-2.5-flash`` (string): inference fails for lack of a key → eval_run converts
+    the exception into a clean err. (If a key were present the real network call would be
+    attempted; in CI there is none, which is the covered case.)
     """
     monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
@@ -404,10 +404,10 @@ async def test_eval_run_credential_needing_model_returns_err(
 
 
 # --------------------------------------------------------------------------- #
-# In-memory fastmcp.Client read-through (noms exposés + garde double-préfixe)
+# In-memory fastmcp.Client read-through (exposed names + double-prefix guard)
 # --------------------------------------------------------------------------- #
 async def test_client_exposed_names_and_eval_run(tmp_path: Path) -> None:
-    """Les outils sont exposés eval_<bare> (pas de double-préfixe) et eval_run s'exécute offline."""
+    """Tools are exposed as eval_<bare> (no double prefix) and eval_run runs offline."""
     answer = "client eval ok"
     path = _scaffold_fake_agent(tmp_path, "qaapp", answer=answer)
     mcp = build_server()
@@ -444,7 +444,7 @@ async def test_client_exposed_names_and_eval_run(tmp_path: Path) -> None:
         assert run.data["ok"] is True, run.data
         assert run.data["data"]["passed"] is True
 
-        # Read-through du rapport via eval_report.
+        # Read-through of the report via eval_report.
         got = await client.call_tool(
             "eval_report",
             {"path": path, "app_name": "qaapp", "report_id": run.data["data"]["report_id"]},
@@ -454,7 +454,7 @@ async def test_client_exposed_names_and_eval_run(tmp_path: Path) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# create_set — branches de validation détaillées (cases malformés)
+# create_set — detailed validation branches (malformed cases)
 # --------------------------------------------------------------------------- #
 async def test_create_set_rejects_non_dict_case(tmp_path: Path) -> None:
     path = _scaffold_fake_agent(tmp_path, "qa", answer="x")
@@ -512,7 +512,7 @@ async def test_create_set_rejects_tool_args_not_object(tmp_path: Path) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# eval_run — branches config + validations
+# eval_run — config branches + validations
 # --------------------------------------------------------------------------- #
 async def test_eval_run_rejects_num_runs_zero(tmp_path: Path) -> None:
     path = _scaffold_fake_agent(tmp_path, "qaapp", answer="x")
@@ -556,13 +556,13 @@ async def test_eval_run_malformed_config_file_returns_err(tmp_path: Path) -> Non
 
 
 async def test_eval_run_uses_default_criteria_when_no_config(tmp_path: Path) -> None:
-    """Sans test_config.json, eval_run applique les défauts OFFLINE (1.0 / 0.8) et PASSE."""
+    """Without test_config.json, eval_run applies the OFFLINE defaults (1.0 / 0.8) and PASSES."""
     answer = "Default criteria path works."
     path = _scaffold_fake_agent(tmp_path, "qaapp", answer=answer)
     created = await E.create_set(
         path=path, app_name="qaapp", name="qa", cases=[{"query": "hi", "expected_response": answer}]
     )
-    # Pas d'appel à set_criteria → défauts.
+    # No call to set_criteria → defaults.
     result = await E.run(
         path=path, app_name="qaapp", eval_set_file=created["data"]["eval_set_file"], num_runs=1
     )
@@ -571,7 +571,7 @@ async def test_eval_run_uses_default_criteria_when_no_config(tmp_path: Path) -> 
 
 
 async def test_eval_run_non_conformant_evalset_file_returns_err(tmp_path: Path) -> None:
-    """Un fichier evalset présent mais non conforme au schéma EvalSet → err propre."""
+    """An evalset file present but not conformant to the EvalSet schema → clean err."""
     path = _scaffold_fake_agent(tmp_path, "qaapp", answer="x")
     bad = tmp_path / "qaapp" / "eval" / "bad.evalset.json"
     bad.parent.mkdir(parents=True, exist_ok=True)
@@ -589,7 +589,7 @@ async def test_eval_report_rejects_empty_id(tmp_path: Path) -> None:
 
 
 async def test_eval_report_corrupt_json_returns_err(tmp_path: Path) -> None:
-    """Un fichier rapport corrompu → err (JSON invalide), pas d'exception."""
+    """A corrupt report file → err (invalid JSON), not an exception."""
     path = _scaffold_fake_agent(tmp_path, "qaapp", answer="x")
     report_file = tmp_path / "qaapp" / "eval" / "reports" / "corrupt.json"
     report_file.parent.mkdir(parents=True, exist_ok=True)
@@ -600,10 +600,10 @@ async def test_eval_report_corrupt_json_returns_err(tmp_path: Path) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# Helpers purs (unitaires, sans I/O)
+# Pure helpers (unit, no I/O)
 # --------------------------------------------------------------------------- #
 def test_crit_threshold_handles_float_and_criterion() -> None:
-    """crit_threshold extrait le seuil d'un float brut ET d'un BaseCriterion."""
+    """crit_threshold extracts the threshold from a raw float AND from a BaseCriterion."""
     from google.adk.evaluation.eval_metrics import BaseCriterion
 
     assert E.crit_threshold(0.75) == 0.75
@@ -612,24 +612,24 @@ def test_crit_threshold_handles_float_and_criterion() -> None:
 
 
 def test_humanize_eval_failure_flags_credentials() -> None:
-    """Un message d'erreur mentionnant des creds → message orienté action (GOOGLE_API_KEY)."""
+    """An error message mentioning creds → action-oriented message (GOOGLE_API_KEY)."""
     msg = E._humanize_eval_failure(RuntimeError("Missing API key for the model"))
     assert "GOOGLE_API_KEY" in msg
-    # Un message générique reste générique.
+    # A generic message stays generic.
     generic = E._humanize_eval_failure(RuntimeError("some other failure"))
     assert "some other failure" in generic
     assert "GOOGLE_API_KEY" not in generic
 
 
 def test_looks_like_eval_extra_missing() -> None:
-    """L'heuristique reconnaît une dépendance de l'extra eval (rouge_score) et l'ignore sinon."""
+    """The heuristic recognizes an eval-extra dependency (rouge_score) and ignores it otherwise."""
     assert E._looks_like_eval_extra_missing(ModuleNotFoundError(name="rouge_score")) is True
     assert E._looks_like_eval_extra_missing(ModuleNotFoundError(name="pandas")) is True
     assert E._looks_like_eval_extra_missing(ModuleNotFoundError(name="some_app")) is False
 
 
 def test_safe_slug_sanitizes_paths() -> None:
-    """_safe_slug retire les séparateurs de chemin et caractères dangereux."""
+    """_safe_slug strips path separators and dangerous characters."""
     assert "/" not in E._safe_slug("a/b/c")
     assert "\\" not in E._safe_slug("a\\b")
     assert E._safe_slug("  ...  ") == "unnamed"
@@ -638,10 +638,10 @@ def test_safe_slug_sanitizes_paths() -> None:
 async def test_eval_run_extra_missing_returns_actionable_err(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Si l'évaluation lève ModuleNotFoundError(rouge_score), eval_run renvoie l'astuce extra.
+    """If the evaluation raises ModuleNotFoundError(rouge_score), eval_run returns the extra hint.
 
-    On simule l'absence de l'extra ``eval`` en forçant ``_evaluate_offline`` à lever
-    ``ModuleNotFoundError(name='rouge_score')`` (la vraie machinerie n'est pas appelée).
+    We simulate the absence of the ``eval`` extra by forcing ``_evaluate_offline`` to raise
+    ``ModuleNotFoundError(name='rouge_score')`` (the real machinery is not called).
     """
 
     async def _boom(*_args: object, **_kwargs: object) -> dict:
@@ -662,7 +662,7 @@ async def test_eval_run_extra_missing_returns_actionable_err(
 async def test_eval_run_import_error_non_extra_returns_err(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Un ModuleNotFoundError SANS rapport avec l'extra eval → err d'import générique."""
+    """A ModuleNotFoundError UNRELATED to the eval extra → generic import err."""
 
     async def _boom(*_args: object, **_kwargs: object) -> dict:
         raise ModuleNotFoundError(name="totally_unrelated_pkg")

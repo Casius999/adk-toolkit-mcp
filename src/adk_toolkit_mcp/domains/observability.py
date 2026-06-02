@@ -1,25 +1,24 @@
-"""Domaine `observability` : OpenTelemetry pour les agents ADK (P4c).
+"""`observability` domain: OpenTelemetry for ADK agents (P4c).
 
-Sous-serveur FastMCP monté sous ``namespace="observability"`` → outils exposés
-``observability_<nom>``. Noms BARE (``enable_otel``, ``cloud_trace``, ``third_party``,
-``trace_view``). Chaque outil renvoie l'enveloppe ``{ok, data, error}``.
+A FastMCP sub-server mounted under ``namespace="observability"`` → tools exposed as
+``observability_<name>``. BARE names (``enable_otel``, ``cloud_trace``, ``third_party``,
+``trace_view``). Each tool returns the ``{ok, data, error}`` envelope.
 
-**Honnêteté sur les recouvrements** (cf. ``docs/adk-api-notes/safety-observability.md``) — ce
-domaine NE duplique PAS la logique des domaines ``deploy``/``dev`` :
+**Honesty about overlaps** (cf. ``docs/adk-api-notes/safety-observability.md``) — this domain does
+NOT duplicate the logic of the ``deploy``/``dev`` domains:
 
-1. :func:`enable_otel` — génère un ``<app_dir>/<app>/otel_setup.py`` RÉEL (ast-valide,
-   ruff/isort-clean) qui configure un exportateur OpenTelemetry (``console`` toujours dispo ;
-   ``otlp`` importé paresseusement — paquet séparé) câblé sur le provider GLOBAL qu'ADK utilise.
-2. :func:`cloud_trace` — renvoie le vrai flag CLI ``--trace_to_cloud`` (confirmé en P4a sur
-   ``deploy cloud_run``/``agent_engine``/``gke`` + ``web``/``api_server``) et **référence** l'outil
-   ``deploy``/``dev`` qui l'applique réellement (aucun flag émis ici). ``--otel_to_cloud`` est
-   exposé pour information mais marqué **manuel uniquement** : aucun outil du toolkit ne l'applique
-   (on ne prétend pas appliquer un flag qu'on n'émet pas).
-3. :func:`third_party` — renvoie les variables d'env OTLP + un snippet de setup pour un backend
-   tiers (phoenix/arize/weave/signoz/otlp).
-4. :func:`trace_view` — **délègue** au même registre de process que ``dev_web`` (l'UI Web d'ADK
-   héberge la vue des traces) ; un vrai boot est protégé par un flag d'env (comme les tests de
-   ``dev``).
+1. :func:`enable_otel` — generates a REAL ``<app_dir>/<app>/otel_setup.py`` (ast-valid,
+   ruff/isort-clean) that configures an OpenTelemetry exporter (``console`` always available;
+   ``otlp`` imported lazily — separate package) wired onto the GLOBAL provider that ADK uses.
+2. :func:`cloud_trace` — returns the real CLI flag ``--trace_to_cloud`` (confirmed in P4a on
+   ``deploy cloud_run``/``agent_engine``/``gke`` + ``web``/``api_server``) and **references** the
+   ``deploy``/``dev`` tool that actually applies it (no flag emitted here). ``--otel_to_cloud`` is
+   exposed for information but marked **manual only**: no toolkit tool applies it (we do not claim
+   to apply a flag we do not emit).
+3. :func:`third_party` — returns the OTLP env variables + a setup snippet for a third-party backend
+   (phoenix/arize/weave/signoz/otlp).
+4. :func:`trace_view` — **delegates** to the same process registry as ``dev_web`` (ADK's Web UI
+   hosts the trace view); a real boot is protected by an env flag (like the ``dev`` tests).
 """
 
 from __future__ import annotations
@@ -35,22 +34,22 @@ from . import dev, observability_setup
 
 observability_server: FastMCP = FastMCP("observability")
 
-#: app_name = identifiant de package Python (nom de dossier ET de module).
+#: app_name = Python package identifier (both folder AND module name).
 _APP_NAME_ERR = (
-    "app_name invalide : attendu un identifiant Python "
-    "(lettres, chiffres, underscore ; ne commence pas par un chiffre)."
+    "Invalid app_name: expected a Python identifier "
+    "(letters, digits, underscore; not starting with a digit)."
 )
 
-#: Exportateurs OTel supportés par :func:`enable_otel`.
+#: OTel exporters supported by :func:`enable_otel`.
 _EXPORTERS: frozenset[str] = frozenset({"console", "otlp"})
 
-#: Nom du fichier de setup OTel généré (dans le dossier de l'app).
+#: Name of the generated OTel setup file (in the app's folder).
 _OTEL_FILE = "otel_setup.py"
 
-#: Le vrai flag CLI ADK 2.1.0 activant Cloud Trace (confirmé sur deploy/web/api_server).
+#: The real ADK 2.1.0 CLI flag enabling Cloud Trace (confirmed on deploy/web/api_server).
 _CLOUD_TRACE_FLAG = "--trace_to_cloud"
 
-#: Cibles ``cloud_trace`` reconnues -> outil du toolkit qui applique réellement le flag.
+#: Recognized ``cloud_trace`` targets -> the toolkit tool that actually applies the flag.
 _CLOUD_TRACE_TARGETS: dict[str, str] = {
     "cloud_run": "deploy_cloud_run(enable_cloud_trace=True)",
     "agent_engine": "deploy_agent_engine",
@@ -59,19 +58,19 @@ _CLOUD_TRACE_TARGETS: dict[str, str] = {
     "api_server": "dev_api_server",
 }
 
-#: Backends tiers OTLP supportés par :func:`third_party` + leur endpoint OTLP par défaut (None si
-#: aucun défaut universel : l'utilisateur DOIT fournir ``endpoint``). Tous parlent OTLP/HTTP.
+#: Third-party OTLP backends supported by :func:`third_party` + their default OTLP endpoint (None
+#: if no universal default: the user MUST provide ``endpoint``). All speak OTLP/HTTP.
 _THIRD_PARTY: dict[str, str | None] = {
     "phoenix": "http://localhost:6006/v1/traces",
     "arize": "https://otlp.arize.com/v1/traces",
-    "weave": None,  # W&B Weave : endpoint propre au projet (https://trace.wandb.ai/...).
+    "weave": None,  # W&B Weave: project-specific endpoint (https://trace.wandb.ai/...).
     "signoz": "http://localhost:4318/v1/traces",
-    "otlp": None,  # OTLP générique : endpoint requis.
+    "otlp": None,  # generic OTLP: endpoint required.
 }
 
 
 # --------------------------------------------------------------------------- #
-# Outil 1 — enable_otel (génère otel_setup.py)
+# Tool 1 — enable_otel (generates otel_setup.py)
 # --------------------------------------------------------------------------- #
 @observability_server.tool(tags={"observability"})
 def enable_otel(
@@ -80,34 +79,34 @@ def enable_otel(
     exporter: str = "console",
     endpoint: str | None = None,
 ) -> dict[str, Any]:
-    """Génère ``<app_dir>/<app>/otel_setup.py`` configurant un exportateur OpenTelemetry.
+    """Generate ``<app_dir>/<app>/otel_setup.py`` configuring an OpenTelemetry exporter.
 
-    ``exporter`` ∈ {``console``, ``otlp``}. Le fichier définit ``setup_otel()`` qui construit un
-    ``TracerProvider`` (avec un ``Resource`` ``service.name=<app>``), y ajoute un
-    ``BatchSpanProcessor(exporter)`` et l'installe comme provider GLOBAL (``trace.set_tracer_
-    provider``) — c'est CE provider que la télémétrie d'ADK utilise (cf. notes). L'utilisateur
-    appelle ``setup_otel()`` au démarrage (avant de lancer l'agent).
+    ``exporter`` ∈ {``console``, ``otlp``}. The file defines ``setup_otel()`` which builds a
+    ``TracerProvider`` (with a ``Resource`` ``service.name=<app>``), adds a
+    ``BatchSpanProcessor(exporter)`` to it and installs it as the GLOBAL provider
+    (``trace.set_tracer_provider``) — this is THE provider that ADK's telemetry uses (cf. notes).
+    The user calls ``setup_otel()`` at startup (before running the agent).
 
-    - ``console`` : ``ConsoleSpanExporter`` (paquet OTel SDK de base — toujours disponible).
-    - ``otlp`` : ``OTLPSpanExporter`` (HTTP) importé **paresseusement** (paquet séparé
-      ``opentelemetry-exporter-otlp`` — le fichier généré documente l'installation). ``endpoint``
-      est alors requis (ex. ``http://localhost:4318/v1/traces``).
+    - ``console``: ``ConsoleSpanExporter`` (base OTel SDK package — always available).
+    - ``otlp``: ``OTLPSpanExporter`` (HTTP) imported **lazily** (separate package
+      ``opentelemetry-exporter-otlp`` — the generated file documents the install). ``endpoint`` is
+      then required (e.g. ``http://localhost:4318/v1/traces``).
 
-    Le code généré est ast-valide + ruff/isort-clean (le toolkit n'importe jamais OTLP lui-même).
+    The generated code is ast-valid + ruff/isort-clean (the toolkit never imports OTLP itself).
     """
     if not is_identifier(app_name):
         return err(_APP_NAME_ERR)
     if exporter not in _EXPORTERS:
-        return err(f"exporter inconnu : {exporter!r}. Connus : {', '.join(sorted(_EXPORTERS))}.")
+        return err(f"Unknown exporter: {exporter!r}. Known: {', '.join(sorted(_EXPORTERS))}.")
     if exporter == "otlp" and not (endpoint or "").strip():
         return err(
-            "exporter 'otlp' : 'endpoint' est requis (ex. 'http://localhost:4318/v1/traces')."
+            "exporter 'otlp': 'endpoint' is required (e.g. 'http://localhost:4318/v1/traces')."
         )
 
     app_dir = Path(path) / app_name
     if not (app_dir / "agent.py").is_file():
         agent_py = app_dir / "agent.py"
-        return err(f"Dossier d'app introuvable : {agent_py}. Scaffolde d'abord (project_create).")
+        return err(f"App folder not found: {agent_py}. Scaffold first (project_create).")
 
     from ..workspace import Workspace
 
@@ -122,7 +121,7 @@ def enable_otel(
             "exporter": exporter,
             "endpoint": endpoint,
             "otel_setup": str(ws.path(_OTEL_FILE)),
-            "usage": "import otel_setup; otel_setup.setup_otel()  # au démarrage, avant l'agent",
+            "usage": "import otel_setup; otel_setup.setup_otel()  # at startup, before the agent",
             "changed": changed,
             "notes": _otel_notes(exporter),
         }
@@ -130,66 +129,64 @@ def enable_otel(
 
 
 def _otel_notes(exporter: str) -> list[str]:
-    """Notes orientées action selon l'exportateur choisi."""
+    """Actionable notes according to the chosen exporter."""
     notes = [
-        "Appelle setup_otel() au démarrage (avant de lancer l'agent) : il installe le "
-        "TracerProvider GLOBAL qu'ADK utilise pour ses spans.",
+        "Call setup_otel() at startup (before running the agent): it installs the GLOBAL "
+        "TracerProvider that ADK uses for its spans.",
     ]
     if exporter == "otlp":
         notes.append(
-            "OTLP nécessite le paquet séparé : pip install opentelemetry-exporter-otlp "
-            "(non tiré par google-adk)."
+            "OTLP requires the separate package: pip install opentelemetry-exporter-otlp "
+            "(not pulled by google-adk)."
         )
     return notes
 
 
 # --------------------------------------------------------------------------- #
-# Outil 2 — cloud_trace (renvoie le vrai flag + référence l'outil deploy/dev)
+# Tool 2 — cloud_trace (returns the real flag + references the deploy/dev tool)
 # --------------------------------------------------------------------------- #
 @observability_server.tool(tags={"observability"})
 def cloud_trace(target: str) -> dict[str, Any]:
-    """Renvoie le flag CLI activant Cloud Trace pour ``target`` + l'outil qui l'applique.
+    """Return the CLI flag enabling Cloud Trace for ``target`` + the tool that applies it.
 
-    ``target`` ∈ {cloud_run, agent_engine, gke, web, api_server}. Le flag réellement APPLIQUÉ par
-    les outils ``deploy_*`` / ``dev_*`` du toolkit (confirmé en P4a) est ``--trace_to_cloud``.
-    **Cet outil n'exécute rien** : il référence l'outil ``deploy_*`` / ``dev_*`` qui émet ce flag
-    (le domaine ``deploy`` valide chaque flag émis contre le vrai ``--help`` ; ``deploy_cloud_run``
-    expose le paramètre ``enable_cloud_trace`` qui mappe sur ``--trace_to_cloud``). Évite toute
-    duplication de la logique de déploiement.
+    ``target`` ∈ {cloud_run, agent_engine, gke, web, api_server}. The flag actually APPLIED by the
+    toolkit's ``deploy_*`` / ``dev_*`` tools (confirmed in P4a) is ``--trace_to_cloud``. **This
+    tool runs nothing**: it references the ``deploy_*`` / ``dev_*`` tool that emits this flag (the
+    ``deploy`` domain validates each emitted flag against the real ``--help``; ``deploy_cloud_run``
+    exposes the ``enable_cloud_trace`` parameter which maps to ``--trace_to_cloud``). Avoids any
+    duplication of the deployment logic.
 
-    Le retour distingue clairement les deux flags :
-    - ``flag`` = ``--trace_to_cloud`` : le flag que CE toolkit applique via ``apply_with``.
-    - ``otel_flag`` = ``--otel_to_cloud`` : flag ADK **manuel uniquement** — AUCUN outil du toolkit
-      ne l'applique automatiquement (il faut le passer soi-même à la CLI ``adk``). On ne prétend
-      donc pas que le toolkit l'émet.
+    The return clearly distinguishes the two flags:
+    - ``flag`` = ``--trace_to_cloud``: the flag THIS toolkit applies via ``apply_with``.
+    - ``otel_flag`` = ``--otel_to_cloud``: a **manual-only** ADK flag — NO toolkit tool applies it
+      automatically (you must pass it yourself to the ``adk`` CLI). So we do not claim the toolkit
+      emits it.
     """
     if target not in _CLOUD_TRACE_TARGETS:
-        return err(
-            f"target inconnu : {target!r}. Connus : {', '.join(sorted(_CLOUD_TRACE_TARGETS))}."
-        )
+        return err(f"Unknown target: {target!r}. Known: {', '.join(sorted(_CLOUD_TRACE_TARGETS))}.")
     return ok(
         {
             "target": target,
             "flag": _CLOUD_TRACE_FLAG,
             "otel_flag": "--otel_to_cloud",
             "otel_flag_note": (
-                "manuel uniquement — non appliqué automatiquement par ce toolkit ; à passer "
-                "soi-même à la CLI 'adk' pour exporter aussi les données OTel vers Cloud Trace."
+                "manual only — not applied automatically by this toolkit; pass it yourself to the "
+                "'adk' CLI to also export the OTel data to Cloud Trace."
             ),
             "apply_with": _CLOUD_TRACE_TARGETS[target],
             "guidance": (
-                f"Active Cloud Trace en passant {_CLOUD_TRACE_FLAG} à '{target}'. "
-                f"Utilise l'outil du toolkit '{_CLOUD_TRACE_TARGETS[target]}' qui l'émet et le "
-                f"valide (ne réimplémente pas la commande ici). Le flag '{_CLOUD_TRACE_FLAG}' est "
-                "le SEUL appliqué par ce toolkit ; '--otel_to_cloud' existe côté ADK mais n'est "
-                "PAS auto-appliqué par le toolkit (manuel uniquement)."
+                f"Enable Cloud Trace by passing {_CLOUD_TRACE_FLAG} to '{target}'. "
+                f"Use the toolkit tool '{_CLOUD_TRACE_TARGETS[target]}' which emits and validates "
+                f"it (do not reimplement the command here). The flag '{_CLOUD_TRACE_FLAG}' is the "
+                "ONLY one applied by this toolkit; '--otel_to_cloud' exists on the ADK side but is "
+                "NOT auto-applied by the toolkit (manual only)."
             ),
         }
     )
 
 
 # --------------------------------------------------------------------------- #
-# Outil 3 — third_party (env OTLP + snippet pour un backend tiers)
+# Tool 3 — third_party (OTLP env + snippet for a third-party backend)
 # --------------------------------------------------------------------------- #
 @observability_server.tool(tags={"observability"})
 def third_party(
@@ -197,36 +194,36 @@ def third_party(
     endpoint: str | None = None,
     headers: dict[str, str] | None = None,
 ) -> dict[str, Any]:
-    """Émet la config OTLP (variables d'env + snippet) pour un backend d'observabilité tiers.
+    """Emit the OTLP config (env variables + snippet) for a third-party observability backend.
 
-    ``provider`` ∈ {phoenix, arize, weave, signoz, otlp}. Tous ces backends ingèrent l'OTLP
-    standard : on renvoie les variables d'env OTel canoniques (``OTEL_EXPORTER_OTLP_ENDPOINT`` +
-    ``OTEL_EXPORTER_OTLP_HEADERS`` si ``headers``) et un snippet de setup pointant vers
-    ``observability_enable_otel(exporter='otlp', endpoint=...)``. Un ``endpoint`` par défaut est
-    fourni quand le backend en a un (phoenix/arize/signoz) ; pour ``weave``/``otlp`` il est requis.
+    ``provider`` ∈ {phoenix, arize, weave, signoz, otlp}. All these backends ingest standard OTLP:
+    we return the canonical OTel env variables (``OTEL_EXPORTER_OTLP_ENDPOINT`` +
+    ``OTEL_EXPORTER_OTLP_HEADERS`` if ``headers``) and a setup snippet pointing to
+    ``observability_enable_otel(exporter='otlp', endpoint=...)``. A default ``endpoint`` is
+    provided when the backend has one (phoenix/arize/signoz); for ``weave``/``otlp`` it is required.
 
-    Aucun secret n'est écrit en dur : les ``headers`` (ex. clé d'API) sont émis comme **valeurs
-    d'environnement à définir** (le snippet lit ``os.environ``), pas figés dans le code.
+    No secret is hardcoded: the ``headers`` (e.g. an API key) are emitted as **environment values
+    to set** (the snippet reads ``os.environ``), not frozen in the code.
     """
     if provider not in _THIRD_PARTY:
-        return err(f"provider inconnu : {provider!r}. Connus : {', '.join(sorted(_THIRD_PARTY))}.")
+        return err(f"Unknown provider: {provider!r}. Known: {', '.join(sorted(_THIRD_PARTY))}.")
 
     default_endpoint = _THIRD_PARTY[provider]
     resolved = (endpoint or "").strip() or default_endpoint
     if not resolved:
         return err(
-            f"provider {provider!r} : 'endpoint' est requis (pas de défaut universel). "
-            "Fournis l'URL OTLP/HTTP du collecteur (ex. 'https://host/v1/traces')."
+            f"provider {provider!r}: 'endpoint' is required (no universal default). "
+            "Provide the collector's OTLP/HTTP URL (e.g. 'https://host/v1/traces')."
         )
 
     env: dict[str, str] = {"OTEL_EXPORTER_OTLP_ENDPOINT": resolved}
     if headers:
-        # Format OTLP : "k1=v1,k2=v2". On documente que les valeurs sensibles viennent de l'env.
+        # OTLP format: "k1=v1,k2=v2". We document that sensitive values come from the env.
         env["OTEL_EXPORTER_OTLP_HEADERS"] = ",".join(f"{k}={v}" for k, v in headers.items())
 
     snippet = (
-        "# 1) Exporte les variables d'env ci-dessus (ne mets PAS de secret en dur).\n"
-        "# 2) Génère le setup OTLP puis appelle-le au démarrage :\n"
+        "# 1) Export the env variables above (do NOT hardcode any secret).\n"
+        "# 2) Generate the OTLP setup then call it at startup:\n"
         f"#    observability_enable_otel(path, app_name, exporter='otlp', endpoint='{resolved}')\n"
         "#    import otel_setup; otel_setup.setup_otel()"
     )
@@ -238,29 +235,29 @@ def third_party(
             "exporter": "otlp",
             "setup_snippet": snippet,
             "note": (
-                f"{provider} ingère l'OTLP standard. Installe 'opentelemetry-exporter-otlp' puis "
-                "utilise observability_enable_otel(exporter='otlp', endpoint=...)."
+                f"{provider} ingests standard OTLP. Install 'opentelemetry-exporter-otlp' then "
+                "use observability_enable_otel(exporter='otlp', endpoint=...)."
             ),
         }
     )
 
 
 # --------------------------------------------------------------------------- #
-# Outil 4 — trace_view (délègue à dev_web : l'UI ADK héberge la vue des traces)
+# Tool 4 — trace_view (delegates to dev_web: the ADK UI hosts the trace view)
 # --------------------------------------------------------------------------- #
 @observability_server.tool(tags={"observability"})
 async def trace_view(path: str, app_name: str | None = None, port: int = 8000) -> dict[str, Any]:
-    """Lance l'UI Web d'ADK (qui héberge la **vue des traces**) en **déléguant** à ``dev_web``.
+    """Launch ADK's Web UI (which hosts the **trace view**) by **delegating** to ``dev_web``.
 
-    L'UI de dev d'ADK (``adk web``) inclut un onglet « Trace » visualisant les spans d'une
-    exécution. Plutôt que de réimplémenter un serveur, cet outil délègue au **même** chemin de
-    registre de process que ``dev_web`` (``adk_cli`` ; cf. domaine ``dev``). Le serveur démarré
-    est piloté via ``dev_status`` / ``dev_logs`` / ``dev_stop`` (mêmes clés).
+    ADK's dev UI (``adk web``) includes a "Trace" tab visualizing a run's spans. Rather than
+    reimplementing a server, this tool delegates to the **same** process registry path as
+    ``dev_web`` (``adk_cli``; cf. the ``dev`` domain). The started server is driven via
+    ``dev_status`` / ``dev_logs`` / ``dev_stop`` (same keys).
 
-    Renvoie ``{key, pid, port, url, trace_url, ...}`` (``trace_url`` = page d'accueil de l'UI où la
-    vue Trace est accessible). Le boot réel n'a lieu que si un dossier d'agents valide existe (la
-    délégation à ``dev.web`` valide tout) ; les tests gardent un vrai démarrage derrière un flag
-    d'env (comme ``dev``).
+    Returns ``{key, pid, port, url, trace_url, ...}`` (``trace_url`` = the UI's home page where the
+    Trace view is accessible). The real boot only happens if a valid agents folder exists (the
+    delegation to ``dev.web`` validates everything); the tests keep a real start behind an env
+    flag (like ``dev``).
     """
     result = await dev.web(path=path, app_name=app_name, port=port)
     if not result["ok"]:
@@ -269,7 +266,7 @@ async def trace_view(path: str, app_name: str | None = None, port: int = 8000) -
     data["delegated_to"] = "dev_web"
     data["trace_url"] = data.get("url")
     data["guidance"] = (
-        "L'UI Web d'ADK est démarrée ; ouvre l'URL et sélectionne l'onglet « Trace » d'une "
-        "session pour visualiser les spans. Pilote via dev_status/dev_logs/dev_stop (même clé)."
+        "ADK's Web UI is started; open the URL and select a session's 'Trace' tab to visualize "
+        "the spans. Drive via dev_status/dev_logs/dev_stop (same key)."
     )
     return ok(data)

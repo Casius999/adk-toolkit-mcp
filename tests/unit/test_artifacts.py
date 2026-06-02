@@ -1,21 +1,21 @@
-"""Tests unitaires du domaine ``artifacts`` (P2b — service d'artifacts runtime ADK).
+"""Unit tests for the ``artifacts`` domain (P2b — ADK runtime artifacts service).
 
-Les outils sont **async** (``asyncio_mode=auto``). On appelle les fonctions bare directement
-(``list`` est exposé via la fonction Python ``list_artifacts_tool``) et, pour le read-through,
-via un ``fastmcp.Client`` in-memory.
+The tools are **async** (``asyncio_mode=auto``). We call the bare functions directly (``list`` is
+exposed via the Python function ``list_artifacts_tool``) and, for the read-through, via an
+in-memory ``fastmcp.Client``.
 
-Couverture clé :
-- ``service_set`` : persiste le backend ; validations (kind, gcs) ; préserve session/memory.
-- FONCTIONNEL (in_memory) : save texte → version 0 ; re-save → version 1 ; load (dernière +
-  version précise) restitue le contenu exact ; list montre le fichier ; versions = [0, 1] ;
-  delete supprime. Nom ``user:``-préfixé accepté. Round-trip base64 (mime binaire).
-- Erreurs propres : pas de backend, ni text ni bytes_b64 (ou les deux), base64 invalide,
-  artifact absent, filename vide.
-- Branche GCS : validation de forme + (selon l'extra) erreur orientée action.
-- Read-through ``fastmcp.Client`` pour un flux artifacts complet.
+Key coverage:
+- ``service_set``: persists the backend; validations (kind, gcs); preserves session/memory.
+- FUNCTIONAL (in_memory): save text → version 0; re-save → version 1; load (latest + a specific
+  version) restores the exact content; list shows the file; versions = [0, 1]; delete removes.
+  ``user:``-prefixed name accepted. base64 round-trip (binary mime).
+- Clean errors: no backend, neither text nor bytes_b64 (or both), invalid base64, absent artifact,
+  empty filename.
+- GCS branch: shape validation + (depending on the extra) an actionable error.
+- ``fastmcp.Client`` read-through for a complete artifacts flow.
 
-Rappel ADK (cf. docs/adk-api-notes/memory-artifacts.md) : save renvoie une version 0-indexée ;
-load renvoie une ``Part`` (``.text`` ou ``.inline_data``) ou ``None`` si absente.
+ADK reminder (cf. docs/adk-api-notes/memory-artifacts.md): save returns a 0-indexed version; load
+returns a ``Part`` (``.text`` or ``.inline_data``) or ``None`` if absent.
 """
 
 from __future__ import annotations
@@ -33,27 +33,27 @@ from adk_toolkit_mcp.server import build_server
 
 
 def _has_module(name: str) -> bool:
-    """``find_spec`` tolérant : un namespace parent absent lève ModuleNotFoundError."""
+    """Tolerant ``find_spec``: an absent parent namespace raises ModuleNotFoundError."""
     try:
         return importlib.util.find_spec(name) is not None
     except (ImportError, ModuleNotFoundError, ValueError):
         return False
 
 
-#: GcsArtifactService nécessite l'extra ``gcp`` (google.cloud.storage).
+#: GcsArtifactService requires the ``gcp`` extra (google.cloud.storage).
 _HAS_GCS = _has_module("google.cloud.storage")
 
 
 @pytest.fixture(autouse=True)
 def _clear_cache() -> None:
-    """Isole les tests : vide le cache singleton de services avant/après chacun."""
+    """Isolate the tests: clear the singleton service cache before/after each."""
     reset_service_cache()
     yield
     reset_service_cache()
 
 
 async def _setup(tmp_path: Path, app_name: str = "myapp") -> str:
-    """Configure un backend artifacts in_memory ; renvoie le ``path`` racine (string)."""
+    """Configure an in_memory artifacts backend; return the root ``path`` (string)."""
     path = str(tmp_path)
     assert A.service_set(path=path, app_name=app_name, kind="in_memory")["ok"] is True
     return path
@@ -95,7 +95,7 @@ async def test_service_set_is_idempotent(tmp_path: Path) -> None:
 
 
 async def test_service_set_preserves_session_and_memory(tmp_path: Path) -> None:
-    """Choisir le backend artifacts ne doit pas écraser session/memory déjà écrits."""
+    """Choosing the artifacts backend must not overwrite an already-written session/memory."""
     from adk_toolkit_mcp.domains import memory as M
     from adk_toolkit_mcp.domains import sessions as S
     from adk_toolkit_mcp.runtime import load_runtime_config
@@ -130,13 +130,13 @@ async def test_save_without_configured_service_returns_err(tmp_path: Path) -> No
 
 async def test_save_requires_exactly_one_of_text_or_bytes(tmp_path: Path) -> None:
     path = await _setup(tmp_path)
-    # Aucun des deux.
+    # Neither of the two.
     neither = await A.save(
         path=path, app_name="myapp", user_id="u1", session_id="s", filename="f.txt"
     )
     assert neither["ok"] is False
-    assert "EXACTEMENT" in neither["error"]
-    # Les deux.
+    assert "EXACTLY" in neither["error"]
+    # Both.
     both = await A.save(
         path=path,
         app_name="myapp",
@@ -147,7 +147,7 @@ async def test_save_requires_exactly_one_of_text_or_bytes(tmp_path: Path) -> Non
         bytes_b64=base64.b64encode(b"x").decode("ascii"),
     )
     assert both["ok"] is False
-    assert "EXACTEMENT" in both["error"]
+    assert "EXACTLY" in both["error"]
 
 
 async def test_save_rejects_invalid_base64(tmp_path: Path) -> None:
@@ -180,7 +180,7 @@ async def test_load_missing_artifact_returns_err(tmp_path: Path) -> None:
         path=path, app_name="myapp", user_id="u1", session_id="s", filename="nope.txt"
     )
     assert result["ok"] is False
-    assert "introuvable" in result["error"].lower()
+    assert "not found" in result["error"].lower()
 
 
 @pytest.mark.parametrize("filename", ["", "   "])
@@ -198,7 +198,7 @@ async def test_load_delete_versions_reject_empty_filename(tmp_path: Path, filena
 
 
 async def test_all_tools_on_corrupt_config_return_err(tmp_path: Path) -> None:
-    """runtime.json corrompue → chaque outil renvoie une err propre (pas d'exception)."""
+    """corrupt runtime.json → each tool returns a clean err (no exception)."""
     app_dir = tmp_path / "myapp"
     (app_dir / ".adk_toolkit").mkdir(parents=True)
     (app_dir / ".adk_toolkit" / "runtime.json").write_text("{ broken", encoding="utf-8")
@@ -215,7 +215,7 @@ async def test_all_tools_on_corrupt_config_return_err(tmp_path: Path) -> None:
 
 
 async def test_service_set_overwrites_corrupt_config(tmp_path: Path) -> None:
-    """service_set tolère une runtime.json corrompue (repart d'une config par défaut)."""
+    """service_set tolerates a corrupt runtime.json (starts from a default config)."""
     app_dir = tmp_path / "myapp"
     (app_dir / ".adk_toolkit").mkdir(parents=True)
     (app_dir / ".adk_toolkit" / "runtime.json").write_text("{ broken", encoding="utf-8")
@@ -273,7 +273,7 @@ async def test_functional_text_versions_and_roundtrip(tmp_path: Path) -> None:
 
 
 async def test_functional_user_prefixed_filename_accepted(tmp_path: Path) -> None:
-    """Un nom ``user:``-préfixé (user-scoped) est accepté et round-trip correctement."""
+    """A ``user:``-prefixed (user-scoped) name is accepted and round-trips correctly."""
     path = await _setup(tmp_path)
     common = {
         "app_name": "myapp",
@@ -291,9 +291,9 @@ async def test_functional_user_prefixed_filename_accepted(tmp_path: Path) -> Non
 
 
 async def test_functional_base64_binary_roundtrip(tmp_path: Path) -> None:
-    """Round-trip d'un artifact binaire (mime non texte) via base64."""
+    """Round-trip of a binary artifact (non-text mime) via base64."""
     path = await _setup(tmp_path)
-    raw = bytes(range(256))  # données binaires arbitraires
+    raw = bytes(range(256))  # arbitrary binary data
     b64 = base64.b64encode(raw).decode("ascii")
     common = {"app_name": "myapp", "user_id": "u1", "session_id": "s", "filename": "blob.bin"}
 
@@ -307,12 +307,12 @@ async def test_functional_base64_binary_roundtrip(tmp_path: Path) -> None:
     assert loaded["data"]["encoding"] == "base64"
     assert loaded["data"]["mime_type"] == "application/octet-stream"
     assert loaded["data"]["text"] is None
-    # Décodage → octets identiques.
+    # Decoding → identical bytes.
     assert base64.b64decode(loaded["data"]["bytes_b64"]) == raw
 
 
 async def test_functional_versions_empty_for_unknown(tmp_path: Path) -> None:
-    """``versions`` sur un fichier inconnu renvoie une liste vide (pas d'erreur)."""
+    """``versions`` on an unknown file returns an empty list (no error)."""
     path = await _setup(tmp_path)
     vers = await A.versions(
         path=path, app_name="myapp", user_id="u1", session_id="s", filename="ghost.txt"
@@ -324,9 +324,9 @@ async def test_functional_versions_empty_for_unknown(tmp_path: Path) -> None:
 # --------------------------------------------------------------------------- #
 # GCS branch: validate config + actionable error when extra absent
 # --------------------------------------------------------------------------- #
-@pytest.mark.skipif(_HAS_GCS, reason="extra gcp présent : pas d'erreur de dépendance")
+@pytest.mark.skipif(_HAS_GCS, reason="gcp extra present: no dependency error")
 async def test_gcs_save_errors_without_extra(tmp_path: Path) -> None:
-    """Backend gcs sans l'extra gcp → save renvoie une err orientée action (pas d'exception)."""
+    """gcs backend without the gcp extra → save returns an actionable err (no exception)."""
     path = str(tmp_path)
     A.service_set(path=path, app_name="myapp", kind="gcs", bucket="my-bucket")
     result = await A.save(
@@ -348,7 +348,7 @@ async def test_client_read_through_artifacts_flow(tmp_path: Path) -> None:
         names = {t.name for t in tools}
         assert "artifacts_service_set" in names
         assert "artifacts_save" in names
-        assert "artifacts_list" in names  # enregistré sous le nom bare `list`
+        assert "artifacts_list" in names  # registered under the bare name `list`
         assert "artifacts_versions" in names
         assert not any(n.startswith("artifacts_artifacts_") for n in names)
 

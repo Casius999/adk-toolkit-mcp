@@ -1,11 +1,11 @@
-"""Tests du domaine ``agents`` : mutation du sidecar, régénération, validation, et
-**preuve fonctionnelle** que ``agent.py`` généré instancie de vrais objets ADK.
+"""Tests for the ``agents`` domain: sidecar mutation, regeneration, validation, and
+**functional proof** that the generated ``agent.py`` instantiates real ADK objects.
 
-La preuve fonctionnelle importe le module généré dans un **subprocess** (le venv uv,
-``sys.executable``). Le subprocess est lancé avec ``-W ignore::DeprecationWarning`` car
-les agents workflow (Sequential/Parallel/Loop) émettent une ``DeprecationWarning`` en
-google-adk 2.1.0 (cf. ``docs/adk-api-notes/agents.md``) — on veut prouver l'instanciation,
-pas auditer la dépréciation d'ADK ici.
+The functional proof imports the generated module in a **subprocess** (the uv venv,
+``sys.executable``). The subprocess is launched with ``-W ignore::DeprecationWarning`` because the
+workflow agents (Sequential/Parallel/Loop) emit a ``DeprecationWarning`` in google-adk 2.1.0 (cf.
+``docs/adk-api-notes/agents.md``) — we want to prove the instantiation, not audit ADK's
+deprecation here.
 """
 
 from __future__ import annotations
@@ -35,10 +35,10 @@ from adk_toolkit_mcp.server import build_server
 
 
 # --------------------------------------------------------------------------- #
-# Probe fonctionnelle : importe le module généré dans un subprocess
+# Functional probe: imports the generated module in a subprocess
 # --------------------------------------------------------------------------- #
 def _probe(project_path: str, app_name: str) -> dict[str, object]:
-    """Importe ``<app_name>.agent`` dans un subprocess et renvoie un résumé de root_agent."""
+    """Import ``<app_name>.agent`` in a subprocess and return a summary of root_agent."""
     code = (
         "import json,sys;"
         f"sys.path.insert(0, r'{project_path}');"
@@ -70,7 +70,7 @@ def test_create_llm_writes_sidecar_and_agent_py(tmp_path: Path) -> None:
     agent_txt = (app / "agent.py").read_text(encoding="utf-8")
     assert "greeter = LlmAgent(" in agent_txt
     assert 'instruction="Say hi"' in agent_txt
-    # Pas encore de racine -> commentaire, pas d'assignation.
+    # No root yet -> comment, not an assignment.
     assert "root_agent = greeter" not in agent_txt
 
 
@@ -98,12 +98,12 @@ def test_create_llm_update_is_idempotent(tmp_path: Path) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# create_sequential / parallel / loop : validation des sub_agents
+# create_sequential / parallel / loop: validation of sub_agents
 # --------------------------------------------------------------------------- #
 def test_create_sequential_requires_existing_sub_agents(tmp_path: Path) -> None:
     res = create_sequential(str(tmp_path), "demo", "pipe", ["missing"])
     assert res["ok"] is False
-    assert "introuvable" in res["error"]
+    assert "not found" in res["error"]
 
 
 def test_create_sequential_succeeds_when_children_exist(tmp_path: Path) -> None:
@@ -207,7 +207,7 @@ def test_as_tool_returns_snippet(tmp_path: Path) -> None:
     assert res["ok"] is True
     assert "AgentTool(agent=helper)" in res["data"]["snippet"]
     assert res["data"]["import"] == "from google.adk.tools import AgentTool"
-    # Aucun fichier muté par as_tool (pas de root assigné).
+    # No file mutated by as_tool (no root assigned).
     assert "root_agent = helper" not in (tmp_path / "demo" / "agent.py").read_text(encoding="utf-8")
 
 
@@ -248,10 +248,10 @@ def test_list_on_fresh_app_is_empty(tmp_path: Path) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# Cycle au commit -> err (pas d'exception)
+# Cycle at commit -> err (no exception)
 # --------------------------------------------------------------------------- #
 def test_cycle_via_compose_returns_err(tmp_path: Path) -> None:
-    # a -> b puis b -> a (compose) crée un cycle ; le commit doit renvoyer err.
+    # a -> b then b -> a (compose) creates a cycle; the commit must return err.
     create_llm(str(tmp_path), "demo", "leaf")
     create_sequential(str(tmp_path), "demo", "a", ["leaf"])
     create_sequential(str(tmp_path), "demo", "b", ["a"])
@@ -261,7 +261,7 @@ def test_cycle_via_compose_returns_err(tmp_path: Path) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# Sidecar corrompu -> err propagé (jamais d'exception) sur tous les outils
+# Corrupt sidecar -> err propagated (never an exception) on all the tools
 # --------------------------------------------------------------------------- #
 def _corrupt_sidecar(tmp_path: Path, app_name: str = "demo") -> str:
     app = tmp_path / app_name / SIDECAR_PATH
@@ -274,7 +274,7 @@ def test_corrupt_sidecar_create_llm_returns_err(tmp_path: Path) -> None:
     root = _corrupt_sidecar(tmp_path)
     res = create_llm(root, "demo", "a")
     assert res["ok"] is False
-    assert "JSON invalide" in res["error"]
+    assert "invalid sidecar json" in res["error"].lower()
 
 
 def test_corrupt_sidecar_read_tools_return_err(tmp_path: Path) -> None:
@@ -291,7 +291,7 @@ def test_corrupt_sidecar_read_tools_return_err(tmp_path: Path) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# PREUVE FONCTIONNELLE — instanciation réelle des objets ADK (subprocess)
+# FUNCTIONAL PROOF — real instantiation of the ADK objects (subprocess)
 # --------------------------------------------------------------------------- #
 def test_functional_single_llm_root_instantiates(tmp_path: Path) -> None:
     create_llm(str(tmp_path), "solo_app", "main", instruction="Answer.")
@@ -303,7 +303,7 @@ def test_functional_single_llm_root_instantiates(tmp_path: Path) -> None:
 
 
 def test_functional_sequential_with_two_llm_children(tmp_path: Path) -> None:
-    # Racine = SequentialAgent référençant deux enfants LlmAgent.
+    # Root = SequentialAgent referencing two LlmAgent children.
     create_llm(str(tmp_path), "pipe_app", "writer", instruction="Write.")
     create_llm(str(tmp_path), "pipe_app", "reviewer", instruction="Review.")
     create_sequential(str(tmp_path), "pipe_app", "pipeline", ["writer", "reviewer"])
@@ -335,14 +335,14 @@ def test_functional_loop_agent_instantiates(tmp_path: Path) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# Mount wiring — client in-memory + preuve fonctionnelle bout-en-bout
+# Mount wiring — in-memory client + end-to-end functional proof
 # --------------------------------------------------------------------------- #
 @pytest.mark.asyncio
 async def test_agents_mounted_names_and_functional(tmp_path: Path) -> None:
     mcp = build_server()
     async with Client(mcp) as client:
         tool_names = [t.name for t in await client.list_tools()]
-        # Noms exposés à préfixe unique.
+        # Exposed names with a single prefix.
         for expected in (
             "agents_create_llm",
             "agents_create_sequential",
@@ -355,8 +355,8 @@ async def test_agents_mounted_names_and_functional(tmp_path: Path) -> None:
             "agents_list",
             "agents_get",
         ):
-            assert expected in tool_names, f"manquant: {expected}"
-        # Pas de double préfixe.
+            assert expected in tool_names, f"missing: {expected}"
+        # No double prefix.
         assert not any(n.startswith("agents_agents_") for n in tool_names)
 
         created = await client.call_tool(
@@ -370,7 +370,7 @@ async def test_agents_mounted_names_and_functional(tmp_path: Path) -> None:
         )
         assert rooted.data["ok"] is True
 
-    # Hors client : le module généré doit instancier le vrai LlmAgent.
+    # Outside the client: the generated module must instantiate the real LlmAgent.
     info = _probe(str(tmp_path), "client_app")
     assert info["root_type"] == "LlmAgent"
     assert info["root_name"] == "root"

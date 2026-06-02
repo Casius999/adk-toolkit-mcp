@@ -1,25 +1,25 @@
-"""Modèle de projet ADK code-first : sidecar JSON + régénération complète de ``agent.py``.
+"""Code-first ADK project model: JSON sidecar + full regeneration of ``agent.py``.
 
-Le toolkit décrit la composition multi-agents dans un **fichier sidecar**
-``<app_dir>/.adk_toolkit/agents.json`` (où ``<app_dir> = <path>/<app_name>``), puis
-**régénère intégralement** ``agent.py`` à partir de ce modèle. Régénérer plutôt que
-patcher du Python est plus robuste (pas de parsing/round-trip d'AST, sortie déterministe).
+The toolkit describes the multi-agent composition in a **sidecar file**
+``<app_dir>/.adk_toolkit/agents.json`` (where ``<app_dir> = <path>/<app_name>``), then
+**fully regenerates** ``agent.py`` from that model. Regenerating rather than patching Python is
+more robust (no AST parsing/round-trip, deterministic output).
 
-Ce package est **pur et testable unitairement** (aucune dépendance à google-adk : on ne fait
-que produire une *chaîne source* qui importera l'ADK à son propre runtime). Il est découpé en
-sous-modules par responsabilité, tout en conservant **inchangée** la surface publique
-historique importée via ``from adk_toolkit_mcp.project_model import X`` :
+This package is **pure and unit-testable** (no dependency on google-adk: we only produce a
+*source string* that will import ADK at its own runtime). It is split into sub-modules by
+responsibility, while keeping the historical public surface imported via
+``from adk_toolkit_mcp.project_model import X`` **unchanged**:
 
-- :mod:`.specs` — dataclasses immuables (`ProjectModel`, `AgentSpec`, `ToolSpec`, …),
-  constantes de domaine et alias ``Literal`` ;
-- :mod:`.sidecar` — I/O du sidecar (`load_model`/`save_model`), mutations immuables
-  (`add_or_update_agent`/`set_root`/`add_or_replace_tool`) et validation des specs ;
-- :mod:`.render` (+ :mod:`._codegen` interne) — génération de ``agent.py``
-  (`render_agent_module`/`regenerate`/`render_tool_ref`/`topological_order` + machinerie
-  ruff-stable).
+- :mod:`.specs` — immutable dataclasses (`ProjectModel`, `AgentSpec`, `ToolSpec`, …), domain
+  constants and ``Literal`` aliases;
+- :mod:`.sidecar` — sidecar I/O (`load_model`/`save_model`), immutable mutations
+  (`add_or_update_agent`/`set_root`/`add_or_replace_tool`) and spec validation;
+- :mod:`.render` (+ internal :mod:`._codegen`) — generation of ``agent.py``
+  (`render_agent_module`/`regenerate`/`render_tool_ref`/`topological_order` + ruff-stable
+  machinery).
 
-Voir ``docs/adk-api-notes/agents.md`` pour les signatures ADK réelles confirmées par
-introspection (et la note sur la dépréciation des agents workflow en google-adk 2.1.0).
+See ``docs/adk-api-notes/agents.md`` for the real ADK signatures confirmed by introspection
+(and the note on the deprecation of the workflow agents in google-adk 2.1.0).
 """
 
 from __future__ import annotations
@@ -70,8 +70,8 @@ from .specs import (
     is_identifier,
 )
 
-#: Surface publique stable. Tout nom historiquement importable depuis
-#: ``adk_toolkit_mcp.project_model`` reste exporté ici (compat ascendante stricte).
+#: Stable public surface. Every name historically importable from
+#: ``adk_toolkit_mcp.project_model`` stays exported here (strict backward compatibility).
 __all__ = [
     # Dataclasses / specs
     "AgentSpec",
@@ -83,12 +83,12 @@ __all__ = [
     "SafetySettingSpec",
     "ToolRender",
     "ToolSpec",
-    # Alias Literal
+    # Literal aliases
     "AgentType",
     "CallbackHook",
     "PolicyKind",
     "ToolKind",
-    # Constantes
+    # Constants
     "ARG_BUILTINS",
     "BUILTIN_TOOLS",
     "CALLBACK_HOOKS",
@@ -106,15 +106,15 @@ __all__ = [
     "validate_callback_spec",
     "validate_spec",
     "validate_tool_spec",
-    # Mutations immuables
+    # Immutable mutations
     "add_or_replace_callback",
     "add_or_replace_tool",
     "add_or_update_agent",
     "set_root",
-    # I/O sidecar
+    # Sidecar I/O
     "load_model",
     "save_model",
-    # Rendu
+    # Rendering
     "regenerate",
     "render_agent_module",
     "render_tool_ref",

@@ -1,8 +1,8 @@
-"""Tests unitaires du renderer pur ``project_model`` (aucune construction ADK in-process).
+"""Unit tests for the pure ``project_model`` renderer (no in-process ADK construction).
 
-On assert sur la **chaîne source** générée (sûr sous ``-W error::DeprecationWarning``,
-puisqu'on ne construit aucun agent workflow déprécié ici). La preuve fonctionnelle
-(instanciation réelle des objets ADK) est faite dans ``test_agents.py`` via un subprocess.
+We assert on the generated **source string** (safe under ``-W error::DeprecationWarning``,
+since we build no deprecated workflow agent here). The functional proof (real
+instantiation of the ADK objects) is done in ``test_agents.py`` via a subprocess.
 """
 
 from __future__ import annotations
@@ -38,7 +38,7 @@ from adk_toolkit_mcp.workspace import Workspace
 
 
 # --------------------------------------------------------------------------- #
-# Dataclasses + (dé)sérialisation
+# Dataclasses + (de)serialization
 # --------------------------------------------------------------------------- #
 def test_agentspec_is_frozen() -> None:
     spec = AgentSpec(name="a", type="llm")
@@ -74,7 +74,7 @@ def test_projectmodel_roundtrip() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# Mutations immuables
+# Immutable mutations
 # --------------------------------------------------------------------------- #
 def test_add_or_update_agent_is_immutable() -> None:
     model = ProjectModel(app_name="demo")
@@ -90,7 +90,7 @@ def test_add_or_update_agent_replaces_in_place() -> None:
         agents=(AgentSpec(name="a", type="llm"), AgentSpec(name="b", type="llm")),
     )
     updated = add_or_update_agent(model, AgentSpec(name="a", type="llm", instruction="new"))
-    # Position préservée, pas de doublon.
+    # Position preserved, no duplicate.
     assert updated.agent_names() == ("a", "b")
     a = updated.get("a")
     assert a is not None and a.instruction == "new"
@@ -125,7 +125,7 @@ def test_validate_accepts_good_llm() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# Tri topologique + cycles
+# Topological sort + cycles
 # --------------------------------------------------------------------------- #
 def test_topological_order_child_before_parent() -> None:
     model = ProjectModel(
@@ -163,7 +163,7 @@ def test_topological_order_detects_self_cycle() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# Rendu source — par type
+# Source rendering — by type
 # --------------------------------------------------------------------------- #
 def test_render_llm_minimal_omits_empty_kwargs() -> None:
     model = ProjectModel(
@@ -177,7 +177,7 @@ def test_render_llm_minimal_omits_empty_kwargs() -> None:
     assert 'name="solo"' in src
     assert 'model="gemini-2.5-flash"' in src
     assert 'instruction="Hi"' in src
-    # description vide / output_key None / tools vide / sub_agents vide -> omis.
+    # empty description / output_key None / empty tools / empty sub_agents -> omitted.
     assert "description=" not in src
     assert "output_key=" not in src
     assert "tools=" not in src
@@ -215,8 +215,8 @@ def test_render_sequential_and_parallel() -> None:
         ),
     )
     src = render_agent_module(model)
-    # Les noms importés sont triés (isort ``I001``), pas dans l'ordre canonique ADK :
-    # ``LlmAgent, ParallelAgent, SequentialAgent`` (alphabétique).
+    # The imported names are sorted (isort ``I001``), not in the canonical ADK order:
+    # ``LlmAgent, ParallelAgent, SequentialAgent`` (alphabetical).
     assert "from google.adk.agents import LlmAgent, ParallelAgent, SequentialAgent" in src
     assert "pipe = SequentialAgent(" in src
     assert "sub_agents=[a, b]" in src
@@ -246,7 +246,7 @@ def test_render_custom_emits_baseagent_subclass_and_instance() -> None:
     assert "from google.adk.agents import BaseAgent" in src
     assert "class MyCustomAgent(BaseAgent):" in src
     assert "async def _run_async_impl(self, ctx):" in src
-    # async generator no-op : return suivi d'un yield inatteignable.
+    # async generator no-op: return followed by an unreachable yield.
     assert "yield" in src
     assert 'my_custom = MyCustomAgent(name="my_custom", description="D")' in src
 
@@ -255,9 +255,9 @@ def test_render_custom_emits_baseagent_subclass_and_instance() -> None:
 # remote_a2a (P4b) — proxy RemoteA2aAgent
 # --------------------------------------------------------------------------- #
 def test_render_remote_a2a_emits_call_and_submodule_import() -> None:
-    """``remote_a2a`` rend ``RemoteA2aAgent(name=..., agent_card="...")`` + l'import sous-module.
+    """``remote_a2a`` renders ``RemoteA2aAgent(name=..., agent_card="...")`` + the submodule import.
 
-    ⚠️ En 2.1.0, ``RemoteA2aAgent`` N'EST PAS dans ``google.adk.agents`` : l'import DOIT être
+    Warning: in 2.1.0, ``RemoteA2aAgent`` is NOT in ``google.adk.agents``: the import MUST be
     ``from google.adk.agents.remote_a2a_agent import RemoteA2aAgent`` (cf. a2a-mcp-bridge.md).
     """
     model = ProjectModel(
@@ -274,7 +274,7 @@ def test_render_remote_a2a_emits_call_and_submodule_import() -> None:
     )
     src = render_agent_module(model)
     assert "from google.adk.agents.remote_a2a_agent import RemoteA2aAgent" in src
-    # PAS d'import erroné depuis google.adk.agents (RemoteA2aAgent n'y est pas).
+    # NO erroneous import from google.adk.agents (RemoteA2aAgent is not there).
     assert "from google.adk.agents import RemoteA2aAgent" not in src
     assert "remote_helper = RemoteA2aAgent(" in src
     assert 'name="remote_helper"' in src
@@ -284,12 +284,12 @@ def test_render_remote_a2a_emits_call_and_submodule_import() -> None:
 
 
 def test_render_remote_a2a_composes_as_sub_agent_topo_order() -> None:
-    """Un ``remote_a2a`` peut être ``sub_agent`` d'un autre agent ; défini AVANT le parent."""
+    """A ``remote_a2a`` can be a ``sub_agent`` of another agent; defined BEFORE the parent."""
     model = ProjectModel(
         app_name="demo",
         root="router",
         agents=(
-            # Déclaré APRÈS le parent dans le modèle pour prouver le tri topologique.
+            # Declared AFTER the parent in the model to prove the topological sort.
             AgentSpec(
                 name="router", type="llm", instruction="Route.", sub_agents=("remote_helper",)
             ),
@@ -301,16 +301,16 @@ def test_render_remote_a2a_composes_as_sub_agent_topo_order() -> None:
         ),
     )
     src = render_agent_module(model)
-    # Deux classes d'agents importées chacune depuis leur module (isort trie par module).
+    # Two agent classes each imported from their module (isort sorts by module).
     assert "from google.adk.agents import LlmAgent" in src
     assert "from google.adk.agents.remote_a2a_agent import RemoteA2aAgent" in src
-    # La définition du proxy précède celle du parent (dépendance avant dépendant).
+    # The proxy definition precedes the parent's (dependency before dependent).
     assert src.index("remote_helper = RemoteA2aAgent(") < src.index("router = LlmAgent(")
     assert "sub_agents=[remote_helper]" in src
 
 
 def test_render_remote_a2a_no_description_omits_kwarg() -> None:
-    """Sans description, le kwarg ``description=`` est omis (uniquement name + agent_card)."""
+    """Without a description, the ``description=`` kwarg is omitted (only name + agent_card)."""
     model = ProjectModel(
         app_name="demo",
         root="r",
@@ -322,7 +322,7 @@ def test_render_remote_a2a_no_description_omits_kwarg() -> None:
 
 
 def test_remote_a2a_spec_roundtrip_serializes_agent_card() -> None:
-    """Le champ ``agent_card`` survit à un aller-retour to_dict/from_dict (forme sidecar)."""
+    """The ``agent_card`` field survives a to_dict/from_dict round-trip (sidecar form)."""
     spec = AgentSpec(
         name="remote_helper",
         type="remote_a2a",
@@ -339,7 +339,7 @@ def test_remote_a2a_spec_roundtrip_serializes_agent_card() -> None:
 
 
 def test_validate_remote_a2a_requires_agent_card() -> None:
-    """``remote_a2a`` sans agent_card est rejeté (message actionnable)."""
+    """``remote_a2a`` without agent_card is rejected (actionable message)."""
     bad = AgentSpec(name="r", type="remote_a2a", agent_card="")
     error = validate_spec(bad)
     assert error is not None
@@ -349,7 +349,7 @@ def test_validate_remote_a2a_requires_agent_card() -> None:
 
 
 def test_render_remote_a2a_format_and_isort_stable(tmp_path: Path) -> None:
-    """Le module généré avec un remote_a2a + un llm parent est format- ET isort-clean."""
+    """The module generated with a remote_a2a + a parent llm is format- AND isort-clean."""
     model = ProjectModel(
         app_name="demo",
         root="router",
@@ -372,22 +372,22 @@ def test_render_remote_a2a_format_and_isort_stable(tmp_path: Path) -> None:
 def test_render_empty_model_has_no_root() -> None:
     src = render_agent_module(ProjectModel(app_name="demo"))
     assert "root_agent =" not in src.replace("# root_agent", "")
-    assert "Aucun agent" in src
+    assert "No agent" in src
 
 
 def test_render_root_missing_emits_comment_not_assignment() -> None:
     model = ProjectModel(
         app_name="demo",
-        root="ghost",  # n'existe pas
+        root="ghost",  # does not exist
         agents=(AgentSpec(name="real", type="llm"),),
     )
     src = render_agent_module(model)
     assert "root_agent = ghost" not in src
-    assert "introuvable" in src
+    assert "not found" in src
 
 
 def test_render_imports_only_used_classes() -> None:
-    # Seulement des llm -> n'importe pas Sequential/Parallel/Loop/BaseAgent.
+    # Only llms -> does not import Sequential/Parallel/Loop/BaseAgent.
     model = ProjectModel(app_name="demo", agents=(AgentSpec(name="a", type="llm"),))
     src = render_agent_module(model)
     line = next(line for line in src.splitlines() if line.startswith("from google.adk.agents"))
@@ -397,7 +397,7 @@ def test_render_imports_only_used_classes() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# Rendu des outils — render_tool_ref (passe 3a)
+# Tool rendering — render_tool_ref (pass 3a)
 # --------------------------------------------------------------------------- #
 def test_render_tool_ref_function_emits_def_and_bare_ref() -> None:
     tool = ToolSpec(
@@ -410,8 +410,8 @@ def test_render_tool_ref_function_emits_def_and_bare_ref() -> None:
     )
     tr = render_tool_ref(tool)
     assert isinstance(tr, ToolRender)
-    assert tr.ref == "add"  # ADK auto-wrappe la fonction en FunctionTool.
-    assert tr.imports == ()  # un plain function n'importe rien.
+    assert tr.ref == "add"  # ADK auto-wraps the function in a FunctionTool.
+    assert tr.imports == ()  # a plain function imports nothing.
     assert len(tr.helpers) == 1
     helper = tr.helpers[0]
     assert helper.startswith("def add(a: int, b: int = 0) -> dict:")
@@ -463,7 +463,7 @@ def test_render_tool_ref_openapi_builds_toolset_and_refs_it() -> None:
 
 
 def test_render_tool_ref_legacy_string_is_bare_passthrough() -> None:
-    # Forme héritée P1 : une chaîne reste une référence bare, sans import ni helper.
+    # Legacy P1 form: a string stays a bare reference, no import or helper.
     tr = render_tool_ref("already_imported_tool")
     assert tr.ref == "already_imported_tool"
     assert tr.imports == ()
@@ -471,7 +471,7 @@ def test_render_tool_ref_legacy_string_is_bare_passthrough() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# Rendu des outils — render_tool_ref (passe 3b : toolsets à dépendance optionnelle)
+# Tool rendering — render_tool_ref (pass 3b: optional-dependency toolsets)
 # --------------------------------------------------------------------------- #
 def test_render_tool_ref_bigquery_builds_toolset() -> None:
     tr = render_tool_ref(ToolSpec(kind="bigquery", name="bq"))
@@ -484,7 +484,7 @@ def test_render_tool_ref_bigquery_with_args() -> None:
     tr = render_tool_ref(
         ToolSpec(kind="bigquery", name="bq", args=(("bigquery_tool_config", "my_cfg"),))
     )
-    # Les args sont des EXPRESSIONS source (pas des chaînes littérales) -> rendues telles quelles.
+    # The args are source EXPRESSIONS (not string literals) -> rendered as is.
     assert "bigquery_tool_config=my_cfg" in tr.helpers[0]
 
 
@@ -496,8 +496,8 @@ def test_render_tool_ref_spanner_builds_toolset() -> None:
 
 
 def test_render_tool_ref_mcp_stdio_single_arg_no_trailing_comma() -> None:
-    # Le toolset stdio imbrique 3 appels : même minimal il dépasse 100 cols et se replie.
-    # Règle ruff : un call à argument UNIQUE qui se replie n'ajoute PAS de virgule finale.
+    # The stdio toolset nests 3 calls: even minimal it exceeds 100 cols and folds.
+    # ruff rule: a SINGLE-argument call that folds does NOT add a trailing comma.
     tr = render_tool_ref(ToolSpec(kind="mcp_toolset", name="fs", transport="stdio", command="srv"))
     assert tr.ref == "fs"
     imps = "\n".join(tr.imports)
@@ -505,7 +505,7 @@ def test_render_tool_ref_mcp_stdio_single_arg_no_trailing_comma() -> None:
     assert "McpToolset" in imps and "StdioConnectionParams" in imps
     assert "from mcp import StdioServerParameters" in imps
     helper = tr.helpers[0]
-    # Forme exacte ``ruff format`` : argument unique éclaté, sans virgule finale.
+    # Exact ``ruff format`` shape: single argument exploded, no trailing comma.
     assert helper == (
         "fs = McpToolset(\n"
         "    connection_params=StdioConnectionParams(\n"
@@ -516,7 +516,7 @@ def test_render_tool_ref_mcp_stdio_single_arg_no_trailing_comma() -> None:
 
 
 def test_render_tool_ref_mcp_stdio_long_folds_ruff_stable() -> None:
-    # Cas long : le renderer replie (récursivement) ; on vérifie les fragments clés + l'ordre.
+    # Long case: the renderer folds (recursively); we check the key fragments + the order.
     tr = render_tool_ref(
         ToolSpec(
             kind="mcp_toolset",
@@ -534,7 +534,7 @@ def test_render_tool_ref_mcp_stdio_long_folds_ruff_stable() -> None:
     assert 'command="npx"' in helper
     assert 'args=["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]' in helper
     assert 'tool_filter=["read_file", "list_directory"]' in helper
-    # Aucune ligne ne dépasse la limite ruff.
+    # No line exceeds the ruff limit.
     assert all(len(line) <= 100 for line in helper.splitlines())
 
 
@@ -550,7 +550,7 @@ def test_render_tool_ref_mcp_sse() -> None:
     )
     imps = "\n".join(tr.imports)
     assert "SseConnectionParams" in imps
-    assert "StdioServerParameters" not in imps  # pas de stdio import pour sse
+    assert "StdioServerParameters" not in imps  # no stdio import for sse
     helper = tr.helpers[0]
     assert "SseConnectionParams(" in helper
     assert 'url="https://example.com/sse"' in helper
@@ -616,7 +616,7 @@ def test_render_tool_ref_crewai_wraps_expr_with_name_and_description() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# Rendu de l'auth (set_auth) — auth_credential= sur les toolsets compatibles
+# Auth rendering (set_auth) — auth_credential= on compatible toolsets
 # --------------------------------------------------------------------------- #
 def test_render_tool_ref_openapi_with_apikey_auth() -> None:
     tr = render_tool_ref(
@@ -693,7 +693,7 @@ def test_render_tool_ref_service_account_auth() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# (Dé)sérialisation des ToolSpec
+# (De)serialization of ToolSpec
 # --------------------------------------------------------------------------- #
 def test_toolspec_roundtrip_function() -> None:
     tool = ToolSpec(
@@ -804,7 +804,7 @@ def test_agentspec_with_toolspecs_roundtrips_via_sidecar(tmp_path: Path) -> None
 
 
 # --------------------------------------------------------------------------- #
-# Validation des outils
+# Tool validation
 # --------------------------------------------------------------------------- #
 def _model_with(*names: str) -> ProjectModel:
     return ProjectModel(app_name="m", agents=tuple(AgentSpec(name=n, type="llm") for n in names))
@@ -847,7 +847,7 @@ def test_validate_tool_vertex_requires_arg() -> None:
 
 
 def test_validate_tool_agent_tool_target_must_exist() -> None:
-    model = _model_with("owner")  # pas de 'ghost'
+    model = _model_with("owner")  # no 'ghost'
     err = validate_tool_spec(ToolSpec(kind="agent_tool", target_agent="ghost"), model, "owner")
     assert err is not None
 
@@ -863,7 +863,7 @@ def test_validate_tool_openapi_rejects_empty_spec() -> None:
     assert err is not None
 
 
-# --- 3b : validation des nouveaux genres ----------------------------------- #
+# --- 3b: validation of the new kinds ---------------------------------------- #
 def test_validate_tool_bigquery_requires_valid_name() -> None:
     assert validate_tool_spec(ToolSpec(kind="bigquery", name="1bad"), _model_with("o"), "o")
     assert validate_tool_spec(ToolSpec(kind="bigquery", name="bq"), _model_with("o"), "o") is None
@@ -923,7 +923,7 @@ def test_validate_tool_crewai_requires_name() -> None:
 
 
 def test_validate_tool_auth_rejected_on_bigquery_spanner() -> None:
-    # bigquery/spanner n'acceptent pas auth_scheme/auth_credential (ils ont credentials_config).
+    # bigquery/spanner do not accept auth_scheme/auth_credential (they have credentials_config).
     auth = AuthSpec(scheme="apikey", credential=(("api_key", "k"),))
     assert validate_tool_spec(
         ToolSpec(kind="bigquery", name="bq", auth=auth), _model_with("o"), "o"
@@ -963,7 +963,7 @@ def test_validate_tool_auth_bearer_requires_token_field() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# Rendu de module avec outils — helpers AVANT les agents, imports dédupés
+# Module rendering with tools — helpers BEFORE agents, deduped imports
 # --------------------------------------------------------------------------- #
 def test_render_module_emits_helpers_before_agents_and_dedups_imports() -> None:
     model = ProjectModel(
@@ -978,7 +978,7 @@ def test_render_module_emits_helpers_before_agents_and_dedups_imports() -> None:
                 tools=(
                     ToolSpec(kind="function", name="add", docstring="Add."),
                     ToolSpec(kind="builtin", builtin_kind="google_search"),
-                    # Deux google_search -> import dédupé.
+                    # Two google_search -> deduped import.
                     ToolSpec(kind="builtin", builtin_kind="google_search"),
                     ToolSpec(kind="agent_tool", target_agent="child"),
                 ),
@@ -986,22 +986,22 @@ def test_render_module_emits_helpers_before_agents_and_dedups_imports() -> None:
         ),
     )
     src = render_agent_module(model)
-    # Le def de l'outil apparaît avant la définition de l'agent root.
+    # The tool's def appears before the root agent's definition.
     assert src.index("def add(") < src.index("root = LlmAgent(")
-    # google_search n'apparaît qu'une seule fois dans la section d'imports (dédupé/fusionné).
+    # google_search appears only once in the import section (deduped/merged).
     import_section = src.split("def add(")[0]
     assert import_section.count("google_search") == 1
-    # Importé depuis le package root des outils.
+    # Imported from the tools root package.
     assert "from google.adk.tools import" in src
     assert "google_search" in src
-    # AgentTool référence l'agent enfant existant.
+    # AgentTool references the existing child agent.
     assert "AgentTool(agent=child)" in src
-    # La fonction est référencée bare (ADK l'auto-wrappe en FunctionTool).
+    # The function is referenced bare (ADK auto-wraps it in a FunctionTool).
     assert "tools=[" in src and "add" in src
 
 
 def test_render_module_topo_orders_agent_tool_target_first() -> None:
-    # L'agent enveloppé par AgentTool doit être défini avant l'agent qui l'enveloppe.
+    # The agent wrapped by AgentTool must be defined before the agent that wraps it.
     model = ProjectModel(
         app_name="demo",
         root="boss",
@@ -1020,7 +1020,7 @@ def test_render_module_topo_orders_agent_tool_target_first() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# Sidecar I/O + regenerate (sur disque)
+# Sidecar I/O + regenerate (on disk)
 # --------------------------------------------------------------------------- #
 def test_load_model_absent_returns_empty(tmp_path: Path) -> None:
     ws = Workspace(tmp_path / "app")
@@ -1047,13 +1047,13 @@ def test_save_model_idempotent(tmp_path: Path) -> None:
     ws = Workspace(tmp_path / "app")
     model = ProjectModel(app_name="app", agents=(AgentSpec(name="a", type="llm"),))
     assert save_model(ws, model) is True
-    assert save_model(ws, model) is False  # contenu identique -> rien changé
+    assert save_model(ws, model) is False  # identical content -> nothing changed
 
 
 def test_load_model_corrupt_raises(tmp_path: Path) -> None:
     ws = Workspace(tmp_path / "app")
     ws.write(SIDECAR_PATH, "{ not valid json ]")
-    with pytest.raises(ValueError, match="JSON invalide"):
+    with pytest.raises(ValueError, match="Invalid sidecar JSON"):
         load_model(ws, "app")
 
 
@@ -1095,10 +1095,10 @@ def test_regenerate_cycle_raises(tmp_path: Path) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# Stabilité de format ruff — le fichier généré doit être déjà formaté
+# ruff format stability — the generated file must already be formatted
 # --------------------------------------------------------------------------- #
 def _ruff_exe() -> str | None:
-    """Localise l'exécutable ruff dans l'environnement courant (venv ou PATH)."""
+    """Locate the ruff executable in the current environment (venv or PATH)."""
     # Prefer the ruff that lives next to the current Python interpreter (venv).
     import sys
 
@@ -1110,19 +1110,19 @@ def _ruff_exe() -> str | None:
 
 
 def _assert_ruff_isort_clean(src: str, tmp_path: Path, label: str) -> None:
-    """Vérifie que ``ruff check --select I`` (isort) passe (exit 0) sur *src*.
+    """Check that ``ruff check --select I`` (isort) passes (exit 0) on *src*.
 
-    Le ``agent.py`` généré ne doit pas seulement être *format*-clean : ses lignes d'import
-    doivent aussi être *isort*-clean (noms triés à l'intérieur de chaque ``from X import ...``,
-    ordre des modules). Avant le correctif, la ligne ``from google.adk.agents import LlmAgent,
-    BaseAgent`` (ordre canonique ADK) déclenchait ``I001``.
+    The generated ``agent.py`` must not only be *format*-clean: its import lines must also
+    be *isort*-clean (names sorted inside each ``from X import ...``, module order). Before
+    the fix, the line ``from google.adk.agents import LlmAgent, BaseAgent`` (canonical ADK
+    order) triggered ``I001``.
     """
     gen_file = tmp_path / f"{label}_isort.py"
     gen_file.write_text(src, encoding="utf-8")
 
     ruff = _ruff_exe()
     if ruff is None:
-        pytest.skip("ruff introuvable dans l'environnement — test isort ignoré")
+        pytest.skip("ruff not found in the environment — isort test ignored")
 
     result = subprocess.run(
         [ruff, "check", "--select", "I", str(gen_file)],
@@ -1130,24 +1130,24 @@ def _assert_ruff_isort_clean(src: str, tmp_path: Path, label: str) -> None:
         text=True,
     )
     assert result.returncode == 0, (
-        f"ruff check --select I (isort) a échoué pour le cas '{label}'.\n"
+        f"ruff check --select I (isort) failed for case '{label}'.\n"
         f"Stdout: {result.stdout}\nStderr: {result.stderr}\n"
-        f"Source générée :\n{src}"
+        f"Generated source:\n{src}"
     )
 
 
 def _assert_ruff_format_stable(src: str, tmp_path: Path, label: str) -> None:
-    """Vérifie que la sortie générée est **déjà formatée ET isort-clean**.
+    """Check that the generated output is **already formatted AND isort-clean**.
 
-    Lance ``ruff format --check`` (idempotence du formatage) *et* ``ruff check --select I``
-    (tri des imports) sur *src* — les deux doivent passer (exit 0).
+    Runs ``ruff format --check`` (formatting idempotence) *and* ``ruff check --select I``
+    (import sorting) on *src* — both must pass (exit 0).
     """
     gen_file = tmp_path / f"{label}.py"
     gen_file.write_text(src, encoding="utf-8")
 
     ruff = _ruff_exe()
     if ruff is None:
-        pytest.skip("ruff introuvable dans l'environnement — test de format ignoré")
+        pytest.skip("ruff not found in the environment — format test ignored")
 
     result = subprocess.run(
         [ruff, "format", "--check", str(gen_file)],
@@ -1155,17 +1155,17 @@ def _assert_ruff_format_stable(src: str, tmp_path: Path, label: str) -> None:
         text=True,
     )
     assert result.returncode == 0, (
-        f"ruff format --check a échoué pour le cas '{label}'.\n"
+        f"ruff format --check failed for case '{label}'.\n"
         f"Stdout: {result.stdout}\nStderr: {result.stderr}\n"
-        f"Source générée :\n{src}"
+        f"Generated source:\n{src}"
     )
 
-    # Le fichier généré doit aussi être isort-clean (pas seulement format-clean).
+    # The generated file must also be isort-clean (not only format-clean).
     _assert_ruff_isort_clean(src, tmp_path, label)
 
 
 def test_render_format_stable_custom_llm_workflow(tmp_path: Path) -> None:
-    """Le module généré avec un custom + llm + workflow est stable pour ruff format."""
+    """The module generated with a custom + llm + workflow is stable for ruff format."""
     model = ProjectModel(
         app_name="demo",
         root="pipe",
@@ -1180,10 +1180,10 @@ def test_render_format_stable_custom_llm_workflow(tmp_path: Path) -> None:
 
 
 def test_render_agent_import_line_names_sorted_for_isort() -> None:
-    """La ligne d'import des classes d'agents trie ses noms (custom + llm -> BaseAgent, LlmAgent).
+    """The agent-class import line sorts its names (custom + llm -> BaseAgent, LlmAgent).
 
-    Régression : ``_needed_agent_imports`` renvoie l'ordre canonique ADK
-    (``LlmAgent, ..., BaseAgent``) ; l'émission doit néanmoins trier les noms pour satisfaire
+    Regression: ``_needed_agent_imports`` returns the canonical ADK order
+    (``LlmAgent, ..., BaseAgent``); the emission must nonetheless sort the names to satisfy
     isort (``BaseAgent, LlmAgent``).
     """
     model = ProjectModel(
@@ -1196,16 +1196,16 @@ def test_render_agent_import_line_names_sorted_for_isort() -> None:
     )
     src = render_agent_module(model)
     assert "from google.adk.agents import BaseAgent, LlmAgent\n" in src
-    # L'ordre canonique non trié ne doit PAS apparaître.
+    # The unsorted canonical order must NOT appear.
     assert "import LlmAgent, BaseAgent" not in src
 
 
 def test_render_isort_clean_custom_plus_llm(tmp_path: Path) -> None:
-    """Cas dédié : un agent ``custom`` + un ``llm`` (combo ``LlmAgent`` + ``BaseAgent``).
+    """Dedicated case: a ``custom`` agent + an ``llm`` (combo ``LlmAgent`` + ``BaseAgent``).
 
-    Avant le correctif, l'ordre canonique non trié ``import LlmAgent, BaseAgent`` déclenchait
-    ``I001``. Après correctif, la sortie est triée (``BaseAgent, LlmAgent``). On vérifie
-    explicitement que ``ruff check --select I`` est clean (exit 0) sur la sortie générée.
+    Before the fix, the unsorted canonical order ``import LlmAgent, BaseAgent`` triggered
+    ``I001``. After the fix, the output is sorted (``BaseAgent, LlmAgent``). We check
+    explicitly that ``ruff check --select I`` is clean (exit 0) on the generated output.
     """
     model = ProjectModel(
         app_name="demo",
@@ -1220,7 +1220,7 @@ def test_render_isort_clean_custom_plus_llm(tmp_path: Path) -> None:
 
 
 def test_render_format_stable_llm_only(tmp_path: Path) -> None:
-    """Le module généré avec des agents llm uniquement est stable pour ruff format."""
+    """The module generated with llm agents only is stable for ruff format."""
     model = ProjectModel(
         app_name="demo",
         root="solo",
@@ -1240,7 +1240,7 @@ def test_render_format_stable_llm_only(tmp_path: Path) -> None:
 
 
 def test_render_format_stable_function_tools_and_custom(tmp_path: Path) -> None:
-    """Function tools (defs top-level) + agent custom + agent_tool : stable pour ruff format."""
+    """Function tools (top-level defs) + custom agent + agent_tool: stable for ruff format."""
     model = ProjectModel(
         app_name="demo",
         root="root",
@@ -1260,8 +1260,8 @@ def test_render_format_stable_function_tools_and_custom(tmp_path: Path) -> None:
                         params=(("a", "int", None), ("b", "int", "0")),
                         docstring="Add two integers.",
                         returns="dict",
-                        # Le corps est rendu verbatim : il doit déjà être ruff-clean (le toolkit
-                        # ne reformate pas le code utilisateur). Guillemets doubles -> stable.
+                        # The body is rendered verbatim: it must already be ruff-clean (the
+                        # toolkit does not reformat user code). Double quotes -> stable.
                         body='return {"sum": a + b}',
                     ),
                     ToolSpec(kind="long_running", name="poll", docstring="Poll a job."),
@@ -1276,7 +1276,7 @@ def test_render_format_stable_function_tools_and_custom(tmp_path: Path) -> None:
 
 
 def test_render_format_stable_all_tool_kinds(tmp_path: Path) -> None:
-    """Les six genres d'outils (3a) ensemble : sortie déjà formatée pour ruff."""
+    """The six tool kinds (3a) together: output already formatted for ruff."""
     model = ProjectModel(
         app_name="demo",
         root="root",
@@ -1317,7 +1317,7 @@ def test_render_format_stable_all_tool_kinds(tmp_path: Path) -> None:
 
 
 def _all_3b_model() -> ProjectModel:
-    """Modèle exerçant tous les genres 3b + l'auth, partagé par ast.parse et ruff format."""
+    """Model exercising all the 3b kinds + auth, shared by ast.parse and ruff format."""
     return ProjectModel(
         app_name="demo",
         root="root",
@@ -1375,16 +1375,16 @@ def _all_3b_model() -> ProjectModel:
 
 
 def test_render_3b_module_is_valid_python_ast() -> None:
-    """Le module généré avec tous les genres 3b + auth est du Python valide (ast.parse).
+    """The module generated with all the 3b kinds + auth is valid Python (ast.parse).
 
-    On NE l'importe PAS (les extras ne sont pas installés en CI) ; on vérifie juste qu'il
-    s'analyse syntaxiquement et que les imports/refs attendus sont présents.
+    We do NOT import it (the extras are not installed in CI); we just check that it parses
+    syntactically and that the expected imports/refs are present.
     """
     import ast
 
     src = render_agent_module(_all_3b_model())
-    ast.parse(src)  # lève SyntaxError si le rendu est cassé
-    # Imports clés présents.
+    ast.parse(src)  # raises SyntaxError if the rendering is broken
+    # Key imports present.
     assert "from google.adk.tools.bigquery import BigQueryToolset" in src
     assert "from google.adk.tools.spanner import SpannerToolset" in src
     assert "from google.adk.tools.mcp_tool import" in src
@@ -1393,21 +1393,21 @@ def test_render_3b_module_is_valid_python_ast() -> None:
     assert "from google.adk.tools.langchain_tool import LangchainTool" in src
     assert "from google.adk.tools.crewai_tool import CrewaiTool" in src
     assert "from google.adk.auth import AuthCredential, AuthCredentialTypes" in src
-    # Les helpers de toolset sont définis avant l'agent root.
+    # The toolset helpers are defined before the root agent.
     assert src.index("bq = BigQueryToolset(") < src.index("root = LlmAgent(")
-    # Les user import_lines apparaissent (verbatim).
+    # The user import_lines appear (verbatim).
     assert "from langchain_community.tools import WikipediaQueryRun" in src
     assert "from crewai_tools import SerperDevTool" in src
 
 
 def test_render_format_stable_all_3b_kinds(tmp_path: Path) -> None:
-    """Tous les genres 3b + auth ensemble : sortie déjà formatée pour ruff."""
+    """All the 3b kinds + auth together: output already formatted for ruff."""
     src = render_agent_module(_all_3b_model())
     _assert_ruff_format_stable(src, tmp_path, "all_3b_kinds")
 
 
 # --------------------------------------------------------------------------- #
-# Callbacks (garde-fous, P4c) — (dé)sérialisation, validation, mutation, rendu
+# Callbacks (guardrails, P4c) — (de)serialization, validation, mutation, rendering
 # --------------------------------------------------------------------------- #
 def _kw_callback(refusal: str = "No.") -> CallbackSpec:
     return CallbackSpec(
@@ -1429,7 +1429,7 @@ def test_callbackspec_roundtrip() -> None:
 
 
 def test_callbackspec_kwarg_name() -> None:
-    """kwarg_name() mappe le hook vers le vrai kwarg LlmAgent (suffixe _callback)."""
+    """kwarg_name() maps the hook to the real LlmAgent kwarg (_callback suffix)."""
     assert _kw_callback().kwarg_name() == "before_model_callback"
     assert CallbackSpec(hook="before_tool", policy="block_tool").kwarg_name() == (
         "before_tool_callback"
@@ -1437,7 +1437,7 @@ def test_callbackspec_kwarg_name() -> None:
 
 
 def test_agentspec_serializes_callbacks_and_max_llm_calls() -> None:
-    """Un LlmAgent sérialise callbacks + max_llm_calls ; from_dict les relit."""
+    """An LlmAgent serializes callbacks + max_llm_calls; from_dict re-reads them."""
     spec = AgentSpec(name="a", type="llm", callbacks=(_kw_callback(),), max_llm_calls=42)
     data = spec.to_dict()
     assert data["callbacks"] == [_kw_callback().to_dict()]
@@ -1448,41 +1448,41 @@ def test_agentspec_serializes_callbacks_and_max_llm_calls() -> None:
 
 
 def test_agentspec_omits_empty_callbacks_and_max_llm_calls() -> None:
-    """Sans callback ni plafond, les clés ne sont PAS émises (compat ascendante)."""
+    """Without a callback or cap, the keys are NOT emitted (backward compat)."""
     data = AgentSpec(name="a", type="llm").to_dict()
     assert "callbacks" not in data
     assert "max_llm_calls" not in data
 
 
 def test_validate_callback_spec_ok_and_errors() -> None:
-    """validate_callback_spec accepte les politiques valides et rejette les invalides."""
+    """validate_callback_spec accepts valid policies and rejects invalid ones."""
     assert validate_callback_spec(_kw_callback()) is None
-    # Hook incompatible avec la politique (block_keywords est before_model uniquement).
+    # Hook incompatible with the policy (block_keywords is before_model only).
     bad_hook = CallbackSpec(
         hook="before_tool", policy="block_keywords", params=(("keywords", "x"),)
     )
-    assert "n'est pas compatible" in (validate_callback_spec(bad_hook) or "")
-    # block_keywords sans keywords.
+    assert "is not compatible" in (validate_callback_spec(bad_hook) or "")
+    # block_keywords without keywords.
     no_kw = CallbackSpec(hook="before_model", policy="block_keywords")
     assert "keywords" in (validate_callback_spec(no_kw) or "")
-    # max_input_chars avec un max_chars non entier.
+    # max_input_chars with a non-integer max_chars.
     bad_max = CallbackSpec(
         hook="before_model", policy="max_input_chars", params=(("max_chars", "abc"),)
     )
     assert "max_chars" in (validate_callback_spec(bad_max) or "")
-    # block_tool sans denylist.
+    # block_tool without denylist.
     no_dl = CallbackSpec(hook="before_tool", policy="block_tool")
     assert "denylist" in (validate_callback_spec(no_dl) or "")
 
 
 def test_add_or_replace_callback_one_per_hook() -> None:
-    """Un second callback sur le même hook REMPLACE le premier (un seul kwarg par hook)."""
+    """A second callback on the same hook REPLACES the first (one kwarg per hook)."""
     spec = AgentSpec(name="a", type="llm")
     spec = add_or_replace_callback(spec, _kw_callback(refusal="first"))
     spec = add_or_replace_callback(spec, _kw_callback(refusal="second"))
     assert len(spec.callbacks) == 1
     assert spec.callbacks[0].param("refusal") == "second"
-    # Un hook différent s'ajoute (ne remplace pas).
+    # A different hook is added (does not replace).
     spec = add_or_replace_callback(
         spec, CallbackSpec(hook="before_tool", policy="block_tool", params=(("denylist", "rm"),))
     )
@@ -1490,22 +1490,22 @@ def test_add_or_replace_callback_one_per_hook() -> None:
 
 
 def test_render_block_keywords_callback() -> None:
-    """block_keywords rend une fonction before_model attachée via le vrai kwarg + helpers."""
+    """block_keywords renders a before_model function attached via the real kwarg + helpers."""
     spec = AgentSpec(name="guarded", type="llm", callbacks=(_kw_callback(),))
     src = render_agent_module(ProjectModel(app_name="app", root="guarded", agents=(spec,)))
-    # La fonction de garde-fou est définie et attachée via le vrai kwarg.
+    # The guardrail function is defined and attached via the real kwarg.
     assert "def _guard_before_model_guarded(callback_context, llm_request):" in src
     assert "before_model_callback=_guard_before_model_guarded" in src
-    # Helpers partagés émis.
+    # Shared helpers emitted.
     assert "def _user_text(llm_request) -> str:" in src
     assert "def _refuse(message: str) -> LlmResponse:" in src
-    # La liste de mots bloqués + le refus sont présents.
+    # The list of blocked words + the refusal are present.
     assert '["bomb", "hack"]' in src
     assert 'return _refuse("No.")' in src
 
 
 def test_render_block_tool_callback() -> None:
-    """block_tool rend une fonction before_tool court-circuitant l'outil (dict)."""
+    """block_tool renders a before_tool function short-circuiting the tool (dict)."""
     cb = CallbackSpec(
         hook="before_tool", policy="block_tool", params=(("denylist", "delete_db,drop"),)
     )
@@ -1515,12 +1515,12 @@ def test_render_block_tool_callback() -> None:
     assert "before_tool_callback=_guard_before_tool_guarded" in src
     assert '["delete_db", "drop"]' in src
     assert "if tool.name in denylist:" in src
-    # block_tool n'a PAS besoin des helpers before_model.
+    # block_tool does NOT need the before_model helpers.
     assert "_refuse" not in src
 
 
 def test_render_max_input_chars_callback() -> None:
-    """max_input_chars rend une fonction before_model refusant au-delà de N caractères."""
+    """max_input_chars renders a before_model function refusing beyond N characters."""
     cb = CallbackSpec(hook="before_model", policy="max_input_chars", params=(("max_chars", "500"),))
     spec = AgentSpec(name="g", type="llm", callbacks=(cb,))
     src = render_agent_module(ProjectModel(app_name="app", root="g", agents=(spec,)))
@@ -1529,14 +1529,14 @@ def test_render_max_input_chars_callback() -> None:
 
 
 def test_max_llm_calls_not_rendered_in_agent_py() -> None:
-    """max_llm_calls est un réglage RunConfig : il ne doit PAS apparaître dans agent.py."""
+    """max_llm_calls is a RunConfig setting: it must NOT appear in agent.py."""
     spec = AgentSpec(name="a", type="llm", max_llm_calls=7)
     src = render_agent_module(ProjectModel(app_name="app", root="a", agents=(spec,)))
     assert "max_llm_calls" not in src
 
 
 def test_render_callbacks_ast_parse(tmp_path: Path) -> None:
-    """Le module avec les trois politiques (agents séparés) est ast-parseable."""
+    """The module with the three policies (separate agents) is ast-parseable."""
     import ast
 
     a1 = AgentSpec(name="kw", type="llm", callbacks=(_kw_callback(),))
@@ -1557,11 +1557,11 @@ def test_render_callbacks_ast_parse(tmp_path: Path) -> None:
         ),
     )
     src = render_agent_module(ProjectModel(app_name="app", root="kw", agents=(a1, a2, a3)))
-    ast.parse(src)  # ne lève pas
+    ast.parse(src)  # does not raise
 
 
 def test_render_callbacks_format_stable(tmp_path: Path) -> None:
-    """Le code généré avec garde-fous est déjà ruff-format + isort clean (les 3 politiques)."""
+    """The code generated with guardrails is already ruff-format + isort clean (the 3 policies)."""
     a1 = AgentSpec(name="kw", type="llm", callbacks=(_kw_callback(refusal="I cannot help."),))
     a2 = AgentSpec(
         name="mx",
@@ -1586,7 +1586,7 @@ def test_render_callbacks_format_stable(tmp_path: Path) -> None:
 
 
 def test_render_callbacks_with_tools_and_gcc_format_stable(tmp_path: Path) -> None:
-    """Un agent avec outil + gcc + callback reste ruff-stable (fusion des imports)."""
+    """An agent with tool + gcc + callback stays ruff-stable (import merge)."""
     tool = ToolSpec(
         kind="function",
         name="greet",

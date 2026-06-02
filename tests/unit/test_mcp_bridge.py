@@ -1,18 +1,18 @@
-"""Tests du domaine ``mcp_bridge`` (P4b — exposer des outils ADK COMME des outils MCP).
+"""Tests for the ``mcp_bridge`` domain (P4b — exposing ADK tools AS MCP tools).
 
-Ces tests sont **FONCTIONNELS et exécutables en CI sans aucun extra** : le paquet ``mcp`` est une
-dépendance core de ``fastmcp``, donc ``adk_to_mcp_tool_type`` est toujours disponible. On prouve :
+These tests are **FUNCTIONAL and runnable in CI without any extra**: the ``mcp`` package is a core
+dependency of ``fastmcp``, so ``adk_to_mcp_tool_type`` is always available. We prove:
 
-- ``convert_builtin("google_search")`` renvoie un dict en forme ``mcp.types.Tool``
-  (``{name, description, inputSchema}``) — on assert la STRUCTURE sur un VRAI outil ADK ;
-- ``expose_adk_tools`` sur un agent réel (scaffoldé) portant un builtin + une function-tool
-  renvoie leurs schémas MCP (la function-tool a un vrai JSON-Schema ``properties``/``required``) ;
-- les chemins d'erreur (kind inconnu, app/agent invalides, agent absent, agent sans outils) →
-  ``err`` propre, jamais d'exception ;
-- read-through via un ``fastmcp.Client`` en mémoire : noms exposés ``mcp_bridge_<bare>`` (pas de
-  double-préfixe) et l'appel ``mcp_bridge_convert_builtin`` round-trip.
+- ``convert_builtin("google_search")`` returns a dict in ``mcp.types.Tool`` form
+  (``{name, description, inputSchema}``) — we assert the STRUCTURE on a REAL ADK tool;
+- ``expose_adk_tools`` on a real (scaffolded) agent carrying a builtin + a function-tool returns
+  their MCP schemas (the function-tool has a real JSON-Schema ``properties``/``required``);
+- the error paths (unknown kind, invalid app/agent, absent agent, agent without tools) → clean
+  ``err``, never an exception;
+- read-through via an in-memory ``fastmcp.Client``: exposed names ``mcp_bridge_<bare>`` (no double
+  prefix) and the ``mcp_bridge_convert_builtin`` call round-trips.
 
-Cf. ``docs/adk-api-notes/a2a-mcp-bridge.md`` (signatures + résultat fonctionnel confirmés).
+Cf. ``docs/adk-api-notes/a2a-mcp-bridge.md`` (signatures + functional result confirmed).
 """
 
 from __future__ import annotations
@@ -30,12 +30,12 @@ from adk_toolkit_mcp.server import build_server
 
 @contextmanager
 def _ignore_workflow_deprecation() -> Iterator[None]:
-    """Filtre LOCAL la ``DeprecationWarning`` des agents workflow (Sequential/Parallel/Loop).
+    """LOCALLY filter the workflow agents' ``DeprecationWarning`` (Sequential/Parallel/Loop).
 
-    Ces agents sont dépréciés en ADK 2.1.0 mais restent fonctionnels (cf. PROGRESS/agents.md) ;
-    les construire in-process (via ``import_root_agent`` qui ``exec`` l'``agent.py`` scaffoldé)
-    émet une ``DeprecationWarning`` que ``-W error::DeprecationWarning`` transformerait en erreur.
-    On la NEUTRALISE uniquement le temps de l'appel (scope étroit, notre code reste strict).
+    These agents are deprecated in ADK 2.1.0 but remain functional (cf. PROGRESS/agents.md);
+    building them in-process (via ``import_root_agent`` which ``exec``s the scaffolded ``agent.py``)
+    emits a ``DeprecationWarning`` that ``-W error::DeprecationWarning`` would turn into an error.
+    We NEUTRALIZE it only for the duration of the call (narrow scope, our code stays strict).
     """
     with warnings.catch_warnings():
         warnings.filterwarnings(
@@ -50,11 +50,11 @@ def _ignore_workflow_deprecation() -> Iterator[None]:
 # Helpers
 # --------------------------------------------------------------------------- #
 def _scaffold_agent_with_tools(tmp_path: Path, app_name: str = "myapp") -> str:
-    """Scaffolde une app ADK (importable SANS clé API) avec un builtin + une function-tool.
+    """Scaffold an ADK app (importable WITHOUT an API key) with a builtin + a function-tool.
 
-    L'agent porte ``google_search`` (un builtin, inputSchema vide) et ``add_numbers`` (une
-    fonction nue qu'``canonical_tools`` enveloppe en FunctionTool → vrai JSON-Schema). Renvoie le
-    chemin parent.
+    The agent carries ``google_search`` (a builtin, empty inputSchema) and ``add_numbers`` (a bare
+    function that ``canonical_tools`` wraps in a FunctionTool → real JSON-Schema). Returns the
+    parent path.
     """
     app_dir = tmp_path / app_name
     app_dir.mkdir(parents=True, exist_ok=True)
@@ -77,7 +77,7 @@ def _scaffold_agent_with_tools(tmp_path: Path, app_name: str = "myapp") -> str:
 
 
 def _scaffold_sequential(tmp_path: Path, app_name: str = "wf") -> str:
-    """Scaffolde une app dont le root_agent est un SequentialAgent (pas de canonical_tools)."""
+    """Scaffold an app whose root_agent is a SequentialAgent (no canonical_tools)."""
     app_dir = tmp_path / app_name
     app_dir.mkdir(parents=True, exist_ok=True)
     (app_dir / "__init__.py").write_text("from . import agent\n", encoding="utf-8")
@@ -92,23 +92,23 @@ def _scaffold_sequential(tmp_path: Path, app_name: str = "wf") -> str:
 
 
 # --------------------------------------------------------------------------- #
-# convert_builtin — FONCTIONNEL (no extra)
+# convert_builtin — FUNCTIONAL (no extra)
 # --------------------------------------------------------------------------- #
 def test_convert_builtin_google_search_structure() -> None:
-    """``convert_builtin('google_search')`` → schéma MCP {name, description, inputSchema}."""
+    """``convert_builtin('google_search')`` → MCP schema {name, description, inputSchema}."""
     result = MB.convert_builtin("google_search")
     assert result["ok"] is True, result
     tool = result["data"]["tool"]
-    # Forme mcp.types.Tool aplatie : les trois clés attendues, dans le bon type.
+    # Flattened mcp.types.Tool form: the three expected keys, with the right type.
     assert set(tool.keys()) == {"name", "description", "inputSchema"}
     assert tool["name"] == "google_search"
     assert isinstance(tool["description"], str)
-    # google_search n'a pas de paramètres déclarés -> inputSchema est un dict (vide).
+    # google_search has no declared parameters -> inputSchema is a (empty) dict.
     assert isinstance(tool["inputSchema"], dict)
 
 
 def test_convert_builtin_other_core_builtins() -> None:
-    """D'autres builtins core convertissent aussi (instances BaseTool ou fonctions enveloppées)."""
+    """Other core builtins also convert (BaseTool instances or wrapped functions)."""
     for kind in ("url_context", "load_memory", "exit_loop"):
         result = MB.convert_builtin(kind)
         assert result["ok"] is True, (kind, result)
@@ -123,17 +123,17 @@ def test_convert_builtin_unknown_kind_returns_err() -> None:
 
 
 def test_convert_builtin_arg_builtin_rejected_with_guidance() -> None:
-    """``vertex_ai_search`` (à argument) n'est pas un builtin *core* → err pointant vers expose."""
+    """``vertex_ai_search`` (arg-requiring) is not a *core* builtin → err pointing to expose."""
     result = MB.convert_builtin("vertex_ai_search")
     assert result["ok"] is False
     assert "expose_adk_tools" in result["error"]
 
 
 # --------------------------------------------------------------------------- #
-# expose_adk_tools — FONCTIONNEL (no extra)
+# expose_adk_tools — FUNCTIONAL (no extra)
 # --------------------------------------------------------------------------- #
 async def test_expose_adk_tools_returns_mcp_schemas(tmp_path: Path) -> None:
-    """Un agent réel (builtin + function-tool) → leurs schémas MCP (function = vrai schéma)."""
+    """A real agent (builtin + function-tool) → their MCP schemas (function = real schema)."""
     path = _scaffold_agent_with_tools(tmp_path)
     result = await MB.expose_adk_tools(path=path, app_name="myapp", agent_name="myapp")
     assert result["ok"] is True, result
@@ -142,7 +142,7 @@ async def test_expose_adk_tools_returns_mcp_schemas(tmp_path: Path) -> None:
     by_name = {t["name"]: t for t in data["tools"]}
     assert "google_search" in by_name
     assert "add_numbers" in by_name
-    # La function-tool a un VRAI JSON-Schema (properties a/b, required).
+    # The function-tool has a REAL JSON-Schema (properties a/b, required).
     schema = by_name["add_numbers"]["inputSchema"]
     assert schema["type"] == "object"
     assert set(schema["properties"].keys()) == {"a", "b"}
@@ -158,7 +158,7 @@ async def test_expose_adk_tools_unknown_agent_returns_err(tmp_path: Path) -> Non
 
 
 async def test_expose_adk_tools_missing_app_returns_err(tmp_path: Path) -> None:
-    """Pas d'agent.py scaffoldé → err propre (RootAgentImportError), pas d'exception."""
+    """No scaffolded agent.py → clean err (RootAgentImportError), no exception."""
     result = await MB.expose_adk_tools(path=str(tmp_path), app_name="ghostapp", agent_name="x")
     assert result["ok"] is False
 
@@ -175,7 +175,7 @@ async def test_expose_adk_tools_invalid_agent_name_returns_err(tmp_path: Path) -
 
 
 async def test_expose_adk_tools_workflow_agent_has_no_tools(tmp_path: Path) -> None:
-    """Un agent workflow (Sequential) sans canonical_tools → err actionnable (pas un crash)."""
+    """A workflow agent (Sequential) without canonical_tools → actionable err (not a crash)."""
     path = _scaffold_sequential(tmp_path)
     with _ignore_workflow_deprecation():
         result = await MB.expose_adk_tools(path=path, app_name="wf", agent_name="wf")
@@ -184,22 +184,22 @@ async def test_expose_adk_tools_workflow_agent_has_no_tools(tmp_path: Path) -> N
 
 
 async def test_expose_adk_tools_sub_agent_found_in_tree(tmp_path: Path) -> None:
-    """``find_agent`` localise un SOUS-agent (pas que la racine) — l'enfant LLM a ses outils."""
+    """``find_agent`` locates a SUB-agent (not just the root) — the LLM child has its tools."""
     path = _scaffold_sequential(tmp_path)
-    # 'child' est un LlmAgent (sans outils) niché sous le SequentialAgent racine.
+    # 'child' is an LlmAgent (without tools) nested under the root SequentialAgent.
     with _ignore_workflow_deprecation():
         result = await MB.expose_adk_tools(path=path, app_name="wf", agent_name="child")
     assert result["ok"] is True, result
-    # Aucun outil attaché → liste vide, ce n'est PAS une erreur.
+    # No tool attached → empty list, this is NOT an error.
     assert result["data"]["count"] == 0
     assert result["data"]["tools"] == []
 
 
 # --------------------------------------------------------------------------- #
-# read-through fastmcp.Client (noms exposés + appel)
+# read-through fastmcp.Client (exposed names + call)
 # --------------------------------------------------------------------------- #
 async def test_client_exposed_names_and_convert_builtin() -> None:
-    """Outils exposés ``mcp_bridge_<bare>`` (pas de double-préfixe) ; convert_builtin round-trip."""
+    """Tools exposed as ``mcp_bridge_<bare>`` (no double prefix); convert_builtin round-trips."""
     mcp = build_server()
     async with Client(mcp) as client:
         tools = await client.list_tools()

@@ -1,18 +1,18 @@
-"""Domaine `agents` : composition multi-agents ADK (code-first, sidecar + régénération).
+"""`agents` domain: ADK multi-agent composition (code-first, sidecar + regeneration).
 
-Sous-serveur FastMCP monté par le serveur racine sous le namespace ``agents`` (outils
-exposés comme ``agents_<nom>`` côté client). Fonctions nommées avec des noms **BARE**
-(``create_llm``, ``create_sequential``, …) — cf. ``docs/adk-api-notes/conventions.md``.
+A FastMCP sub-server mounted by the root server under the ``agents`` namespace (tools exposed as
+``agents_<name>`` on the client side). Functions named with **BARE** names (``create_llm``,
+``create_sequential``, …) — cf. ``docs/adk-api-notes/conventions.md``.
 
-Chaque outil opère sur ``(path, app_name, …)`` : il charge le sidecar
-``<path>/<app_name>/.adk_toolkit/agents.json``, applique une mutation **immuable**, le
-réécrit, puis **régénère intégralement** ``agent.py`` (+ ``__init__.py``) via
-:class:`~adk_toolkit_mcp.workspace.Workspace`. Tout est renvoyé dans l'enveloppe
-``{ok, data, error}`` ; les entrées invalides renvoient ``err(...)`` (jamais d'exception).
+Each tool operates on ``(path, app_name, …)``: it loads the sidecar
+``<path>/<app_name>/.adk_toolkit/agents.json``, applies an **immutable** mutation, rewrites it,
+then **fully regenerates** ``agent.py`` (+ ``__init__.py``) via
+:class:`~adk_toolkit_mcp.workspace.Workspace`. Everything is returned in the ``{ok, data, error}``
+envelope; invalid inputs return ``err(...)`` (never an exception).
 
-Le rendu réel et la sémantique du modèle vivent dans
-:mod:`adk_toolkit_mcp.project_model` (pur, testable). Voir ``docs/adk-api-notes/agents.md``
-pour les signatures ADK confirmées (et la dépréciation des agents workflow en 2.1.0).
+The actual rendering and the model semantics live in :mod:`adk_toolkit_mcp.project_model` (pure,
+testable). See ``docs/adk-api-notes/agents.md`` for the confirmed ADK signatures (and the
+deprecation of the workflow agents in 2.1.0).
 """
 
 from __future__ import annotations
@@ -40,23 +40,23 @@ from ..workspace import Workspace
 
 agents_server: FastMCP = FastMCP("agents")
 
-#: app_name = identifiant de package Python (nom de dossier ET de module).
+#: app_name = Python package identifier (both folder AND module name).
 _APP_NAME_ERR = (
-    "app_name invalide : attendu un identifiant Python "
-    "(lettres, chiffres, underscore ; ne commence pas par un chiffre)."
+    "Invalid app_name: expected a Python identifier "
+    "(letters, digits, underscore; not starting with a digit)."
 )
 
 
 # --------------------------------------------------------------------------- #
-# Helpers internes (non exposés)
+# Internal helpers (not exposed)
 # --------------------------------------------------------------------------- #
 def _app_ws(path: str, app_name: str) -> Workspace:
-    """Workspace pointant sur le dossier de l'app (``<path>/<app_name>``)."""
+    """Workspace pointing at the app folder (``<path>/<app_name>``)."""
     return Workspace(Path(path) / app_name)
 
 
 def _load(path: str, app_name: str) -> ProjectModel | dict[str, Any]:
-    """Charge le modèle ; renvoie un ``err(...)`` (dict) si le sidecar est corrompu."""
+    """Load the model; return an ``err(...)`` (dict) if the sidecar is corrupt."""
     ws = _app_ws(path, app_name)
     try:
         return load_model(ws, app_name)
@@ -65,14 +65,14 @@ def _load(path: str, app_name: str) -> ProjectModel | dict[str, Any]:
 
 
 def _commit(path: str, app_name: str, model: ProjectModel) -> dict[str, Any]:
-    """Sauve le sidecar + régénère ``agent.py``. Convertit un cycle en ``err``.
+    """Save the sidecar + regenerate ``agent.py``. Converts a cycle into ``err``.
 
-    Renvoie le payload commun ``{app_name, agents, root, sidecar, regenerated, changed}``.
+    Returns the common payload ``{app_name, agents, root, sidecar, regenerated, changed}``.
     """
     ws = _app_ws(path, app_name)
     try:
         regen = regenerate(ws, model)
-    except ValueError as exc:  # cycle détecté au rendu
+    except ValueError as exc:  # cycle detected at render time
         return err(str(exc))
     sidecar_changed = save_model(ws, model)
     return ok(
@@ -88,7 +88,7 @@ def _commit(path: str, app_name: str, model: ProjectModel) -> dict[str, Any]:
 
 
 def _add_spec(path: str, app_name: str, spec: AgentSpec) -> dict[str, Any]:
-    """Valide la spec, l'ajoute/met à jour dans le modèle, commit. Mutualise 1-5."""
+    """Validate the spec, add/update it in the model, commit. Shared by 1-5."""
     if not is_identifier(app_name):
         return err(_APP_NAME_ERR)
     spec_error = validate_spec(spec)
@@ -102,8 +102,8 @@ def _add_spec(path: str, app_name: str, spec: AgentSpec) -> dict[str, Any]:
     missing = [s for s in spec.sub_agents if model.get(s) is None and s != spec.name]
     if missing:
         return err(
-            f"sub_agents introuvables : {', '.join(missing)}. "
-            "Créez-les d'abord (l'ordre de création est libre, mais ils doivent exister)."
+            f"sub_agents not found: {', '.join(missing)}. "
+            "Create them first (creation order is free, but they must exist)."
         )
 
     model = add_or_update_agent(model, spec)
@@ -111,7 +111,7 @@ def _add_spec(path: str, app_name: str, spec: AgentSpec) -> dict[str, Any]:
 
 
 # --------------------------------------------------------------------------- #
-# Outils MCP — création par type
+# MCP tools — creation by type
 # --------------------------------------------------------------------------- #
 @agents_server.tool(tags={"agents"})
 def create_llm(
@@ -123,9 +123,9 @@ def create_llm(
     description: str = "",
     output_key: str | None = None,
 ) -> dict[str, Any]:
-    """Ajoute/met à jour un agent ``LlmAgent`` dans le modèle, puis régénère ``agent.py``."""
+    """Add/update an ``LlmAgent`` agent in the model, then regenerate ``agent.py``."""
     if not model.strip():
-        return err("model est vide.")
+        return err("model is empty.")
     spec = AgentSpec(
         name=name,
         type="llm",
@@ -145,7 +145,7 @@ def create_sequential(
     sub_agents: list[str],
     description: str = "",
 ) -> dict[str, Any]:
-    """Ajoute/met à jour un ``SequentialAgent`` orchestrant ``sub_agents`` (qui doivent exister)."""
+    """Add/update a ``SequentialAgent`` orchestrating ``sub_agents`` (which must exist)."""
     spec = AgentSpec(
         name=name,
         type="sequential",
@@ -163,7 +163,7 @@ def create_parallel(
     sub_agents: list[str],
     description: str = "",
 ) -> dict[str, Any]:
-    """Ajoute/met à jour un ``ParallelAgent`` orchestrant ``sub_agents`` (qui doivent exister)."""
+    """Add/update a ``ParallelAgent`` orchestrating ``sub_agents`` (which must exist)."""
     spec = AgentSpec(
         name=name,
         type="parallel",
@@ -182,7 +182,7 @@ def create_loop(
     max_iterations: int = 3,
     description: str = "",
 ) -> dict[str, Any]:
-    """Ajoute/met à jour un ``LoopAgent`` (``max_iterations`` > 0 requis)."""
+    """Add/update a ``LoopAgent`` (``max_iterations`` > 0 required)."""
     spec = AgentSpec(
         name=name,
         type="loop",
@@ -200,13 +200,13 @@ def create_custom(
     name: str,
     description: str = "",
 ) -> dict[str, Any]:
-    """Ajoute/met à jour un agent custom : sous-classe ``BaseAgent`` (stub) + instance."""
+    """Add/update a custom agent: ``BaseAgent`` subclass (stub) + instance."""
     spec = AgentSpec(name=name, type="custom", description=description)
     return _add_spec(path, app_name, spec)
 
 
 # --------------------------------------------------------------------------- #
-# Outils MCP — composition / racine / lecture
+# MCP tools — composition / root / read
 # --------------------------------------------------------------------------- #
 @agents_server.tool(tags={"agents"})
 def compose(
@@ -215,7 +215,7 @@ def compose(
     name: str,
     sub_agents: list[str],
 ) -> dict[str, Any]:
-    """Remplace les ``sub_agents`` d'un agent **existant** (valide leur existence)."""
+    """Replace the ``sub_agents`` of an **existing** agent (validates their existence)."""
     if not is_identifier(app_name):
         return err(_APP_NAME_ERR)
 
@@ -225,15 +225,15 @@ def compose(
 
     current = model.get(name)
     if current is None:
-        return err(f"Agent introuvable : {name!r}. Créez-le avant de composer.")
+        return err(f"Agent not found: {name!r}. Create it before composing.")
     if current.type == "custom":
-        return err("Un agent custom n'a pas de sub_agents gérés par le modèle.")
+        return err("A custom agent has no sub_agents managed by the model.")
 
     missing = [s for s in sub_agents if model.get(s) is None and s != name]
     if missing:
-        return err(f"sub_agents introuvables : {', '.join(missing)}.")
+        return err(f"sub_agents not found: {', '.join(missing)}.")
     if name in sub_agents:
-        return err(f"Un agent ne peut pas se référencer lui-même : {name!r}.")
+        return err(f"An agent cannot reference itself: {name!r}.")
 
     updated = AgentSpec(
         name=current.name,
@@ -252,7 +252,7 @@ def compose(
 
 @agents_server.tool(tags={"agents"})
 def set_root(path: str, app_name: str, name: str) -> dict[str, Any]:
-    """Désigne ``name`` comme ``root_agent`` du sidecar, puis régénère ``agent.py``."""
+    """Designate ``name`` as the sidecar's ``root_agent``, then regenerate ``agent.py``."""
     if not is_identifier(app_name):
         return err(_APP_NAME_ERR)
 
@@ -261,7 +261,7 @@ def set_root(path: str, app_name: str, name: str) -> dict[str, Any]:
         return model
 
     if model.get(name) is None:
-        return err(f"Agent introuvable : {name!r}. Créez-le avant de le définir comme racine.")
+        return err(f"Agent not found: {name!r}. Create it before setting it as root.")
 
     model = _model_set_root(model, name)
     return _commit(path, app_name, model)
@@ -269,26 +269,26 @@ def set_root(path: str, app_name: str, name: str) -> dict[str, Any]:
 
 @agents_server.tool(tags={"agents"})
 def as_tool(path: str, app_name: str, agent_name: str) -> dict[str, Any]:
-    """Renvoie le **snippet source** pour envelopper ``agent_name`` via ``AgentTool``.
+    """Return the **source snippet** to wrap ``agent_name`` via ``AgentTool``.
 
-    Helper de composition (P3 ``tools``) : ne mute aucun fichier. Le snippet montre
-    l'import et l'usage ``LlmAgent(..., tools=[AgentTool(agent=<agent_name>)])``.
+    A composition helper (P3 ``tools``): mutates no file. The snippet shows the import and the
+    usage ``LlmAgent(..., tools=[AgentTool(agent=<agent_name>)])``.
     """
     if not is_identifier(app_name):
         return err(_APP_NAME_ERR)
     if not is_identifier(agent_name):
-        return err(f"Nom d'agent invalide : {agent_name!r}.")
+        return err(f"Invalid agent name: {agent_name!r}.")
 
     model = _load(path, app_name)
     if isinstance(model, dict):
         return model
     if model.get(agent_name) is None:
-        return err(f"Agent introuvable : {agent_name!r}.")
+        return err(f"Agent not found: {agent_name!r}.")
 
     snippet = (
         "from google.adk.tools import AgentTool\n"
         f"{agent_name}_tool = AgentTool(agent={agent_name})\n"
-        f"# Puis: LlmAgent(..., tools=[{agent_name}_tool])"
+        f"# Then: LlmAgent(..., tools=[{agent_name}_tool])"
     )
     return ok(
         {
@@ -302,11 +302,11 @@ def as_tool(path: str, app_name: str, agent_name: str) -> dict[str, Any]:
 
 @agents_server.tool(tags={"agents"}, name="list")
 def list_agents(path: str, app_name: str) -> dict[str, Any]:
-    """Liste les agents du sidecar (nom, type, racine). Lecture seule.
+    """List the sidecar's agents (name, type, root). Read-only.
 
-    Nommée ``list_agents`` en Python (pour ne pas masquer le builtin ``list`` dans ce
-    module), mais **enregistrée sous le nom d'outil BARE ``list``** -> exposée
-    ``agents_list`` côté client.
+    Named ``list_agents`` in Python (so as not to shadow the ``list`` builtin in this module),
+    but **registered under the BARE tool name ``list``** -> exposed as ``agents_list`` on the
+    client side.
     """
     if not is_identifier(app_name):
         return err(_APP_NAME_ERR)
@@ -326,7 +326,7 @@ def list_agents(path: str, app_name: str) -> dict[str, Any]:
 
 @agents_server.tool(tags={"agents"})
 def get(path: str, app_name: str, name: str) -> dict[str, Any]:
-    """Renvoie la spec complète d'un agent du sidecar (telle que sérialisée). Lecture seule."""
+    """Return the full spec of a sidecar agent (as serialized). Read-only."""
     if not is_identifier(app_name):
         return err(_APP_NAME_ERR)
 
@@ -336,5 +336,5 @@ def get(path: str, app_name: str, name: str) -> dict[str, Any]:
 
     spec = model.get(name)
     if spec is None:
-        return err(f"Agent introuvable : {name!r}.")
+        return err(f"Agent not found: {name!r}.")
     return ok(spec.to_dict())
