@@ -10,3 +10,7 @@ build/
 .ruff_cache/
 .coverage
 htmlcov/
+
+# Stray runtime artifacts
+ruvector.db
+*.db
