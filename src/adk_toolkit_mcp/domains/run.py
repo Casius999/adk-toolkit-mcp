@@ -40,6 +40,7 @@ from ..workspace import Workspace
 
 if TYPE_CHECKING:  # pragma: no cover - hints only
     from google.adk.agents import BaseAgent
+    from google.adk.workflow import BaseNode
 
 run_server: FastMCP = FastMCP("run")
 
@@ -65,11 +66,15 @@ def _config_for(path: str, app_name: str) -> RuntimeConfig | dict[str, Any]:
         return err(str(exc))
 
 
-def _prepare(path: str, app_name: str) -> tuple[BaseAgent, RuntimeConfig] | dict[str, Any]:
-    """Load the config and import ``root_agent``; return ``(agent, config)`` or an ``err``.
+def _prepare(
+    path: str, app_name: str
+) -> tuple[BaseAgent | BaseNode, RuntimeConfig] | dict[str, Any]:
+    """Load the config and import ``root_agent``; return ``(root, config)`` or an ``err``.
 
-    Centralizes the two failures converted into ``err``: a corrupt config (``ValueError``) and the
-    ``root_agent`` import (``RootAgentImportError``: missing file, broken module, missing symbol).
+    The ``root`` may be a ``BaseAgent`` (agent-rooted app) or a ``BaseNode`` (workflow-rooted app);
+    :func:`~adk_toolkit_mcp.run_core.build_runner` dispatches on the kind. Centralizes the two
+    failures converted into ``err``: a corrupt config (``ValueError``) and the ``root_agent``
+    import (``RootAgentImportError``: missing file, broken module, missing symbol).
     """
     config = _config_for(path, app_name)
     if isinstance(config, dict):
@@ -112,12 +117,13 @@ def _resolve_max_llm_calls(path: str, app_name: str, caller_value: int | None) -
     return root_spec.max_llm_calls if root_spec is not None else None
 
 
-def _model_supports_live(agent: BaseAgent) -> bool:
+def _model_supports_live(agent: BaseAgent | BaseNode) -> bool:
     """Indicate whether the agent's model supports the Live connection (``connect`` overridden).
 
     The base ``BaseLlm.connect`` raises ``NotImplementedError``; only a live-capable model (e.g.
     ``Gemini``) overrides it. We therefore compare the ``connect`` method of the resolved model's
-    class against ``BaseLlm``'s. Any resolution error → ``False`` (cautious).
+    class against ``BaseLlm``'s. Any resolution error → ``False`` (cautious). A workflow
+    (``BaseNode``) root has no ``canonical_model`` → ``False`` (Live is agent-only).
     """
     try:
         from google.adk.models import BaseLlm

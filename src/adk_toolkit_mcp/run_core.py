@@ -42,6 +42,7 @@ if TYPE_CHECKING:  # pragma: no cover - hints only, real imports are lazy
     from google.adk.agents import BaseAgent, RunConfig
     from google.adk.events import Event
     from google.adk.runners import Runner
+    from google.adk.workflow import BaseNode
 
 #: Monotonic counter guaranteeing a unique module name per ``import_root_agent``.
 _IMPORT_COUNTER = itertools.count()
@@ -71,12 +72,17 @@ class PluginsImportError(Exception):
 # --------------------------------------------------------------------------- #
 # Import root_agent (unique module name → no stale cache)
 # --------------------------------------------------------------------------- #
-def import_root_agent(path: str, app_name: str) -> BaseAgent:
+def import_root_agent(path: str, app_name: str) -> BaseAgent | BaseNode:
     """Import ``<path>/<app_name>/agent.py`` and return its ``root_agent``.
 
     Uses a module name **unique on each call** (suffix via a monotonic counter) so that an edit
     to ``agent.py`` between two calls is picked up (never served from a stale ``sys.modules``).
     The module is intentionally NOT inserted into ``sys.modules``.
+
+    The returned ``root_agent`` is a ``BaseAgent`` for an agent-rooted project, OR a ``BaseNode``
+    (e.g. a ``Workflow`` graph root) for a workflow-rooted one — the ADK ``AgentLoader`` accepts
+    both as a module-level ``root_agent`` (cf. ``docs/adk-api-notes/workflow.md``).
+    :func:`build_runner` dispatches on the kind (``agent=`` vs ``node=``).
 
     Raises :class:`RootAgentImportError` if the file is missing, if its execution fails, or if
     ``root_agent`` is not defined in it.
@@ -159,9 +165,26 @@ def import_project_plugins(path: str, app_name: str, plugin_vars: list[str]) -> 
 # --------------------------------------------------------------------------- #
 # Runner construction (services from runtime.py)
 # --------------------------------------------------------------------------- #
+def is_workflow_node_root(root: BaseAgent | BaseNode) -> bool:
+    """True if ``root`` is a workflow node root (a ``BaseNode`` that is NOT a ``BaseAgent``).
+
+    A ``Workflow`` (and any ``BaseNode`` graph root) is a ``BaseNode`` but **not** a ``BaseAgent``,
+    so it must be wired into the ``Runner`` via ``node=`` rather than ``agent=`` (cf.
+    ``docs/adk-api-notes/workflow.md``). An ``LlmAgent``/``SequentialAgent``/… is a ``BaseAgent``
+    (the historical agent path). The ``google.adk.workflow`` import is lazy; if it is unavailable
+    (older ADK without the workflow engine), nothing can be a node root → ``False``.
+    """
+    try:
+        from google.adk.agents import BaseAgent
+        from google.adk.workflow import BaseNode
+    except ImportError:  # pragma: no cover - workflow engine always present in 2.x
+        return False
+    return isinstance(root, BaseNode) and not isinstance(root, BaseAgent)
+
+
 def build_runner(
     app_name: str,
-    root_agent: BaseAgent,
+    root_agent: BaseAgent | BaseNode,
     runtime_config: RuntimeConfig,
     plugins: list[Any] | None = None,
 ) -> Runner:
@@ -172,12 +195,20 @@ def build_runner(
     omitted: ADK tolerates ``None``). We use ``Runner`` (and NOT ``InMemoryRunner``, which would
     recreate its own services and bypass the toolkit's config and singleton cache).
 
+    **Root type (agent vs workflow node)**: the ``Runner`` accepts EITHER ``agent=`` (a
+    ``BaseAgent``) OR ``node=`` (a ``BaseNode`` — e.g. a ``Workflow`` graph root, which is a
+    ``BaseNode`` but NOT a ``BaseAgent``). We detect the kind via :func:`is_workflow_node_root`
+    (``isinstance``) and pick the matching kwarg. The **agent path is unchanged** (backward
+    compatible); a workflow-rooted project (``root_kind="workflow"``) is wired via ``node=``
+    (verified to run offline end-to-end — cf. ``docs/adk-api-notes/workflow.md``).
+
     **Plugins (P4c)**: if ``plugins`` is non-empty, we take the NON-deprecated path
     ``Runner(app=App(name=app_name, root_agent=root_agent, plugins=[...]), ...)`` — ``Runner``'s
     direct ``plugins=`` argument is DEPRECATED in 2.1.0 (``DeprecationWarning``), whereas ``App``
-    triggers no warning (verified by introspection). Without a plugin (default), we keep the
-    historical path ``Runner(app_name=, agent=, ...)`` — strictly unchanged behavior (backward
-    compatible).
+    triggers no warning (verified by introspection). ``App.root_agent`` accepts a ``BaseNode`` too
+    (its annotation is ``BaseAgent | Any | None`` — verified), so a workflow root + plugins also
+    goes through ``App``. Without a plugin (default), we keep the historical path
+    ``Runner(app_name=, agent=, ...)`` for an agent root — strictly unchanged behavior.
 
     Backend errors (``ValueError``: missing required field / missing extra) propagate to the
     caller, which converts them into ``err(...)``.
@@ -193,12 +224,17 @@ def build_runner(
 
     if plugins:
         # Non-deprecated path: App carries name/root_agent/plugins; Runner derives app_name from it.
+        # App.root_agent accepts a BaseNode (workflow) root as well as a BaseAgent.
         from google.adk.apps import App
 
         app = App(name=app_name, root_agent=root_agent, plugins=list(plugins))
         return Runner(app=app, **kwargs)
 
     kwargs["app_name"] = app_name
+    if is_workflow_node_root(root_agent):
+        # Workflow/BaseNode root: wired via node= (NOT agent=, which only accepts a BaseAgent).
+        kwargs["node"] = root_agent
+        return Runner(**kwargs)
     kwargs["agent"] = root_agent
     return Runner(**kwargs)
 

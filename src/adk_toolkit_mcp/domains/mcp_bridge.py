@@ -142,6 +142,14 @@ async def expose_adk_tools(path: str, app_name: str, agent_name: str) -> dict[st
     except RootAgentImportError as exc:
         return err(str(exc))
 
+    from google.adk.agents import BaseAgent
+
+    if not isinstance(root_agent, BaseAgent):
+        return err(
+            "The root_agent is a Workflow (BaseNode), which has no agent tree to inspect. "
+            "Exposing ADK tools as MCP requires an agent root (LlmAgent or a workflow agent)."
+        )
+
     agent = root_agent.find_agent(agent_name)
     if agent is None:
         return err(

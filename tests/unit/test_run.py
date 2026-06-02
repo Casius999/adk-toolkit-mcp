@@ -78,6 +78,32 @@ def _scaffold_tool_agent(root: Path, app_name: str = "calc") -> str:
     return str(root)
 
 
+def _scaffold_fake_workflow_agent(root: Path, app_name: str = "ed_run") -> str:
+    """Write an app whose ``root_agent`` is a **Workflow** of two FakeLlm ``LlmAgent`` nodes.
+
+    Proves the ``run`` domain wires a workflow (``BaseNode``) root via ``node=`` (NOT ``agent=``):
+    the run executes offline (no key), emitting the two node outputs in graph order.
+    """
+    app_dir = root / app_name
+    app_dir.mkdir(parents=True, exist_ok=True)
+    body = (
+        "import sys\n"
+        f"sys.path.insert(0, r'{_FIXTURE_DIR}')\n"
+        "from fake_llm import FakeLlm\n"
+        "from google.adk.agents import LlmAgent\n"
+        "from google.adk.workflow import START, Workflow\n"
+        "writer = LlmAgent("
+        "name='writer', model=FakeLlm(model='fake', answer='draft text'), instruction='Write.')\n"
+        "reviewer = LlmAgent("
+        "name='reviewer', model=FakeLlm(model='fake', answer='reviewed text'), "
+        "instruction='Review.')\n"
+        "root_agent = Workflow("
+        "name='editorial', edges=[(START, writer), (writer, reviewer)])\n"
+    )
+    (app_dir / "agent.py").write_text(body, encoding="utf-8")
+    return str(root)
+
+
 def _persist_max_llm_calls(path: str, app_name: str, value: int) -> None:
     """Persist ``max_llm_calls=value`` on the ROOT agent via the REAL ``safety_settings`` tool.
 
@@ -146,6 +172,57 @@ async def test_run_agent_reuses_session_across_calls(tmp_path: Path) -> None:
     got = await S.get(path=path, app_name="myapp", user_id="u1", session_id="s1")
     assert got["ok"] is True
     assert got["data"]["event_count"] >= first_count
+
+
+# --------------------------------------------------------------------------- #
+# FUNCTIONAL — run_agent works for a WORKFLOW (BaseNode) root, offline
+# --------------------------------------------------------------------------- #
+async def test_run_agent_runs_workflow_root_offline(tmp_path: Path) -> None:
+    """run_agent drives a Workflow-rooted app end to end offline (node= path).
+
+    The root is a ``Workflow`` (a ``BaseNode``, NOT a ``BaseAgent``) of two FakeLlm ``LlmAgent``
+    nodes. ``build_runner`` must wire it via ``node=`` (not ``agent=``); the two nodes run in
+    graph order and real events come back — proving workflow roots are runnable via the run domain.
+    """
+    path = _scaffold_fake_workflow_agent(tmp_path, "ed_run")
+    result = await R.agent(
+        path=path, app_name="ed_run", user_id="u1", session_id="s1", message="draft please"
+    )
+    assert result["ok"] is True, result
+    events = result["data"]["events"]
+    texts = [(e["author"], e["text"]) for e in events if e["text"]]
+    assert texts == [("writer", "draft text"), ("reviewer", "reviewed text")]
+    assert result["data"]["final_text"] == "reviewed text"
+
+
+async def test_run_agent_runs_function_node_workflow_root_via_real_tools(tmp_path: Path) -> None:
+    """A workflow built via the REAL workflow tools (pure function nodes) runs via run_agent.
+
+    End-to-end through the toolkit: ``workflow_create``/``add_node``/``add_edge``/``set_entry``/
+    ``set_root`` produce a ``root_kind="workflow"`` app whose ``agent.py`` is a function-node
+    ``Workflow``; ``run_agent`` then executes it offline (no LLM at all) and returns real events.
+    """
+    from adk_toolkit_mcp.domains import workflow as WF
+
+    p = str(tmp_path)
+    WF.create(p, "fn_run", "pipe")
+    WF.add_node(p, "fn_run", "pipe", "first", "function", docstring="First.", body='return "go"')
+    WF.add_node(
+        p, "fn_run", "pipe", "second", "function", docstring="Second.", body='return {"d": 1}'
+    )
+    WF.set_entry(p, "fn_run", "pipe", "first")
+    WF.add_edge(p, "fn_run", "pipe", "first", "second")
+    rooted = WF.set_root(p, "fn_run", "pipe")
+    assert rooted["ok"] is True, rooted["error"]
+    assert rooted["data"]["root_kind"] == "workflow"
+
+    result = await R.agent(
+        path=p, app_name="fn_run", user_id="u1", session_id="s1", message="hello"
+    )
+    assert result["ok"] is True, result
+    # Two function nodes executed → real events authored by the workflow.
+    assert result["data"]["event_count"] >= 2
+    assert all(e["author"] == "pipe" for e in result["data"]["events"])
 
 
 # --------------------------------------------------------------------------- #

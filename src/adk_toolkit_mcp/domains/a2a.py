@@ -310,6 +310,14 @@ async def agent_card(path: str, app_name: str, port: int = 8001) -> dict[str, An
     except RootAgentImportError as exc:
         return err(str(exc))
 
+    from google.adk.agents import BaseAgent
+
+    if not isinstance(root_agent, BaseAgent):
+        return err(
+            "The root_agent is a Workflow (BaseNode); A2A AgentCard generation requires an agent "
+            "root (a BaseAgent). Expose a workflow via an agent wrapper if you need an AgentCard."
+        )
+
     try:
         from google.adk.a2a.utils.agent_card_builder import AgentCardBuilder
 
