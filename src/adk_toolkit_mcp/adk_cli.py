@@ -207,7 +207,7 @@ def start_process(key: str, args: list[str], cwd: str | None, log_path: str) -> 
         log_file = open(log_path, "wb")  # noqa: SIM115 - closed via stop_process/_close_log
 
         creationflags = 0
-        if _IS_WINDOWS:
+        if sys.platform == "win32":  # literal check so mypy narrows the Windows-only attr
             creationflags = subprocess.CREATE_NEW_PROCESS_GROUP
 
         popen = subprocess.Popen(  # noqa: S603 - argv list, intentional execution
@@ -313,7 +313,7 @@ def _terminate_tree(proc: _ManagedProcess) -> None:
     popen = proc.popen
     if popen.poll() is not None:
         return
-    if _IS_WINDOWS:
+    if sys.platform == "win32":  # literal check so mypy narrows CTRL_BREAK_EVENT (Windows-only)
         # taskkill terminates the TREE (/T) forcefully (/F). Best-effort: we ignore its rc.
         try:
             subprocess.run(  # noqa: S603,S607 - fixed argv, no user input
