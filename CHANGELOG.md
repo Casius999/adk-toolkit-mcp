@@ -68,5 +68,5 @@ Initial public release: an exhaustive MCP server wrapping the entire **Google AD
 - Offline agent-loop, eval, safety, and plugin behaviour is proven with a fake LLM
   (no API key required).
 
-[Unreleased]: https://github.com/__OWNER__/adk-toolkit-mcp/compare/v0.1.0...HEAD
-[0.1.0]: https://github.com/__OWNER__/adk-toolkit-mcp/releases/tag/v0.1.0
+[Unreleased]: https://github.com/Casius999/adk-toolkit-mcp/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/Casius999/adk-toolkit-mcp/releases/tag/v0.1.0

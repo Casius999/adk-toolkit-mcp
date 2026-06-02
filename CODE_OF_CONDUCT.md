@@ -46,7 +46,7 @@ an individual is officially representing the community in public spaces.
 
 Instances of abusive, harassing, or otherwise unacceptable behavior may be
 reported to the project maintainers privately via
-[GitHub Security Advisories](https://github.com/__OWNER__/adk-toolkit-mcp/security/advisories/new)
+[GitHub Security Advisories](https://github.com/Casius999/adk-toolkit-mcp/security/advisories/new)
 or by opening a confidential channel with the maintainer. All complaints will be
 reviewed and investigated promptly and fairly.
 

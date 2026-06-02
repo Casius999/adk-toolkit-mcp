@@ -1,6 +1,6 @@
 # adk-toolkit-mcp
 
-[![CI](https://github.com/__OWNER__/adk-toolkit-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/__OWNER__/adk-toolkit-mcp/actions/workflows/ci.yml)
+[![CI](https://github.com/Casius999/adk-toolkit-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/Casius999/adk-toolkit-mcp/actions/workflows/ci.yml)
 [![Python](https://img.shields.io/badge/python-3.11%20%7C%203.12-blue.svg)](https://www.python.org/)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-green.svg)](LICENSE)
 [![MCP](https://img.shields.io/badge/MCP-server-purple.svg)](https://modelcontextprotocol.io/)
@@ -54,13 +54,13 @@ leaving the MCP client — and the output is **real ADK Python you own**, not a 
 **Run without cloning** (once published) via `uvx`:
 
 ```bash
-uvx --from git+https://github.com/__OWNER__/adk-toolkit-mcp adk-toolkit-mcp
+uvx --from git+https://github.com/Casius999/adk-toolkit-mcp adk-toolkit-mcp
 ```
 
 **From a clone (recommended for development):**
 
 ```bash
-git clone https://github.com/__OWNER__/adk-toolkit-mcp
+git clone https://github.com/Casius999/adk-toolkit-mcp
 cd adk-toolkit-mcp
 uv venv && uv sync --extra dev
 ```
@@ -119,7 +119,7 @@ Or, without a clone:
   "mcpServers": {
     "adk-toolkit": {
       "command": "uvx",
-      "args": ["--from", "git+https://github.com/__OWNER__/adk-toolkit-mcp", "adk-toolkit-mcp"]
+      "args": ["--from", "git+https://github.com/Casius999/adk-toolkit-mcp", "adk-toolkit-mcp"]
     }
   }
 }

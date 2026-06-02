@@ -1,10 +1,10 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-07-09/server.json",
-  "name": "io.github.__OWNER__/adk-toolkit-mcp",
+  "name": "io.github.Casius999/adk-toolkit-mcp",
   "description": "Exhaustive MCP server wrapping the full Google ADK (Agent Development Kit, google-adk 2.x) surface: 81 tools across 15 domains — author, run, evaluate, and deploy ADK agents code-first.",
   "version": "0.1.0",
   "repository": {
-    "url": "https://github.com/__OWNER__/adk-toolkit-mcp",
+    "url": "https://github.com/Casius999/adk-toolkit-mcp",
     "source": "github"
   },
   "packages": [

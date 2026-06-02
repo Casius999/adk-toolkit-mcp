@@ -13,7 +13,7 @@ This project is pre-1.0. Security fixes are applied to the latest released versi
 
 **Please do not open a public issue for security vulnerabilities.**
 
-Report privately via [GitHub Security Advisories](https://github.com/__OWNER__/adk-toolkit-mcp/security/advisories/new)
+Report privately via [GitHub Security Advisories](https://github.com/Casius999/adk-toolkit-mcp/security/advisories/new)
 ("Report a vulnerability"), or email the maintainer (see the `[project.urls]` /
 `authors` entries in `pyproject.toml`).
 

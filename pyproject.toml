@@ -64,11 +64,11 @@ dev = [
 adk-toolkit-mcp = "adk_toolkit_mcp.server:main"
 
 [project.urls]
-Homepage = "https://github.com/__OWNER__/adk-toolkit-mcp"
-Repository = "https://github.com/__OWNER__/adk-toolkit-mcp"
-Issues = "https://github.com/__OWNER__/adk-toolkit-mcp/issues"
-Documentation = "https://github.com/__OWNER__/adk-toolkit-mcp/tree/main/docs"
-Changelog = "https://github.com/__OWNER__/adk-toolkit-mcp/blob/main/CHANGELOG.md"
+Homepage = "https://github.com/Casius999/adk-toolkit-mcp"
+Repository = "https://github.com/Casius999/adk-toolkit-mcp"
+Issues = "https://github.com/Casius999/adk-toolkit-mcp/issues"
+Documentation = "https://github.com/Casius999/adk-toolkit-mcp/tree/main/docs"
+Changelog = "https://github.com/Casius999/adk-toolkit-mcp/blob/main/CHANGELOG.md"
 
 [build-system]
 requires = ["hatchling"]
