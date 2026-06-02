@@ -1,6 +1,6 @@
 # 13 — Tool catalog: "I want to do X" → exact MCP tool
 
-The authoritative bridge from intent to the exact adk-toolkit-mcp tool. **All 81 tools across 15
+The authoritative bridge from intent to the exact adk-toolkit-mcp tool. **All 94 tools across 17
 domains**, grouped by domain, with exact exposed names and key arguments. Every tool returns
 `{ok, data, error}`. When unsure which tool implements a step, this is the file to open.
 
@@ -8,8 +8,9 @@ domains**, grouped by domain, with exact exposed names and key arguments. Every 
 > `path, app_name` for app-scoped tools). Defaults shown where they matter.
 
 ## Contents
-- [project (5)](#project) · [agents (10)](#agents) · [tools (13)](#tools) · [models (3)](#models)
+- [project (5)](#project) · [agents (11)](#agents) · [tools (13)](#tools) · [models (3)](#models)
 - [sessions (8)](#sessions) · [memory (3)](#memory) · [artifacts (6)](#artifacts)
+- [workflow (7)](#workflow) · [skills (5)](#skills)
 - [run (5)](#run) · [eval (4)](#eval) · [deploy (6)](#deploy) · [dev (6)](#dev)
 - [a2a (3)](#a2a) · [mcp_bridge (2)](#mcp_bridge) · [safety (3)](#safety) · [observability (4)](#observability)
 - [Resources](#resources) · [Count check](#count)
@@ -23,7 +24,7 @@ domains**, grouped by domain, with exact exposed names and key arguments. Every 
 | Add a `google-adk[extra]` dependency | `project_add_extra` | `path, extra` (gcp/bigquery/spanner/a2a/eval/mcp/community/litellm) |
 | Write/inspect the no-code Agent Config `root_agent.yaml` | `project_agent_config` | `path, yaml_content=None` |
 
-## <a name="agents"></a>agents — compose the graph (10)
+## <a name="agents"></a>agents — compose the graph + planners (11)
 | I want to… | Tool | Key args |
 |---|---|---|
 | Add/update an LlmAgent | `agents_create_llm` | `name, model="gemini-2.5-flash", instruction="", description="", output_key=None` |
@@ -34,8 +35,13 @@ domains**, grouped by domain, with exact exposed names and key arguments. Every 
 | Replace an agent's sub_agents | `agents_compose` | `name, sub_agents: list[str]` |
 | Set the app's root agent | `agents_set_root` | `name` |
 | Get the `AgentTool(...)` source snippet (no file change) | `agents_as_tool` | `agent_name` |
+| Attach a planner to an LlmAgent (plan before acting) | `agents_set_planner` | `agent_name, kind(built_in/plan_react), thinking_budget=None` (int; `built_in` only) |
 | List agents (name, type, root) | `agents_list` | `(path, app_name)` |
 | Get one agent's full spec | `agents_get` | `name` |
+
+> `kind="built_in"` → `BuiltInPlanner(thinking_config=types.ThinkingConfig([thinking_budget=N]))`
+> (Gemini-native thinking; `thinking_budget` optional). `kind="plan_react"` → `PlanReActPlanner()`
+> (model-agnostic Plan-Reason-Act prompt; no args). Planner is valid on `llm` agents only.
 
 ## <a name="tools"></a>tools — attach tools to an LlmAgent (13)
 All take `(path, app_name, agent_name, …)`. Only LlmAgents carry tools.
@@ -94,6 +100,43 @@ All take `(path, app_name, …)`; save/load/etc. are async.
 | List artifact filenames | `artifacts_list` | `user_id, session_id` |
 | Delete an artifact (all versions) | `artifacts_delete` | `user_id, session_id, filename` |
 | List an artifact's versions | `artifacts_versions` | `user_id, session_id, filename` |
+
+## <a name="workflow"></a>workflow — graph-orchestration engine (7)
+The ADK 2.0 graph engine (`google.adk.workflow`): non-linear / conditional / cyclic node graphs.
+Modern successor to the deprecated Sequential/Parallel/Loop agents. All take `(path, app_name, …)`.
+| I want to… | Tool | Key args |
+|---|---|---|
+| Create (or reset) an empty Workflow | `workflow_create` | `name, description=""` |
+| Add/replace a node (agent/function/join) | `workflow_add_node` | `workflow, node_name, kind(agent/function/join), agent=None` (agent node), `params/docstring/returns/body` (function node) |
+| Wire a directed edge (conditional via `route`) | `workflow_add_edge` | `workflow, source, target, route=None` |
+| Mark a node as an entry (adds `START -> node`) | `workflow_set_entry` | `workflow, node` |
+| Set a workflow as the app root | `workflow_set_root` | `name` |
+| List workflows (node/edge counts) + root | `workflow_list` | `(path, app_name)` |
+| Get a workflow's full spec | `workflow_get` | `name` |
+
+> Node kinds: **agent** (wraps an existing agent; an LlmAgent *is* a BaseNode), **function**
+> (generated `def (ctx, node_input) -> output|route`), **join** (`JoinNode` fan-in, waits for all
+> predecessors). Edges: unconditional `(source, target)` or conditional `(source, {route: target})`.
+> Cycles are allowed only if at least one edge in the cycle is routed (ReAct loops); every node
+> must be reachable from `START`; at most one terminal output node. A `Workflow` root runs via
+> `InMemoryRunner(node=...)` (not `agent=`) — `adk web`/`adk run` discover it via `root_agent`.
+
+## <a name="skills"></a>skills — Agent Skill Registry (5)
+ADK Skill Registry (`google.adk.skills`): author on-disk `SKILL.md` skills + attach via
+`SkillToolset`. Local-directory only. All take `(path, app_name, …)`.
+| I want to… | Tool | Key args |
+|---|---|---|
+| Author a skill on disk (`skills/<name>/SKILL.md`) | `skills_create` | `name` (kebab-case == dir), `description, instruction` (SKILL.md body) |
+| List the project's skills (frontmatter only) | `skills_list` | `(path, app_name)` |
+| Load one skill fully (fields + resources) | `skills_load` | `name` |
+| Attach skills to an agent via a SkillToolset | `skills_attach` | `agent_name, skill_names: list[str], name=None` |
+| Report the dir-backed registry inventory | `skills_registry_info` | `(path, app_name)` |
+
+> A `SkillToolset` goes directly into an LlmAgent's `tools=[…]` and exposes `list_skills` /
+> `load_skill` / `load_skill_resource` / `run_skill_script` to the model (`search_skills` only with
+> a concrete `SkillRegistry`, which 2.1.0 does not ship). Generated code loads each skill from disk
+> at runtime (`load_skill_from_dir(...)`); content is never baked into `agent.py`. `SkillToolset`
+> is `@experimental` (emits a `UserWarning`, not a `DeprecationWarning`).
 
 ## <a name="run"></a>run — execute the agent loop (5)
 | I want to… | Tool | Key args |
@@ -169,7 +212,7 @@ All take `(path, app_name, …)`; async.
 | `adk://models` | Common Gemini model strings. |
 
 ## <a name="count"></a>Count check
-5 (project) + 10 (agents) + 13 (tools) + 3 (models) + 8 (sessions) + 3 (memory) + 6 (artifacts) +
-5 (run) + 4 (eval) + 6 (deploy) + 6 (dev) + 3 (a2a) + 2 (mcp_bridge) + 3 (safety) + 4 (observability)
-= **81 tools** across **15 domains**. (`project_model` and `runtime` are internal support modules,
-not tool-exposing domains.)
+5 (project) + 11 (agents) + 13 (tools) + 3 (models) + 8 (sessions) + 3 (memory) + 6 (artifacts) +
+7 (workflow) + 5 (skills) + 5 (run) + 4 (eval) + 6 (deploy) + 6 (dev) + 3 (a2a) + 2 (mcp_bridge) +
+3 (safety) + 4 (observability) = **94 tools** across **17 domains**. (`project_model` and `runtime`
+are internal support modules, not tool-exposing domains.)

@@ -4,12 +4,14 @@
 [![Python](https://img.shields.io/badge/python-3.11%20%7C%203.12-blue.svg)](https://www.python.org/)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-green.svg)](LICENSE)
 [![MCP](https://img.shields.io/badge/MCP-server-purple.svg)](https://modelcontextprotocol.io/)
-[![tests](https://img.shields.io/badge/tests-670%20passing-brightgreen.svg)](#testing--quality)
+[![tests](https://img.shields.io/badge/tests-755%20passing-brightgreen.svg)](#testing--quality)
 [![coverage](https://img.shields.io/badge/coverage-~95%25-brightgreen.svg)](#testing--quality)
 
-> The most exhaustive **MCP server for Google ADK** (Agent Development Kit, `google-adk` 2.x):
-> **81 tools across 15 domains** to scaffold, compose, run, evaluate, deploy, and observe
+> The most exhaustive **MCP server for Google ADK** (Agent Development Kit, `google-adk` 2.1.0):
+> **94 tools across 17 domains** to scaffold, compose, run, evaluate, deploy, and observe
 > ADK agents — driven by any MCP client (Claude Code, etc.), **code-first** and deploy-ready.
+> Covers the latest ADK 2.x surface, including the **Workflow** graph-orchestration engine, the
+> **Skill Registry**, and **planners** (SOTA as of June 2026).
 
 `adk-toolkit-mcp` turns the entire Google ADK surface into Model Context Protocol tools. An
 agent (or you) can build a complete, runnable, deployable ADK project end to end without
@@ -17,8 +19,15 @@ leaving the MCP client — and the output is **real ADK Python you own**, not a 
 
 ### Highlights
 
-- **Full ADK surface, 81 tools / 15 domains** — agents, tools, models, sessions, memory,
-  artifacts, runtime, evaluation, deployment, A2A, observability, safety.
+- **Full ADK surface, 94 tools / 17 domains** — agents, tools, models, sessions, memory,
+  artifacts, runtime, evaluation, deployment, A2A, observability, safety, plus the new
+  **`workflow`** (ADK 2.0 graph-orchestration engine — nodes/edges, conditional + cyclic routing,
+  ReAct loops, join fan-in) and **`skills`** (ADK Skill Registry — `SKILL.md` skills +
+  `SkillToolset`) domains, and **planners** (`agents_set_planner`: `BuiltInPlanner` /
+  `PlanReActPlanner`).
+- **Latest ADK 2.x surface.** Beyond the classic build → run → eval → deploy lifecycle, the
+  toolkit now covers the **Workflow graph engine**, the **Skill Registry**, and **planners** —
+  the state of the art for `google-adk` 2.1.0 as of June 2026.
 - **Code-first.** A sidecar `.adk_toolkit/agents.json` is the source of truth; `agent.py` is
   regenerated wholesale and is always `ast.parse` + `ruff format` + isort clean — commit it,
   deploy it, read it.
@@ -26,13 +35,14 @@ leaving the MCP client — and the output is **real ADK Python you own**, not a 
   model through the mounted server (`project_create → agents_create_llm →
   models_configure_litellm → run_agent`) and asserts a real response flows back. See
   [Verified end-to-end](#verified-end-to-end).
-- **Token-efficient.** Opt-in [Code Mode](#code-mode-opt-in) collapses the 81-tool catalog to a
-  4-tool discovery surface using FastMCP 3.3.1's real `CodeMode` transform.
+- **Token-efficient.** Opt-in [Code Mode](#code-mode-opt-in) collapses the 94-tool catalog to a
+  4-tool discovery surface using FastMCP's experimental Code Mode transform (3.1+; latest stable
+  3.3.1).
 - **Provider-agnostic models.** Gemini natively, plus Anthropic / OpenAI / Ollama / LM Studio /
   NVIDIA NIM / any OpenAI-compatible endpoint via LiteLLM.
 - **Companion skill.** An `adk-toolkit` Claude skill (14 reference files) teaches the ADK craft
   and maps every task to the exact tool.
-- **670 tests, ~95% coverage**, `ruff` + `mypy` clean, CI on Python 3.11 & 3.12.
+- **755 tests, ~95% coverage**, `ruff` + `mypy` clean, CI on Python 3.11 & 3.12.
 
 > **Standalone project.** No link to any sibling project; all dependencies are declared in
 > `pyproject.toml`.
@@ -93,7 +103,7 @@ uv sync --extra all
 ## Run
 
 ```bash
-uv run adk-toolkit-mcp        # stdio transport; all 81 tools available on startup
+uv run adk-toolkit-mcp        # stdio transport; all 94 tools available on startup
 ```
 
 ## MCP client config
@@ -125,7 +135,10 @@ Or, without a clone:
 }
 ```
 
-This server is also **MCP-registry-ready** — see [`server.json`](server.json).
+This server is also **MCP-registry-ready** (the MCP registry is in public preview, not yet GA) —
+see [`server.json`](server.json). Its manifest targets the current MCP server-schema
+(`2025-12-11`); the stable MCP protocol revision is **2025-11-25** (the breaking, stateless
+`2026-07-28` revision is on the horizon — this server does not yet claim conformance to it).
 
 ---
 
@@ -180,9 +193,10 @@ run_agent(path="/proj", app_name="greeter", user_id="u1", session_id="s1", messa
 
 ## Code Mode (opt-in)
 
-By default all 81 tools are exposed by name. For token-heavy contexts, collapse the catalog to a
-4-tool discovery surface (`search` / `get_schema` / `tags` / `execute`) using FastMCP 3.3.1's
-real `CodeMode` transform:
+By default all 94 tools are exposed by name. For token-heavy contexts, collapse the catalog to a
+4-tool discovery surface (`search` / `get_schema` / `tags` / `execute`) using FastMCP's
+experimental Code Mode transform (a Monty sandbox, available since FastMCP 3.1+; the latest
+stable FastMCP is 3.3.1):
 
 ```bash
 ADK_TOOLKIT_CODE_MODE=1 uv run adk-toolkit-mcp     # or build_server(code_mode=True)
@@ -209,12 +223,14 @@ cp -r skill/. ~/.claude/skills/adk-toolkit/
 | Domain | Tools | Covers |
 |---|---|---|
 | `project` | 5 | Scaffold app, inspect, `.env`, extras, agent config YAML |
-| `agents` | 10 | LlmAgent, Sequential/Parallel/Loop pipeline, custom, compose, as-tool, root |
+| `agents` | 11 | LlmAgent, Sequential/Parallel/Loop pipeline, custom, compose, as-tool, root, set-planner (`BuiltInPlanner`/`PlanReActPlanner`) |
 | `tools` | 13 | Function, long-running, builtins, AgentTool, OpenAPI, BigQuery, Spanner, MCP toolset, APIHub, LangChain, CrewAI, auth |
 | `models` | 3 | Gemini model, LiteLlm (any provider), `GenerateContentConfig` + safety |
 | `sessions` | 8 | Session backend, CRUD, state set/get (`app:`/`user:`/`temp:`), append event |
 | `memory` | 3 | Memory backend, ingest session, search (keyword or Vertex RAG) |
 | `artifacts` | 6 | Artifact backend, save/load (versioned), list, delete, versions |
+| `workflow` | 7 | ADK 2.0 graph-orchestration engine — create, add node/edge, set entry/root, list/get; conditional + cyclic routing, ReAct, join fan-in |
+| `skills` | 5 | ADK Skill Registry — author `SKILL.md` skills, list/load, attach via `SkillToolset`, directory-backed registry info |
 | `run` | 5 | Execute agent (sync/SSE/live), build `RunConfig`, inspect events |
 | `eval` | 4 | Create evalset, set offline criteria, run evaluation, read report |
 | `deploy` | 6 | Agent Engine, Cloud Run, GKE, Dockerfile, preflight, status |
@@ -241,7 +257,7 @@ Full reference: [`docs/TOOL_CATALOG.md`](docs/TOOL_CATALOG.md).
 
 ## Testing & quality
 
-- **670 tests** (`uv run pytest`) — unit + 1 gated live E2E — **~95% line coverage**.
+- **755 tests** (`uv run pytest`) — unit + 1 gated live E2E — **~95% line coverage**.
 - Green under `-W error::DeprecationWarning` (no deprecations slip through).
 - `ruff` (lint + format) and `mypy` clean; the package ships `py.typed`.
 - **CI** runs the full gate on Python **3.11 and 3.12** ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)).
@@ -259,7 +275,7 @@ uv run ruff check . && uv run mypy src && uv run pytest --cov
 | File | Contents |
 |---|---|
 | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | Root server + sub-server mounts, code-first sidecar, `project_model`, `runtime`, `run_core`, `adk_cli`, envelope, Code Mode |
-| [`docs/TOOL_CATALOG.md`](docs/TOOL_CATALOG.md) | All 81 tools by domain, with purpose and key parameters |
+| [`docs/TOOL_CATALOG.md`](docs/TOOL_CATALOG.md) | All 94 tools by domain, with purpose and key parameters |
 | [`docs/CONTRIBUTING.md`](docs/CONTRIBUTING.md) | Dev setup, conventions, how to add a domain |
 | [`docs/adk-api-notes/`](docs/adk-api-notes/) | Per-domain ADK API introspection notes (implementation ground truth) |
 | [`CHANGELOG.md`](CHANGELOG.md) · [`SECURITY.md`](SECURITY.md) · [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md) | Release notes · security policy · code of conduct |

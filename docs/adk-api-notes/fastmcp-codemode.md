@@ -95,7 +95,7 @@ by running an in-memory client against a `CodeMode`-transformed server:
   `pydantic-monty` is installed or a custom `SandboxProvider` is supplied.
 
 We do **not** add `pydantic-monty` to the locked deps (no `uv.lock` change). The discovery
-surface — the actual token-efficiency win for an 81-tool catalog — is fully functional
+surface — the actual token-efficiency win for a 94-tool catalog — is fully functional
 without it.
 
 ## How P6a uses this
@@ -104,14 +104,14 @@ without it.
   tool **names are unchanged** (`tags` is metadata only). The 5 workflow prompts carry
   `tags={"workflow"}`.
 - **Code Mode (TASK 2):** `build_server(code_mode: bool = False)`. Default = direct tools
-  (all 81 exposed by name — existing read-through tests unchanged). When `code_mode=True`
+  (all 94 exposed by name — existing read-through tests unchanged). When `code_mode=True`
   (or env `ADK_TOOLKIT_CODE_MODE` ∈ {1,true,yes,on}), `build_server` calls
   `mcp.add_transform(CodeMode(discovery_tools=[Search(), GetSchemas(), GetTags()]))` so the
   surface collapses to `search` / `get_schema` / `tags` / `execute`. `main()` reads the env
-  flag so users launch either mode. Token-surface reduction proven qualitatively: 81
-  top-level tools → 4 (a ~95% reduction in listed tools).
+  flag so users launch either mode. Token-surface reduction proven qualitatively: 94
+  top-level tools → 4 (a ~96% reduction in listed tools).
 - We add `GetTags` to the discovery set specifically because we tag by domain — the model
-  can browse the 15 domains, then `search(tags=[...])`, then `get_schema(...)`, then call
+  can browse the 17 domains, then `search(tags=[...])`, then `get_schema(...)`, then call
   through `execute`.
 
 ## Why opt-in (not default)
@@ -119,5 +119,5 @@ without it.
 The toolkit's primary UX and its full read-through test suite call tools **by name**
 (`project_create`, `run_agent`, …). Making Code Mode the default would erase those names
 and require `pydantic-monty` for any real execution. Opt-in keeps the direct-tool UX and
-the 81-name contract intact, while making the cheap catalog available to clients that want
+the 94-name contract intact, while making the cheap catalog available to clients that want
 it (and that install `fastmcp[code-mode]` for `execute`).

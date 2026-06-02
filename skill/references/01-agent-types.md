@@ -15,9 +15,11 @@ classes import from `google.adk.agents`; `Agent is LlmAgent` (alias).
 | Remote A2A | `RemoteA2aAgent` | A proxy to another agent served over A2A (see `09-a2a.md`). | `a2a_consume` (not an `agents_*` tool) |
 
 > **Deprecation note.** `SequentialAgent`/`ParallelAgent`/`LoopAgent` emit a `DeprecationWarning` in
-> 2.1.0 ("use Workflow instead") but are fully functional and the toolkit keeps emitting them. The
-> Workflow successor API is not yet stable. Prefer composing LLM agents + sub_agents where you can;
-> use the workflow agents when you genuinely need fixed sequential/parallel/loop control flow.
+> 2.1.0 ("use Workflow instead") but are fully functional and the toolkit keeps emitting them. For
+> non-linear / conditional / cyclic orchestration, prefer the new **`workflow`** graph engine
+> (`workflow_*` tools — see [Workflow graph engine](#workflow) below). Compose LLM agents +
+> sub_agents for delegation; reach for the deprecated workflow agents only when a fixed
+> sequential/parallel/loop is all you need and you want to stay on the classic agent classes.
 
 ## Decision tree — how should agent A use agent B?
 
@@ -69,6 +71,7 @@ All operate on `(path, app_name, …)`, mutate the sidecar, and regenerate `agen
 | `agents_compose` | `name, sub_agents: list[str]` | **Replace** an existing agent's sub_agents. Rejects self-reference, missing children, and custom agents. |
 | `agents_set_root` | `name` | Designate which agent is the app's `root_agent`. The agent must exist. **Do this once your graph is built.** |
 | `agents_as_tool` | `agent_name` | Returns the **source snippet** for `AgentTool(agent=…)` (read-only; no file change). To actually attach, use `tools_add_agent_tool`. |
+| `agents_set_planner` | `agent_name, kind(built_in/plan_react), thinking_budget=None` | Attach a planner so an `LlmAgent` plans before acting. See [Planners](#planners) below. `llm` agents only. |
 | `agents_list` | `(path, app_name)` | List agents (name + type) and the current root. Read-only. |
 | `agents_get` | `name` | Full serialized spec of one agent. Read-only. |
 
@@ -83,4 +86,65 @@ All operate on `(path, app_name, …)`, mutate the sidecar, and regenerate `agen
   via sub_agents, not tools.
 - **Set the root.** A graph with no designated root has no entry point. Call `agents_set_root` (the
   scaffold's initial `root_agent` is already named after the app, but composing new agents may change
-  intent).
+  intent). For a workflow-rooted app, use `workflow_set_root` instead.
+
+## <a name="workflow"></a>Workflow graph engine (the `workflow_*` tools)
+
+`google.adk.workflow` is the ADK 2.0 **graph-orchestration engine**: non-linear, conditional, and
+cyclic execution of **nodes** connected by **edges**. It is the modern successor to the deprecated
+`SequentialAgent` / `ParallelAgent` / `LoopAgent`. Workflows live in the same sidecar as agents and
+regenerate `agent.py`. A `Workflow` is a `BaseNode` (not a `BaseAgent`), so it can be the app root.
+
+### Node kinds
+
+- **agent node** — wraps an existing agent (an `LlmAgent` *is* a `BaseNode`); add via
+  `workflow_add_node(kind="agent", agent="<existing agent name>")`.
+- **function node** — a generated Python callable `(ctx, node_input) -> output | route`; add via
+  `workflow_add_node(kind="function", params=..., docstring=..., returns=..., body=...)`. Its return
+  value can be a **route** that selects a conditional branch.
+- **join node** — a `JoinNode` fan-in barrier that waits for **all** predecessors; add via
+  `workflow_add_node(kind="join")`. Use it to merge parallel branches back to a single terminal.
+
+### Edges, routing, and cycles
+
+- **Unconditional**: `workflow_add_edge(source, target)` (`route=None`) — always follow.
+- **Conditional / fan-out**: `workflow_add_edge(source, target, route="<value>")` — the producing
+  node returns a route value (`str | int | bool`) and the engine follows the matching branch.
+- **Entry**: `workflow_set_entry(node)` is a shortcut for a `START -> node` edge. Every node must be
+  reachable from `START`, and `START` must have no incoming edge.
+- **Cycles (ReAct loops)** are allowed **only if at least one edge in the cycle is routed**. An
+  all-unconditional cycle loops forever and is rejected at construction. A workflow must have at most
+  one terminal output node (fan-in to a single `JoinNode` keeps it single).
+
+### The `workflow_*` tools
+
+| Tool | Key args | Notes |
+|---|---|---|
+| `workflow_create` | `name, description=""` | Create (or reset) an empty `Workflow`. |
+| `workflow_add_node` | `workflow, node_name, kind(agent/function/join), agent=None, params/docstring/returns/body` | Add/replace a node. `agent=` for agent nodes; the `params/docstring/returns/body` set for function nodes. |
+| `workflow_add_edge` | `workflow, source, target, route=None` | Wire `source -> target`; `route` makes it conditional (and enables loop-backs). Replaces the same `(source,target)` pair if present. |
+| `workflow_set_entry` | `workflow, node` | Mark `node` as an entry (`START -> node`). |
+| `workflow_set_root` | `name` | Designate the workflow as the app's `root_agent`. |
+| `workflow_list` | `(path, app_name)` | List workflows (name, node/edge counts) + the current root. Read-only. |
+| `workflow_get` | `name` | Full serialized spec (nodes + edges). Read-only. |
+
+> **Running a workflow root.** A `Workflow` is dispatched via `InMemoryRunner(node=...)` (NOT
+> `agent=`); `adk web` / `adk run` / `adk api_server` discover it through the module-level
+> `root_agent` just like an agent. The toolkit's `run` domain `build_runner` detects a `BaseNode`
+> root and uses `node=` automatically. The `workflow` domain proves construction + an offline run via
+> a subprocess probe. Typed schemas, retry/timeout/concurrency tuning, and HITL resume are
+> intentionally out of scope for the static sidecar.
+
+## <a name="planners"></a>Planners (the `agents_set_planner` tool)
+
+`google.adk.planners` lets an `LlmAgent` **plan before acting**. Attach one with
+`agents_set_planner(path, app_name, agent_name, kind, thinking_budget=None)`. The planner is a kwarg
+on `LlmAgent` only (the workflow agents orchestrate sub-agents and have no `planner`).
+
+| `kind` | Renders | When |
+|---|---|---|
+| `built_in` | `planner=BuiltInPlanner(thinking_config=types.ThinkingConfig([thinking_budget=N]))` | Turn on the model's **native** "thinking" (Gemini 2.5). Optional `thinking_budget` (int) caps the thinking tokens; omitted → the always-valid no-arg `types.ThinkingConfig()`. |
+| `plan_react` | `planner=PlanReActPlanner()` | A **model-agnostic** Plan-Reason-Act prompt scaffold (works with any model; needs no native thinking). Takes no args; `thinking_budget` is ignored. |
+
+`types.ThinkingConfig` comes from `google.genai` (a core dep — no extra). The planner is persisted on
+the `AgentSpec` and re-rendered into `agent.py` like every other agent attribute.

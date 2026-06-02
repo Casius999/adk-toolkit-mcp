@@ -1,22 +1,24 @@
 # adk-toolkit-mcp — Tool Catalog
 
-All **81 tools** across 15 domains. Every tool returns `{ok, data, error}`. Exposed name =
+All **94 tools** across 17 domains. Every tool returns `{ok, data, error}`. Exposed name =
 `<domain>_<bare>`. Tool parameters shown beside each entry; `path` and `app_name` are
 required by most tools (the project directory and agent package name).
 
-**Count:** 5 + 10 + 13 + 3 + 8 + 3 + 6 + 5 + 4 + 6 + 6 + 3 + 2 + 3 + 4 = **81 tools**
+**Count:** 5 + 11 + 13 + 3 + 8 + 3 + 6 + 7 + 5 + 5 + 4 + 6 + 6 + 3 + 2 + 3 + 4 = **94 tools**
 
 ---
 
 ## Contents
 
 - [project (5)](#project) — scaffold and inspect
-- [agents (10)](#agents) — compose the agent graph
+- [agents (11)](#agents) — compose the agent graph (+ planners)
 - [tools (13)](#tools) — attach tools to LlmAgents
 - [models (3)](#models) — model and generation config
 - [sessions (8)](#sessions) — session state service
 - [memory (3)](#memory) — long-term memory service
 - [artifacts (6)](#artifacts) — versioned blob service
+- [workflow (7)](#workflow) — graph-orchestration engine
+- [skills (5)](#skills) — Agent Skill Registry
 - [run (5)](#run) — execute the agent loop
 - [eval (4)](#eval) — evaluate against an evalset
 - [deploy (6)](#deploy) — build adk deploy commands
@@ -59,13 +61,23 @@ regenerate `agent.py`. Generated code passes `ast.parse` + ruff format + isort.
 | `agents_compose` | Replace an existing agent's `sub_agents` list | `path`, `app_name`, `name`, `sub_agents: list[str]` |
 | `agents_set_root` | Designate which agent is the app's `root_agent` | `path`, `app_name`, `name` |
 | `agents_as_tool` | Return the `AgentTool(agent=<name>)` source snippet (no file change) | `path`, `app_name`, `agent_name` |
+| `agents_set_planner` | Attach a planner (`google.adk.planners`) to an existing `llm` agent | `path`, `app_name`, `agent_name`, `kind` (`built_in`/`plan_react`), `thinking_budget=None` (int, `built_in` only) |
 | `agents_list` | List all agents with name, type, and root flag | `path`, `app_name` |
 | `agents_get` | Get one agent's full spec (model, instruction, tools, callbacks, …) | `path`, `app_name`, `name` |
 
+> **Planners (`agents_set_planner`).** Lets an `LlmAgent` plan before acting. `kind="built_in"`
+> renders `planner=BuiltInPlanner(thinking_config=types.ThinkingConfig([thinking_budget=N]))` —
+> the model's native "thinking" feature (Gemini 2.5); an optional `thinking_budget` (int) caps the
+> thinking token budget, and omitting it renders the always-valid no-arg `types.ThinkingConfig()`.
+> `kind="plan_react"` renders `planner=PlanReActPlanner()` — a model-agnostic Plan-Reason-Act
+> prompt scaffold (no args; ignores `thinking_budget`). The planner is only valid on `llm` agents
+> (the workflow agents orchestrate sub-agents and have no `planner`).
+>
 > **Note on workflow agents:** `SequentialAgent`, `ParallelAgent`, and `LoopAgent` emit a
 > `DeprecationWarning` in ADK 2.1.0 ("use Workflow instead"). They are still functional and
-> retained here. The toolkit's tests never construct them in-process; the generated `agent.py`
-> is run in a subprocess.
+> retained here; for non-linear / conditional / cyclic orchestration prefer the new
+> [`workflow`](#workflow) graph engine. The toolkit's tests never construct the deprecated
+> workflow agents in-process; the generated `agent.py` is run in a subprocess.
 
 ---
 
@@ -156,6 +168,68 @@ Versioned blob storage. All calls are async.
 
 > `user:`-prefixed filenames (e.g. `user:profile.json`) are user-scoped (shared across
 > sessions for that user). GCS backend needs the `gcp` extra.
+
+---
+
+## workflow
+
+The ADK 2.0 **graph-orchestration engine** (`google.adk.workflow`): non-linear, conditional, and
+cyclic execution of agent / function / join **nodes** connected by **edges**. This is the modern
+successor to the deprecated `SequentialAgent` / `ParallelAgent` / `LoopAgent`. Workflows live in
+the sidecar alongside agents and regenerate `agent.py`; a `Workflow` is a `BaseNode`, so it can be
+the app root.
+
+| Tool | Purpose | Key parameters |
+|---|---|---|
+| `workflow_create` | Create (or reset) an empty `Workflow` in the project, then regenerate | `path`, `app_name`, `name`, `description=""` |
+| `workflow_add_node` | Add or replace a node in a workflow | `path`, `app_name`, `workflow`, `node_name`, `kind` (`agent`/`function`/`join`), `agent=None` (for `agent` nodes: an existing agent name), `params=None`/`docstring=None`/`returns=None`/`body=None` (for `function` nodes) |
+| `workflow_add_edge` | Wire a directed edge `source -> target` (replaces the same pair, else adds) | `path`, `app_name`, `workflow`, `source`, `target`, `route=None` (a route value enables conditional / loop-back routing) |
+| `workflow_set_entry` | Mark a node as a workflow entry (shortcut for a `START -> node` edge) | `path`, `app_name`, `workflow`, `node` |
+| `workflow_set_root` | Designate a workflow as the app's `root_agent` | `path`, `app_name`, `name` |
+| `workflow_list` | List the sidecar's workflows (name, node/edge counts) + the current root | `path`, `app_name` |
+| `workflow_get` | Return a workflow's full spec (nodes + edges, serialized) | `path`, `app_name`, `name` |
+
+> **Node kinds:** an `agent` node wraps an existing agent (an `LlmAgent` *is* a `BaseNode`); a
+> `function` node renders a generated `def` (a callable `(ctx, node_input) -> output|route`); a
+> `join` node is a `JoinNode` fan-in barrier (waits for **all** predecessors). **Edges:**
+> unconditional `(source, target)` (`route=None`) or **conditional** `(source, {route: target})`
+> — the producing node returns a route value and the engine follows the matching branch.
+> **Cycles** are allowed only if at least one edge in the cycle is routed (how ReAct loops are
+> expressed); an all-unconditional cycle is rejected at construction. The graph is validated on
+> build: every node must be reachable from `START`, and a workflow has at most one terminal output
+> node (fan-in to a single `JoinNode` keeps it single).
+>
+> A workflow root runs through the same `root_agent` discovery that `adk web`/`adk run` use; a
+> `Workflow` is dispatched via `InMemoryRunner(node=...)` (not `agent=`). The `workflow` domain
+> proves construction + an offline run via a subprocess probe; it does not change the `run` domain.
+> Typed `input_schema`/`output_schema`/`state_schema`, `retry_config`/`timeout`/`max_concurrency`,
+> and HITL resume are intentionally out of scope for the static sidecar.
+
+---
+
+## skills
+
+The ADK **Agent Skill Registry** (`google.adk.skills`): author model-facing skills as on-disk
+`SKILL.md` folders (the [Agent Skills spec](https://agentskills.io)) and attach them to an agent
+via a `SkillToolset`. Skills are local-directory only (no cloud deps); the toolkit reads them with
+the **real** ADK loaders.
+
+| Tool | Purpose | Key parameters |
+|---|---|---|
+| `skills_create` | Write a skill folder on disk in the layout ADK expects (`<app_dir>/skills/<name>/SKILL.md`) | `path`, `app_name`, `name` (kebab-case; == dir name), `description`, `instruction` (the `SKILL.md` body) |
+| `skills_list` | List the project's skills via the real `list_skills_in_dir` (frontmatter only) | `path`, `app_name` |
+| `skills_load` | Load one skill fully via the real `load_skill_from_dir` and return its fields | `path`, `app_name`, `name` |
+| `skills_attach` | Wire skills onto an agent via a `SkillToolset`, then regenerate `agent.py` | `path`, `app_name`, `agent_name`, `skill_names: list[str]`, `name=None` (toolset variable) |
+| `skills_registry_info` | Report the skills registered over the project's skills dir (directory-backed inventory) | `path`, `app_name` |
+
+> A `SkillToolset` is a `BaseToolset` placed directly in an `LlmAgent`'s `tools=[...]`. It exposes
+> `list_skills` / `load_skill` / `load_skill_resource` / `run_skill_script` to the model (plus
+> `search_skills` only if a concrete `SkillRegistry` is supplied — none ships in 2.1.0, so the
+> toolkit does not wire one). The generated code loads each skill from disk at the agent's runtime
+> (`load_skill_from_dir(_ADK_SKILLS_DIR / "<name>")`); skill content is never baked into `agent.py`.
+> `SkillToolset` and the skill tools are `@experimental` and emit a `UserWarning` (not a
+> `DeprecationWarning`) on construction. `skills_registry_info` is a faithful directory-backed
+> inventory (the real `SkillRegistry` is an ABC with no concrete 2.1.0 implementation).
 
 ---
 

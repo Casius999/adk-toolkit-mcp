@@ -9,6 +9,7 @@ by name), and regenerates `agent.py`.
 - [Dependency-free tools (pass 3a)](#dependency-free)
 - [Optional-dependency toolsets (pass 3b)](#optional-dependency)
 - [Auth (`tools_set_auth`)](#auth)
+- [Agent Skills (`skills_*` + the `SkillToolset` tool kind)](#skills)
 - [Critical ADK facts](#critical-facts)
 
 ## <a name="tool-kinds"></a>Tool kinds + extra
@@ -26,6 +27,7 @@ by name), and regenerates `agent.py`.
 | `tools_add_apihub` | `APIHubToolset` | core/`gcp` creds | `<id>` (codegen-only) |
 | `tools_add_langchain` | `LangchainTool` | `community` | `LangchainTool(tool=<expr>)` |
 | `tools_add_crewai` | `CrewaiTool` | `community` | `CrewaiTool(tool=<expr>, name=…, description=…)` |
+| `skills_attach` | `SkillToolset` (Agent Skills) | none (core) | `<id>` (toolset directly) — see [Agent Skills](#skills) |
 | `tools_set_auth` | attach auth to a toolset | — | `auth_credential=AuthCredential(...)` |
 | `tools_list` | list an agent's tools | — | read-only |
 
@@ -112,6 +114,47 @@ tools_set_auth(path, app_name, agent_name, tool_name, scheme, credential)
   - `service_account` → `{...}` → `ServiceAccount(...)`
 - Renders only `auth_credential=AuthCredential(...)` (not `auth_scheme=` — ADK's `AuthScheme` is a
   `Union` with no single constructor; toolsets infer the scheme from the credential/spec).
+
+## <a name="skills"></a>Agent Skills — the `skills_*` tools + `SkillToolset`
+
+ADK's **Agent Skill Registry** (`google.adk.skills`) lets you author model-facing **skills** (a
+folder with a `SKILL.md` of instructions + optional `references/`/`assets/`/`scripts/`, per the
+[Agent Skills spec](https://agentskills.io)) and attach them to an agent via a **`SkillToolset`**.
+A `SkillToolset` is a `BaseToolset` → it goes **directly** into `tools=[...]` like `OpenAPIToolset`.
+The `skills_*` tools are their own domain, but the attach mechanism is a `tools=[...]` toolset, so
+they live here in the tools reference.
+
+| Tool | Key args | Notes |
+|---|---|---|
+| `skills_create` | `name, description, instruction` | Writes `<app_dir>/skills/<name>/SKILL.md`. `name` is **kebab-case** and **must equal the directory name** (ADK enforces this). `instruction` is the SKILL.md body. |
+| `skills_list` | `(path, app_name)` | Lists the project's skills via the real `list_skills_in_dir` (frontmatter only). Read-only. |
+| `skills_load` | `name` | Loads one skill fully via the real `load_skill_from_dir` (fields + resources). Read-only. |
+| `skills_attach` | `agent_name, skill_names: list[str], name=None` | Adds a `skill_toolset` tool to an `LlmAgent` and regenerates. `name` is the toolset variable. |
+| `skills_registry_info` | `(path, app_name)` | Reports the dir-backed registry inventory (id + name + description). |
+
+What the model gets from a `SkillToolset`: the core tools `list_skills`, `load_skill`,
+`load_skill_resource`, `run_skill_script` (and `search_skills` **only** if a concrete
+`SkillRegistry` is supplied — google-adk 2.1.0 ships none, so the toolkit doesn't wire one). The
+generated code loads each skill **from disk at the agent's runtime**:
+
+```python
+from pathlib import Path
+
+from google.adk.skills import load_skill_from_dir
+from google.adk.tools.skill_toolset import SkillToolset
+
+_ADK_SKILLS_DIR = Path(__file__).parent / "skills"
+<var> = SkillToolset(skills=[load_skill_from_dir(_ADK_SKILLS_DIR / "greeter")])
+```
+
+and `<var>` goes into `tools=[...]`. Skill content is **never baked into `agent.py`**.
+
+> **Experimental.** `SkillToolset` and the skill tools are `@experimental(FeatureName.SKILL_TOOLSET)`
+> and emit a **`UserWarning`** (not a `DeprecationWarning`) when constructed — fine for the toolkit's
+> `-W error::DeprecationWarning` gate. `run_skill_script` needs a `code_executor` (toolset- or
+> agent-level); without one it returns a `NO_CODE_EXECUTOR` error (it does not crash construction).
+> Skills are **local-directory only** in the toolkit (the GCS loaders need the `gcp` extra and are
+> not wired).
 
 ## <a name="critical-facts"></a>Critical ADK facts (don't get these wrong)
 

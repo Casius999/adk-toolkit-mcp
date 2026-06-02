@@ -1,7 +1,7 @@
 {
-  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-07-09/server.json",
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.Casius999/adk-toolkit-mcp",
-  "description": "Exhaustive MCP server wrapping the full Google ADK (Agent Development Kit, google-adk 2.x) surface: 81 tools across 15 domains — author, run, evaluate, and deploy ADK agents code-first.",
+  "description": "Exhaustive MCP server wrapping the full Google ADK (Agent Development Kit, google-adk 2.x) surface: 94 tools across 17 domains — author, run, evaluate, and deploy ADK agents code-first (incl. the Workflow graph engine, Skill Registry, and planners).",
   "version": "0.1.0",
   "repository": {
     "url": "https://github.com/Casius999/adk-toolkit-mcp",
