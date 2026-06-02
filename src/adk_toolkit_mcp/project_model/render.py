@@ -29,6 +29,8 @@ from ._codegen import (
     render_tool_ref,
     user_text_helper_render,
 )
+from ._workflow_codegen import render_workflow_blocks, workflow_imports
+from .sidecar import validate_workflow_graph as _validate_workflow_graph
 from .specs import (
     _CLASS_FOR_TYPE,
     _IMPORT_ORDER,
@@ -519,12 +521,33 @@ def _render_import_line(module: str, names: list[str]) -> str:
 # --------------------------------------------------------------------------- #
 # Source rendering — complete module
 # --------------------------------------------------------------------------- #
+def _root_line(model: ProjectModel) -> str:
+    """Render the trailing ``root_agent = <root>`` line (or a clear comment).
+
+    Honors :attr:`ProjectModel.root_kind`: a ``"workflow"`` root must resolve to a defined
+    workflow (a ``Workflow`` is a ``BaseNode``, which the ADK ``AgentLoader`` accepts as
+    ``root_agent`` — cf. ``docs/adk-api-notes/workflow.md``); an ``"agent"`` root resolves to a
+    defined agent.
+    """
+    if model.root is None:
+        return "\n# root_agent undefined: call set_root (agent) or set_root (workflow).\n"
+    if model.root_kind == "workflow":
+        if model.get_workflow(model.root) is not None:
+            return f"\nroot_agent = {model.root}\n"
+        return f"\n# root workflow '{model.root}' not found; root_agent undefined.\n"
+    if model.get(model.root) is not None:
+        return f"\nroot_agent = {model.root}\n"
+    return f"\n# root '{model.root}' not found among the agents; root_agent undefined.\n"
+
+
 def render_agent_module(model: ProjectModel) -> str:
     """Produce valid ``agent.py`` source from the model.
 
     - Imports only the used classes (canonical order).
     - Defines each agent as a module variable, **topologically sorted** (a child before its
       parent). Cycle -> ``ValueError``.
+    - Defines each workflow (function-node ``@node`` defs before the agents; join-node + the
+      ``Workflow(...)`` assignment after the agents, so edges reference existing agent variables).
     - Omits empty/None kwargs.
     - Ends with ``root_agent = <root>`` (or a clear comment if the root is undefined).
     """
@@ -535,9 +558,9 @@ def render_agent_module(model: ProjectModel) -> str:
         '"""\n\n'
     )
 
-    if not model.agents:
-        body = "# No agent defined in the model.\n"
-        root_line = "# root_agent undefined: add an agent then call set_root.\n"
+    if not model.agents and not model.workflows:
+        body = "# No agent or workflow defined in the model.\n"
+        root_line = "# root_agent undefined: add an agent/workflow then call set_root.\n"
         return header + body + "\n" + root_line
 
     ordered = topological_order(model)  # may raise ValueError (cycle)
@@ -572,6 +595,10 @@ def render_agent_module(model: ProjectModel) -> str:
     # module with everything else by ``_merge_tool_imports`` (isort-clean).
     if _uses_remote_a2a(model):
         all_tool_and_model_imports.append(_REMOTE_A2A_IMPORT)
+    # Workflow engine imports (``from google.adk.workflow import ...``): merged + sorted by module
+    # with everything else (isort-clean). One ``from`` line per workflow; the merger dedups names.
+    for wf in model.workflows:
+        all_tool_and_model_imports.extend(workflow_imports(wf))
     merged = _merge_tool_imports(all_tool_and_model_imports)
 
     # Separate stdlib plain-imports (e.g. ``import os``) from third-party ``from <module> import``.
@@ -593,13 +620,30 @@ def render_agent_module(model: ProjectModel) -> str:
 
     import_block = ("\n".join(import_lines) + "\n\n") if import_lines else ""
 
-    # Top-level blocks: tool helpers, THEN guardrails (callbacks), THEN the agents (which
-    # reference the guardrail functions by name). Each agent emits 1 block (llm/workflow/loop) or
-    # 2 (custom: class + instance).
+    # Workflows: function-node ``@node`` defs are emitted with the helpers (before agents); join
+    # + ``Workflow(...)`` assignments are emitted AFTER the agents (their edges reference agent
+    # variables, which must already be defined).
+    workflow_helpers: list[str] = []
+    workflow_assigns: list[str] = []
+    for wf in model.workflows:
+        # A workflow whose graph does not yet validate renders as a placeholder (its
+        # ``Workflow(...)`` call would raise at construction). ``set_root`` requires a valid
+        # graph, so a rooted workflow is always materialized.
+        complete = _validate_workflow_graph(wf) is None
+        helpers, assigns = render_workflow_blocks(wf, complete=complete)
+        workflow_helpers.extend(helpers)
+        workflow_assigns.extend(assigns)
+
+    # Top-level blocks: tool helpers, THEN guardrails (callbacks), THEN workflow function-node
+    # defs, THEN the agents (which reference the guardrail functions by name), THEN the workflow
+    # join/assign blocks (which reference agent variables). Each agent emits 1 block
+    # (llm/workflow/loop) or 2 (custom: class + instance).
     agent_blocks: list[str] = []
     for spec in ordered:
         agent_blocks.extend(_render_agent_blocks(spec))
-    all_blocks: list[str] = tool_helpers + callback_helpers + agent_blocks
+    all_blocks: list[str] = (
+        tool_helpers + callback_helpers + workflow_helpers + agent_blocks + workflow_assigns
+    )
 
     # PEP 8 / ruff-format spacing rules (E302, E303, E305):
     #   - Exactly 2 blank lines before a top-level class/def block.
@@ -609,8 +653,9 @@ def render_agent_module(model: ProjectModel) -> str:
     # Each block already ends with exactly one '\n'.
     # Separator '\n'  between two blocks → 1 blank line total (last \n + sep \n).
     # Separator '\n\n' between two blocks → 2 blank lines total.
+    # A decorated function block starts with its decorator line (``@node``) — treat it like a def.
     def _starts_class_or_def(block: str) -> bool:
-        return block.startswith("class ") or block.startswith("def ")
+        return block.startswith(("class ", "def ", "@"))
 
     parts: list[str] = []
     for i, block in enumerate(all_blocks):
@@ -629,14 +674,7 @@ def render_agent_module(model: ProjectModel) -> str:
     if import_block and all_blocks and _starts_class_or_def(all_blocks[0]):
         import_block = import_block + "\n"
 
-    if model.root is not None and model.get(model.root) is not None:
-        root_line = f"\nroot_agent = {model.root}\n"
-    elif model.root is not None:
-        root_line = f"\n# root '{model.root}' not found among the agents; root_agent undefined.\n"
-    else:
-        root_line = "\n# root_agent undefined: call set_root to designate the root.\n"
-
-    return header + import_block + blocks + root_line
+    return header + import_block + blocks + _root_line(model)
 
 
 # --------------------------------------------------------------------------- #

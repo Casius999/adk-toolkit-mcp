@@ -32,14 +32,22 @@ from .render import (
 )
 from .sidecar import (
     add_or_replace_callback,
+    add_or_replace_edge,
+    add_or_replace_node,
     add_or_replace_tool,
     add_or_update_agent,
+    add_or_update_workflow,
+    detect_unconditional_cycle,
     load_model,
     save_model,
     set_root,
+    set_workflow_root,
     validate_callback_spec,
     validate_spec,
     validate_tool_spec,
+    validate_workflow_edge_spec,
+    validate_workflow_graph,
+    validate_workflow_node_spec,
 )
 from .specs import (
     ARG_BUILTINS,
@@ -54,6 +62,7 @@ from .specs import (
     SIDECAR_DIR,
     SIDECAR_FILE,
     SIDECAR_PATH,
+    WORKFLOW_START,
     AgentSpec,
     AgentType,
     AuthSpec,
@@ -67,6 +76,10 @@ from .specs import (
     ToolKind,
     ToolRender,
     ToolSpec,
+    WorkflowEdgeSpec,
+    WorkflowNodeKind,
+    WorkflowNodeSpec,
+    WorkflowSpec,
     is_identifier,
 )
 
@@ -83,11 +96,15 @@ __all__ = [
     "SafetySettingSpec",
     "ToolRender",
     "ToolSpec",
+    "WorkflowEdgeSpec",
+    "WorkflowNodeSpec",
+    "WorkflowSpec",
     # Literal aliases
     "AgentType",
     "CallbackHook",
     "PolicyKind",
     "ToolKind",
+    "WorkflowNodeKind",
     # Constants
     "ARG_BUILTINS",
     "BUILTIN_TOOLS",
@@ -101,16 +118,25 @@ __all__ = [
     "SIDECAR_DIR",
     "SIDECAR_FILE",
     "SIDECAR_PATH",
+    "WORKFLOW_START",
     # Validation
     "is_identifier",
     "validate_callback_spec",
     "validate_spec",
     "validate_tool_spec",
+    "validate_workflow_edge_spec",
+    "validate_workflow_graph",
+    "validate_workflow_node_spec",
     # Immutable mutations
     "add_or_replace_callback",
+    "add_or_replace_edge",
+    "add_or_replace_node",
     "add_or_replace_tool",
     "add_or_update_agent",
+    "add_or_update_workflow",
+    "detect_unconditional_cycle",
     "set_root",
+    "set_workflow_root",
     # Sidecar I/O
     "load_model",
     "save_model",

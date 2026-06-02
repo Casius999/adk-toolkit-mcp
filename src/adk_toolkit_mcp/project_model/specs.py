@@ -87,6 +87,27 @@ _AGENT_TYPES: frozenset[str] = frozenset(
 )
 
 # --------------------------------------------------------------------------- #
+# Workflow graph engine — `workflow` domain (google.adk.workflow, 2.0)
+# --------------------------------------------------------------------------- #
+#: Supported workflow node kinds (cf. ``docs/adk-api-notes/workflow.md``).
+#: - ``agent``: wraps an existing model agent (an ``LlmAgent`` etc.) — agents ARE ``BaseNode``s,
+#:   so the agent variable goes directly into the edge list.
+#: - ``function``: a generated ``def`` decorated with ``@node`` -> a ``FunctionNode``. Same
+#:   ``(name, params, docstring, returns, body)`` shape as a function ``ToolSpec``.
+#: - ``join``: a ``JoinNode`` fan-in barrier (waits for ALL predecessors).
+WorkflowNodeKind = Literal["agent", "function", "join"]
+
+_WORKFLOW_NODE_KINDS: frozenset[str] = frozenset({"agent", "function", "join"})
+
+#: The graph entry sentinel name. Edges from ``START`` mark the workflow's entry node(s). The
+#: real object is ``google.adk.workflow.START`` (a ``BaseNode(name='__START__')``); in generated
+#: code we import ``START`` and use it as an edge endpoint.
+WORKFLOW_START = "START"
+
+#: Canonical import of the workflow engine symbols actually emitted in generated code.
+_WORKFLOW_IMPORT_MODULE = "google.adk.workflow"
+
+# --------------------------------------------------------------------------- #
 # Callbacks (guardrails) — `safety` domain, P4c
 # --------------------------------------------------------------------------- #
 #: Supported callback hooks on an ``LlmAgent`` (real kwargs confirmed by introspection in 2.1.0
@@ -762,12 +783,161 @@ class AgentSpec:
 
 
 @dataclass(frozen=True)
+class WorkflowNodeSpec:
+    """Immutable spec of a node in a workflow graph (``workflow`` domain).
+
+    The ``kind`` field discriminates:
+
+    - ``agent``: ``agent`` = the name of an **existing** agent in the model. Agents are
+      ``BaseNode``s, so the agent variable is used directly as an edge endpoint.
+    - ``function``: a generated ``@node``-decorated ``def`` -> a ``FunctionNode``. Carries the
+      same ``(name, params, docstring, returns, body)`` shape as a function ``ToolSpec``. The
+      body should ``return`` either an output value (passed downstream) or a **route value**
+      (a ``str``/``int``/``bool`` matched against conditional edges).
+    - ``join``: a ``JoinNode`` fan-in barrier (no body; waits for all predecessors).
+
+    ``name`` is the graph-level node identifier (a Python identifier). For an ``agent`` node,
+    ``name`` is the agent's own variable name (so the rendered edge references that variable).
+    """
+
+    name: str
+    kind: WorkflowNodeKind
+    #: ``agent`` kind: name of the wrapped model agent (defaults to ``name``).
+    agent: str = ""
+    #: ``function`` kind: typed parameters ``(name, type, default|None)`` (besides ctx/node_input).
+    params: tuple[tuple[str, str, str | None], ...] = ()
+    docstring: str = ""
+    returns: str = "dict"
+    body: str = "return {}"
+
+    def agent_ref(self) -> str:
+        """For an ``agent`` node, the referenced agent variable (``agent`` or ``name``)."""
+        return self.agent or self.name
+
+    def to_dict(self) -> dict[str, Any]:
+        base: dict[str, Any] = {"name": self.name, "kind": self.kind}
+        if self.kind == "agent":
+            base["agent"] = self.agent_ref()
+        elif self.kind == "function":
+            base.update(
+                {
+                    "params": [list(p) for p in self.params],
+                    "docstring": self.docstring,
+                    "returns": self.returns,
+                    "body": self.body,
+                }
+            )
+        # ``join``: only name/kind.
+        return base
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> WorkflowNodeSpec:
+        kind: WorkflowNodeKind = data.get("kind", "function")
+        params = tuple(
+            (str(p[0]), str(p[1]), (None if len(p) < 3 or p[2] is None else str(p[2])))
+            for p in (data.get("params") or [])
+        )
+        return cls(
+            name=str(data["name"]),
+            kind=kind,
+            agent=str(data.get("agent", "")),
+            params=params,
+            docstring=str(data.get("docstring", "")),
+            returns=str(data.get("returns", "dict")),
+            body=str(data.get("body", "return {}")),
+        )
+
+
+@dataclass(frozen=True)
+class WorkflowEdgeSpec:
+    """Immutable spec of a directed edge in a workflow graph.
+
+    ``source`` / ``target`` are node names; ``source`` may be the sentinel :data:`WORKFLOW_START`
+    (``"START"``) to mark the workflow entry. ``route`` (optional) is the route value emitted by
+    the source node that selects this edge — its presence makes the edge **conditional**
+    (enables branching and routed loop-back cycles). A ``None`` route is an unconditional edge.
+    """
+
+    source: str
+    target: str
+    route: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        d: dict[str, Any] = {"source": self.source, "target": self.target}
+        if self.route is not None:
+            d["route"] = self.route
+        return d
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> WorkflowEdgeSpec:
+        route = data.get("route")
+        return cls(
+            source=str(data.get("source", "")),
+            target=str(data.get("target", "")),
+            route=None if route is None else str(route),
+        )
+
+
+@dataclass(frozen=True)
+class WorkflowSpec:
+    """Immutable spec of a ``google.adk.workflow.Workflow`` graph.
+
+    A workflow is a **root-capable** entity (rendered as ``root_agent = <name>`` because a
+    ``Workflow`` is a ``BaseNode`` — cf. ``docs/adk-api-notes/workflow.md``). It owns a set of
+    :class:`WorkflowNodeSpec` (nodes) and :class:`WorkflowEdgeSpec` (edges). Nodes are referenced
+    by name; the renderer materializes function/join nodes as module variables and uses agent
+    variables directly.
+    """
+
+    name: str
+    description: str = ""
+    nodes: tuple[WorkflowNodeSpec, ...] = ()
+    edges: tuple[WorkflowEdgeSpec, ...] = ()
+
+    def node_names(self) -> tuple[str, ...]:
+        return tuple(n.name for n in self.nodes)
+
+    def get_node(self, name: str) -> WorkflowNodeSpec | None:
+        for n in self.nodes:
+            if n.name == name:
+                return n
+        return None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "name": self.name,
+            "description": self.description,
+            "nodes": [n.to_dict() for n in self.nodes],
+            "edges": [e.to_dict() for e in self.edges],
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> WorkflowSpec:
+        nodes = tuple(WorkflowNodeSpec.from_dict(n) for n in data.get("nodes", []) or [])
+        edges = tuple(WorkflowEdgeSpec.from_dict(e) for e in data.get("edges", []) or [])
+        return cls(
+            name=str(data["name"]),
+            description=str(data.get("description", "")),
+            nodes=nodes,
+            edges=edges,
+        )
+
+
+@dataclass(frozen=True)
 class ProjectModel:
-    """Full model of an ADK app: list of agents + designated root."""
+    """Full model of an ADK app: agents + workflows + the designated root.
+
+    ``root`` is the name of the root entity; ``root_kind`` discriminates whether it refers to an
+    agent (``"agent"``, default — historical behavior) or a workflow (``"workflow"``). A workflow
+    root renders as ``root_agent = <workflow>`` (a ``Workflow`` is a ``BaseNode``, which the ADK
+    ``AgentLoader`` accepts as ``root_agent`` — cf. ``docs/adk-api-notes/workflow.md``).
+    """
 
     app_name: str
     root: str | None = None
     agents: tuple[AgentSpec, ...] = field(default_factory=tuple)
+    workflows: tuple[WorkflowSpec, ...] = field(default_factory=tuple)
+    root_kind: Literal["agent", "workflow"] = "agent"
 
     def agent_names(self) -> tuple[str, ...]:
         return tuple(a.name for a in self.agents)
@@ -778,20 +948,42 @@ class ProjectModel:
                 return a
         return None
 
+    def workflow_names(self) -> tuple[str, ...]:
+        return tuple(w.name for w in self.workflows)
+
+    def get_workflow(self, name: str) -> WorkflowSpec | None:
+        for w in self.workflows:
+            if w.name == name:
+                return w
+        return None
+
     def to_dict(self) -> dict[str, Any]:
-        return {
+        d: dict[str, Any] = {
             "app_name": self.app_name,
             "root": self.root,
             "agents": [a.to_dict() for a in self.agents],
         }
+        # Workflows + root_kind are only serialized when present, so existing sidecars (agents
+        # only) round-trip byte-for-byte (no spurious diffs / no behavior change).
+        if self.workflows:
+            d["workflows"] = [w.to_dict() for w in self.workflows]
+        if self.root_kind != "agent":
+            d["root_kind"] = self.root_kind
+        return d
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> ProjectModel:
         agents = tuple(AgentSpec.from_dict(a) for a in data.get("agents", []) or [])
+        workflows = tuple(WorkflowSpec.from_dict(w) for w in data.get("workflows", []) or [])
+        root_kind: Literal["agent", "workflow"] = (
+            "workflow" if data.get("root_kind") == "workflow" else "agent"
+        )
         return cls(
             app_name=str(data.get("app_name", "")),
             root=data.get("root"),
             agents=agents,
+            workflows=workflows,
+            root_kind=root_kind,
         )
 
 

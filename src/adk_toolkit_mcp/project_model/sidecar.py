@@ -30,13 +30,18 @@ from .specs import (
     _POLICY_HOOKS,
     _POLICY_KINDS,
     _TOOL_KINDS,
+    _WORKFLOW_NODE_KINDS,
     ARG_BUILTINS,
     BUILTIN_TOOLS,
     SIDECAR_PATH,
+    WORKFLOW_START,
     AgentSpec,
     CallbackSpec,
     ProjectModel,
     ToolSpec,
+    WorkflowEdgeSpec,
+    WorkflowNodeSpec,
+    WorkflowSpec,
     is_identifier,
 )
 
@@ -88,8 +93,68 @@ def add_or_update_agent(model: ProjectModel, spec: AgentSpec) -> ProjectModel:
 
 
 def set_root(model: ProjectModel, name: str) -> ProjectModel:
-    """Return a new model whose root is ``name`` (without validating existence here)."""
-    return replace(model, root=name)
+    """Return a new model whose root is an **agent** ``name`` (existence not validated here)."""
+    return replace(model, root=name, root_kind="agent")
+
+
+def set_workflow_root(model: ProjectModel, name: str) -> ProjectModel:
+    """Return a new model whose root is a **workflow** ``name`` (existence not validated here)."""
+    return replace(model, root=name, root_kind="workflow")
+
+
+# --------------------------------------------------------------------------- #
+# Immutable mutations — workflows (`workflow` domain)
+# --------------------------------------------------------------------------- #
+def add_or_update_workflow(model: ProjectModel, workflow: WorkflowSpec) -> ProjectModel:
+    """Add ``workflow`` or replace the existing one of the same name. **Returns a new model.**
+
+    Order is preserved (replacement keeps its position; addition is appended).
+    """
+    found = False
+    new_workflows: list[WorkflowSpec] = []
+    for w in model.workflows:
+        if w.name == workflow.name:
+            new_workflows.append(workflow)
+            found = True
+        else:
+            new_workflows.append(w)
+    if not found:
+        new_workflows.append(workflow)
+    return replace(model, workflows=tuple(new_workflows))
+
+
+def add_or_replace_node(workflow: WorkflowSpec, node: WorkflowNodeSpec) -> WorkflowSpec:
+    """Attach ``node`` to ``workflow`` (replace by name, else append). **Returns a new spec.**"""
+    found = False
+    new_nodes: list[WorkflowNodeSpec] = []
+    for existing in workflow.nodes:
+        if existing.name == node.name:
+            new_nodes.append(node)
+            found = True
+        else:
+            new_nodes.append(existing)
+    if not found:
+        new_nodes.append(node)
+    return replace(workflow, nodes=tuple(new_nodes))
+
+
+def add_or_replace_edge(workflow: WorkflowSpec, edge: WorkflowEdgeSpec) -> WorkflowSpec:
+    """Attach ``edge`` to ``workflow`` (replace the same ``(source, target)``, else append).
+
+    Identity is the ordered pair ``(source, target)`` — re-adding the same pair updates its
+    ``route`` (position preserved). **Returns a new spec.**
+    """
+    found = False
+    new_edges: list[WorkflowEdgeSpec] = []
+    for existing in workflow.edges:
+        if existing.source == edge.source and existing.target == edge.target:
+            new_edges.append(edge)
+            found = True
+        else:
+            new_edges.append(existing)
+    if not found:
+        new_edges.append(edge)
+    return replace(workflow, edges=tuple(new_edges))
 
 
 def add_or_replace_tool(spec: AgentSpec, tool: ToolSpec) -> AgentSpec:
@@ -260,6 +325,174 @@ def validate_callback_spec(callback: CallbackSpec) -> str | None:
         raw = callback.param("max_chars")
         if not _is_positive_int(raw):
             return f"max_input_chars: 'max_chars' must be an integer > 0 (received {raw!r})."
+    return None
+
+
+# --------------------------------------------------------------------------- #
+# Workflow validation (`workflow` domain) — mirrors the ADK graph rules so the
+# tools fail fast with a clear message instead of letting Workflow(...) raise.
+# --------------------------------------------------------------------------- #
+def validate_workflow_node_spec(node: WorkflowNodeSpec, model: ProjectModel) -> str | None:
+    """Return an error message if the workflow node is invalid, otherwise None.
+
+    Checks: identifier name, known kind, and per-kind requirements:
+    - ``agent``: the referenced agent must exist in the model and must NOT be a workflow agent
+      type that is deprecated as a graph node? (No — any model agent is a ``BaseNode``; we only
+      require existence.) The node ``name`` must equal the agent it wraps (so the rendered edge
+      references the agent variable directly).
+    - ``function``: identifier params + allowed types (reuses the function-tool type rules).
+    - ``join``: nothing extra.
+    """
+    if node.name == WORKFLOW_START:
+        return f"Reserved node name: {WORKFLOW_START!r} is the graph entry sentinel."
+    if not is_identifier(node.name):
+        return f"Invalid node name: {node.name!r}. Expected a Python identifier."
+    if node.kind not in _WORKFLOW_NODE_KINDS:
+        return (
+            f"Unknown node kind: {node.kind!r}. Known: {', '.join(sorted(_WORKFLOW_NODE_KINDS))}."
+        )
+    if node.kind == "agent":
+        ref = node.agent_ref()
+        if not is_identifier(ref):
+            return f"Invalid agent reference: {ref!r}. Expected a Python identifier."
+        if model.get(ref) is None:
+            return f"Agent not found: {ref!r}. Create it first (agents_create_*)."
+        if ref != node.name:
+            return (
+                f"An agent node's name must equal the wrapped agent ({ref!r}), "
+                f"got node name {node.name!r}."
+            )
+        return None
+    if node.kind == "function":
+        for pname, ptype, _default in node.params:
+            if not is_identifier(pname):
+                return f"Invalid parameter name: {pname!r}. Expected a Python identifier."
+            if not _is_allowed_type(ptype):
+                return (
+                    f"Unsupported parameter type: {ptype!r} (param {pname!r}). "
+                    f"Allowed: {', '.join(sorted(_ALLOWED_PARAM_TYPES))} "
+                    "(or ``X | None`` / ``list[X]`` of those)."
+                )
+        if not _is_allowed_type(node.returns):
+            return f"Unsupported return type: {node.returns!r}."
+        return None
+    # ``join``: no extra checks.
+    return None
+
+
+def validate_workflow_edge_spec(edge: WorkflowEdgeSpec, workflow: WorkflowSpec) -> str | None:
+    """Return an error message if the edge is invalid, otherwise None.
+
+    ``source`` may be :data:`WORKFLOW_START`; otherwise both endpoints must be existing nodes.
+    ``target`` must NOT be :data:`WORKFLOW_START` (START takes no incoming edge). A route, when
+    provided, must be a non-empty string.
+    """
+    if edge.target == WORKFLOW_START:
+        return f"{WORKFLOW_START!r} cannot be an edge target (it takes no incoming edge)."
+    if edge.source != WORKFLOW_START and workflow.get_node(edge.source) is None:
+        return f"Edge source not found: {edge.source!r}. Add it as a node first."
+    if workflow.get_node(edge.target) is None:
+        return f"Edge target not found: {edge.target!r}. Add it as a node first."
+    if edge.source == edge.target:
+        return f"A self-loop edge is not allowed: {edge.source!r} -> {edge.target!r}."
+    if edge.route is not None and not edge.route.strip():
+        return (
+            "route must be a non-empty string when provided (or omit it for an unconditional edge)."
+        )
+    return None
+
+
+def validate_workflow_graph(workflow: WorkflowSpec) -> str | None:
+    """Return an error message if the full graph is invalid, otherwise None.
+
+    Mirrors ``google.adk.workflow`` graph validation (cf. ``docs/adk-api-notes/workflow.md``):
+
+    - at least one entry edge from :data:`WORKFLOW_START`;
+    - every node reachable from ``START``;
+    - no **unconditional cycle** (a cycle of ``route=None`` edges loops forever; cycles must
+      include at least one routed edge — that is how ReAct-style loops are expressed);
+    - at most ONE terminal node (a node with no outgoing edges) — ADK forbids multiple terminal
+      outputs. Fan-in to a single ``join`` node keeps a single terminal.
+    """
+    node_names = set(workflow.node_names())
+    start_edges = [e for e in workflow.edges if e.source == WORKFLOW_START]
+    if not start_edges:
+        return f"The graph has no entry edge from {WORKFLOW_START!r}. Add one (set_entry)."
+
+    # Adjacency (excluding START as a node; it is the virtual entry).
+    adjacency: dict[str, list[WorkflowEdgeSpec]] = {n: [] for n in node_names}
+    for e in workflow.edges:
+        if e.source != WORKFLOW_START:
+            adjacency.setdefault(e.source, []).append(e)
+
+    # Reachability from START.
+    reachable: set[str] = set()
+    stack = [e.target for e in start_edges]
+    while stack:
+        name = stack.pop()
+        if name in reachable:
+            continue
+        reachable.add(name)
+        stack.extend(e.target for e in adjacency.get(name, []))
+    unreachable = node_names - reachable
+    if unreachable:
+        return f"Unreachable from {WORKFLOW_START!r}: {', '.join(sorted(unreachable))}."
+
+    cycle_err = detect_unconditional_cycle(workflow)
+    if cycle_err is not None:
+        return cycle_err
+
+    # Terminal nodes = nodes with no outgoing edge.
+    has_outgoing = {e.source for e in workflow.edges if e.source != WORKFLOW_START}
+    terminals = sorted(node_names - has_outgoing)
+    if len(terminals) > 1:
+        return (
+            f"A workflow must have at most one terminal node (no outgoing edge); "
+            f"found {len(terminals)}: {', '.join(terminals)}. "
+            "Wire them into a single 'join' node or chain them."
+        )
+    return None
+
+
+def detect_unconditional_cycle(workflow: WorkflowSpec) -> str | None:
+    """Return an error if a cycle of ``route=None`` edges exists in ``workflow`` (DFS), else None.
+
+    Independent of the other graph rules (reachability / terminals), so it can be enforced
+    **eagerly** during incremental construction: adding an unrouted edge that closes a cycle is a
+    hard structural error (an unconditional cycle loops forever) regardless of whether the rest of
+    the graph is complete. A cycle is allowed only if at least one edge in it carries a route.
+    """
+    node_names = set(workflow.node_names())
+    unconditional: dict[str, list[str]] = {n: [] for n in node_names}
+    for e in workflow.edges:
+        if e.source != WORKFLOW_START and e.route is None:
+            unconditional.setdefault(e.source, []).append(e.target)
+
+    in_stack: set[str] = set()
+    done: set[str] = set()
+
+    def visit(name: str, path: tuple[str, ...]) -> str | None:
+        in_stack.add(name)
+        for nxt in unconditional.get(name, []):
+            if nxt in in_stack:
+                cycle = " -> ".join((*path, name, nxt))
+                return (
+                    f"Unconditional cycle detected: {cycle}. A cycle must include at least one "
+                    "conditional (routed) edge to avoid an infinite loop."
+                )
+            if nxt not in done:
+                err_msg = visit(nxt, (*path, name))
+                if err_msg is not None:
+                    return err_msg
+        in_stack.discard(name)
+        done.add(name)
+        return None
+
+    for n in node_names:
+        if n not in done:
+            err_msg = visit(n, ())
+            if err_msg is not None:
+                return err_msg
     return None
 
 
